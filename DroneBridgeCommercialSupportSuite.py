@@ -19,14 +19,97 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-
-
+import base64
 import csv
 import os
 import ipaddress
+import struct
+
 import requests
 from urllib.parse import urljoin
+
+from esptool import detect_chip
 from tqdm import tqdm
+
+
+def db_get_activation_key(port) -> str | None:
+    """Connects to the ESP32 and calculates the activation key. Returns None if an error occurs."""
+    activation_key = None
+    try:
+        # Connect to the ESP32
+        # defaults: initial_baud=460800, trace_enabled=False, connect_mode='default_reset'
+        esp = detect_chip(port)
+        print(f"Connecting to {port}...")
+
+        # Read MAC Address
+        mac = esp.read_mac()
+        mac_str = ':'.join(map(lambda x: '{:02x}'.format(x), mac))
+        print(f"MAC Address: {mac_str}")
+
+        # Calculate Activation Key
+        try:
+            # Determine Chip ID (integer)
+            chip_id = esp.get_chip_id()
+            # Chip Revision
+            chip_rev = esp.get_chip_revision()
+
+            # Read Chip ID (Type)
+            chip_type = esp.get_chip_description()
+            print(f"Chip Type: {chip_type} ID: {chip_id} Rev: {chip_rev}")
+
+            # Use little-endian (<)
+            # Ensure mac is bytes
+            mac_bytes = bytes(mac)
+            packed_data = struct.pack('<6sBH', mac_bytes, chip_id, chip_rev)
+
+            activation_key = base64.b64encode(packed_data).decode('utf-8')
+
+        except Exception as e:
+            print(f"Error calculating activation key: {e}")
+
+    except Exception as e:
+        print(f"Error: {e}")
+
+    return activation_key
+
+
+def db_api_request_license_file(_activation_key, _token, _license_type=2, _validity_days=0):
+    """
+    Requests the license file from the licensing server.
+    """
+    base_url = "https://drone-bridge.com/api/license/generate"
+
+    params = {
+        "activationKey": _activation_key,
+        "licenseType": _license_type,
+        "validityDays": str(_validity_days),
+        "access_token": _token
+    }
+
+    try:
+        print(f"Requesting license from {base_url}...")
+        response = requests.get(base_url, params=params, stream=True)
+
+        if response.status_code == 200:
+            # Try to get filename from header if available, else use default
+            filename = f"{_activation_key}.dlselic"
+            if "Content-Disposition" in response.headers:
+                cd = response.headers["Content-Disposition"]
+                if "filename=" in cd:
+                    filename = cd.split("filename=")[1].strip('"').strip()
+
+            with open(filename, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            print(f"✅ License generated and saved to '{filename}'")
+            return True
+        else:
+            print(f"❌ Failed to generate license. Status Code: {response.status_code}")
+            print(f"Response: {response.text}")
+            return False
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return False
 
 
 class FileWithProgress(object):
