@@ -24,22 +24,26 @@ import csv
 import os
 import ipaddress
 import struct
-
 import requests
 from urllib.parse import urljoin
-
+from enum import Enum
 from esptool import detect_chip
 from tqdm import tqdm
 
+class DBLicenseType(Enum):
+    TRIAL = 0
+    EVALUATION = 1
+    ACTIVATED = 2
+    EXPIRED = 3
 
-def db_get_activation_key(port) -> str | None:
+def db_get_activation_key(_serial_port) -> str | None:
     """Connects to the ESP32 and calculates the activation key. Returns None if an error occurs."""
     activation_key = None
     try:
         # Connect to the ESP32
         # defaults: initial_baud=460800, trace_enabled=False, connect_mode='default_reset'
-        esp = detect_chip(port)
-        print(f"Connecting to {port}...")
+        esp = detect_chip(_serial_port)
+        print(f"Connecting to {_serial_port}...")
 
         # Read MAC Address
         mac = esp.read_mac()
@@ -73,7 +77,8 @@ def db_get_activation_key(port) -> str | None:
     return activation_key
 
 
-def db_api_request_license_file(_activation_key, _token, _license_type=2, _validity_days=0):
+def db_api_request_license_file(_activation_key, _token, _output_path="received_licenses/",
+                                _license_type=DBLicenseType.ACTIVATED, _validity_days=0):
     """
     Requests the license file from the licensing server.
     """
@@ -81,7 +86,7 @@ def db_api_request_license_file(_activation_key, _token, _license_type=2, _valid
 
     params = {
         "activationKey": _activation_key,
-        "licenseType": _license_type,
+        "licenseType": _license_type.value,
         "validityDays": str(_validity_days),
         "access_token": _token
     }
@@ -98,6 +103,9 @@ def db_api_request_license_file(_activation_key, _token, _license_type=2, _valid
                 if "filename=" in cd:
                     filename = cd.split("filename=")[1].strip('"').strip()
 
+            if _output_path:
+                os.makedirs(_output_path, exist_ok=True)
+            filename = os.path.join(_output_path, filename)
             with open(filename, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
