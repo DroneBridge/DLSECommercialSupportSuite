@@ -24,6 +24,9 @@ import csv
 import os
 import ipaddress
 import struct
+import subprocess
+import sys
+
 import requests
 from urllib.parse import urljoin
 from enum import Enum
@@ -36,9 +39,10 @@ class DBLicenseType(Enum):
     ACTIVATED = 2
     EXPIRED = 3
 
-def db_get_activation_key(_serial_port) -> str | None:
+def db_get_activation_key(_serial_port: str) -> str | None:
     """Connects to the ESP32 and calculates the activation key. Returns None if an error occurs."""
     activation_key = None
+    esp = None
     try:
         # Connect to the ESP32
         # defaults: initial_baud=460800, trace_enabled=False, connect_mode='default_reset'
@@ -73,12 +77,95 @@ def db_get_activation_key(_serial_port) -> str | None:
 
     except Exception as e:
         print(f"Error: {e}")
+    finally:
+        if esp is not None:
+            esp._port.close()
 
     return activation_key
 
 
-def db_api_request_license_file(_activation_key, _token, _output_path="received_licenses/",
-                                _license_type=DBLicenseType.ACTIVATED, _validity_days=0):
+def db_embed_license_in_settings_csv(_settings_csv_file_path: str, _license_file_path: str,
+                                     create_new_file=False) -> str | None:
+    """
+    Appends or updates the content of the license file in the settings CSV file.
+    The license content is base64 encoded and added as a binary entry.
+    Entry format: db_lic_key,data,base64,<BASE64_LICENSE_CONTENT>
+    Ensures 'license,namespace,,' header exists if adding new key.
+    """
+    if not os.path.exists(_settings_csv_file_path):
+        print(f"❌ Error: The file '{_settings_csv_file_path}' was not found.")
+        return None
+
+    if not os.path.exists(_license_file_path):
+        print(f"❌ Error: The file '{_license_file_path}' was not found.")
+        return None
+
+    try:
+        # Read license file content
+        with open(_license_file_path, 'rb') as f:
+            license_content = f.read()
+
+        # Encode content to base64
+        license_b64 = base64.b64encode(license_content).decode('utf-8')
+
+        # Read all existing data
+        rows = []
+        with open(_settings_csv_file_path, 'r', newline='') as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+
+        license_namespace_header = ['license', 'namespace', '', '']
+        license_key_row = ['db_lic_key', 'data', 'base64', license_b64]
+
+        header_exists = False
+        key_index = -1
+
+        # Check for existence
+        for i, row in enumerate(rows):
+            if len(row) >= 2 and row[0] == 'license' and row[1] == 'namespace':
+                header_exists = True
+            if len(row) >= 1 and row[0] == 'db_lic_key':
+                key_index = i
+
+        if key_index != -1:
+            # Update existing key
+            rows[key_index] = license_key_row
+            print(f"Updated existing license key.")
+        else:
+            # Key does not exist
+            if not header_exists:
+                rows.append(license_namespace_header)
+            rows.append(license_key_row)
+            print(f"Appended license key.")
+
+        # Determine output file path
+        output_file_path = _settings_csv_file_path
+        if create_new_file:
+            base, ext = os.path.splitext(_settings_csv_file_path)
+            output_file_path = f"{base}_lic_added{ext}"
+            print(f"Creating new settings file: '{output_file_path}'")
+        else:
+            print(f"Updating existing settings file: '{output_file_path}'")
+
+        # Write back to CSV file
+        with open(output_file_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerows(rows)
+
+        print(f"✅ Created combined license and settings file: '{output_file_path}'")
+        return output_file_path
+
+    except Exception as e:
+        print(f"❌ Error updating '{_settings_csv_file_path}': {e}")
+        return False
+
+    except Exception as e:
+        print(f"❌ Error updating '{_settings_csv_file_path}': {e}")
+        return False
+
+
+def db_api_request_license_file(_activation_key: str, _token: str, _output_path="received_licenses/",
+                                _license_type=DBLicenseType.ACTIVATED, _validity_days=0) -> str | None:
     """
     Requests the license file from the licensing server.
     """
@@ -110,15 +197,103 @@ def db_api_request_license_file(_activation_key, _token, _output_path="received_
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
             print(f"✅ License generated and saved to '{filename}'")
-            return True
+            return filename
         else:
             print(f"❌ Failed to generate license. Status Code: {response.status_code}")
             print(f"Response: {response.text}")
-            return False
+            return None
     except Exception as e:
         print(f"❌ Error: {e}")
+        return None
+
+def db_parameters_generate_binary(_path_to_settings_csv: str, partition_size="0x6000") -> str | None:
+    """
+    Generates a NVS binary partition from the settings CSV file using the esp-idf-nvs-partition-gen tool.
+    Returns the path to the generated .bin file or None if failed.
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    nvs_tool_path = os.path.join(script_dir, "esp-idf-nvs-partition-gen", "esp_idf_nvs_partition_gen", "nvs_partition_gen.py")
+
+    if not os.path.exists(nvs_tool_path):
+        print(f"❌ Error: NVS partition generator tool not found at '{nvs_tool_path}'")
+        return None
+
+    if not os.path.exists(_path_to_settings_csv):
+        print(f"❌ Error: Input CSV file '{_path_to_settings_csv}' not found")
+        return None
+
+    output_bin = os.path.splitext(_path_to_settings_csv)[0] + ".bin"
+
+    cmd = [
+        sys.executable,
+        nvs_tool_path,
+        "generate",
+        _path_to_settings_csv,
+        output_bin,
+        partition_size
+    ]
+
+    print(f"Generating binary from '{_path_to_settings_csv}'...")
+    try:
+        # Run the script and capture output
+        result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        print(result.stdout)
+        print(f"✅ Successfully created '{output_bin}'")
+        return output_bin
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error generating binary: {e}")
+        print("STDOUT:", e.stdout)
+        print("STDERR:", e.stderr)
+        return None
+    except Exception as e:
+        print(f"❌ Error executing NVS tool: {e}")
+        return None
+
+def db_flash_binaries(serial_port: str, address_binary_map: dict, baud_rate=460800) -> bool:
+    """
+    Flashes binaries to the ESP32 using esptool.
+    :param serial_port: Serial port of the ESP32 (e.g. COM3 or /dev/ttyUSB0)
+    :param address_binary_map: Dictionary mapping address (int or hex string) to file path
+                               Example: {0x1000: 'bootloader.bin', "0x9000": 'partition-table.bin'}
+    :param baud_rate: Baud rate for flashing (default 460800)
+    :return: True if successful, False otherwise
+    """
+    if not address_binary_map:
+        print("Error: No binaries provided for flashing.")
         return False
 
+    # Verify files exist
+    for addr, path in address_binary_map.items():
+        if not os.path.exists(path):
+            print(f"Error: File not found '{path}' for address {addr}")
+            return False
+
+    cmd = [
+        sys.executable, "-m", "esptool",
+        "--chip", "auto",
+        "--port", serial_port,
+        "--baud", str(baud_rate),
+        "write-flash",
+        "-z"
+    ]
+
+    # Add addresses and files
+    for address, file_path in address_binary_map.items():
+        cmd.append(str(address))
+        cmd.append(file_path)
+
+    print(f"Starting flash operation on {serial_port}...")
+    try:
+        # Using subprocess to isolate esptool execution
+        subprocess.run(cmd, check=True)
+        print("✅ Flashing completed successfully!")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Flashing failed with error code {e.returncode}")
+        return False
+    except Exception as e:
+        print(f"❌ An error occurred: {e}")
+        return False
 
 class FileWithProgress(object):
     """
@@ -275,10 +450,6 @@ def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_host
     except Exception as e:
         print(f"Error writing to '{_csv_settings_file_path}': {e}")
         return
-
-
-def db_parameters_generate_binary(_path_to_settings_csv: str) -> str:
-    pass
 
 
 def db_api_add_custom_udp(_drone_bridge_url: str, _udp_client_target_ip: str, _udp_client_target_port: int, _save_udp_to_nvm=True) -> bool:

@@ -19,7 +19,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from DroneBridgeCommercialSupportSuite import db_csv_update_parameters
+from DroneBridgeCommercialSupportSuite import db_csv_update_parameters, db_parameters_generate_binary
 
 # Example script to directly flash DroneBridge DLSE configuration parameters via serial (together with the rest of the firmware)
 # ------------

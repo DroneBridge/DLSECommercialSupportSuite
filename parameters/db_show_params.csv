@@ -3,7 +3,7 @@ settings,namespace,,
 esp32_mode,data,u8,2
 wifi_chan,data,u8,11
 wifi_en_gn,data,u8,1
-ant_use_ext,data,u8,0
+radio_ant_selec,data,u8,0
 baud,data,i32,115200
 gpio_tx,data,u8,16
 gpio_rx,data,u8,17
@@ -31,6 +31,8 @@ show_pm_pulse_l,data,u16,400
 show_pm_qu_gpio,data,u8,0
 show_en_syid_ip,data,u8,1
 show_man_sysid,data,u8,1
+radio_ant_sw,data,u8,0
+radio_ant_en,data,u8,0
 ssid,data,string,DroneBridgeSSID
 ssid_ap,data,string,DroneBridgeAPSSID
 wifi_pass,data,string,WIFIPASSWORD
