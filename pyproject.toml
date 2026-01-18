@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "DLSECommercialSupportSuite"
+version = "0.1.0"
+description = "Commercial Support Suite for DroneBridge DLSE"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT License"}
+authors = [
+  {name = "Wolfgang Christl"},
+]
+dependencies = [
+  "requests>=2.32.5",
+  "esptool>=5.1.0",
+  "tqdm>=4.67.1",
+  "cryptography>=46.0.1", # Required for esp-idf-nvs-partition-gen
+  "mavsdk>=3.10.2",
+  "pymavlink>=2.4.49",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/DroneBridge/DLSECommercialSupportSuite"
+
+[tool.setuptools]
+py-modules = ["DroneBridgeCommercialSupportSuite"]

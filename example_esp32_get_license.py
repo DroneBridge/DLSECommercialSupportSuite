@@ -28,7 +28,7 @@ from DroneBridgeCommercialSupportSuite import db_api_request_license_file, DBLic
 
 # Secret token to authenticate you with the DroneBridge licensing server
 MY_SECRET_TOKEN = "<YOUR KEY FROM THE drone-bridge.com USER INTERFACE>"
-activation_key = "from the ESP32 web interface"
+activation_key = "<from the ESP32 web interface>"
 
 license_file = db_api_request_license_file(activation_key, MY_SECRET_TOKEN, _license_type=DBLicenseType.ACTIVATED, _validity_days=0)
 if license_file is None:
