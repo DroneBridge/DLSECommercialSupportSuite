@@ -21,10 +21,6 @@ This suite provides tools and scripts to manage, configure, and license DroneBri
     ```bash
     pip install .
     ```
-    Or, if you want to install in editable mode (useful if you plan to modify the scripts):
-    ```bash
-    pip install -e .
-    ```
 
 ## Usage
 
@@ -41,9 +37,9 @@ The suite includes several example scripts demonstrating different functionaliti
 
 ### Running a Script
 
-Example:
+Example for a fully automated activation and installation of DLSE on a ESP32 connected to COM22, including a pre-defined configuration:
 ```bash
-python example_esp32_dlse_allinone_install.py
+python example_esp32_dlse_allinone_install.py --token <YOUR_SECRET_TOKEN> --release_folder "DroneBridge_ESP32DLSE_BETA3/esp32c5_generic" --settings_file "DroneBridge_ESP32DLSE_BETA3/db_show_params.csv" --port COM22
 ```
 
 ## License
