@@ -165,22 +165,23 @@ def db_embed_license_in_settings_csv(_settings_csv_file_path: str, _license_file
 
 
 def db_api_request_license_file(_activation_key: str, _token: str, _output_path="received_licenses/",
-                                _license_type=DBLicenseType.ACTIVATED, _validity_days=0) -> str | None:
+                                _license_type=DBLicenseType.ACTIVATED, _validity_days=0,
+                                base_url="https://drone-bridge.com/api/license/generate") -> str | None:
     """
     Requests the license file from the licensing server.
     """
-    base_url = "https://drone-bridge.com/api/license/generate"
-
     params = {
         "activationKey": _activation_key,
         "licenseType": _license_type.value,
         "validityDays": str(_validity_days),
-        "access_token": _token
+    }
+    headers = {
+        "Authorization": f"Bearer {_token}"
     }
 
     try:
         print(f"Requesting license from {base_url}...")
-        response = requests.get(base_url, params=params, stream=True)
+        response = requests.get(base_url, params=params, headers=headers, stream=True)
 
         if response.status_code == 200:
             # Try to get filename from header if available, else use default

@@ -23,14 +23,19 @@ import os.path
 from DroneBridgeCommercialSupportSuite import db_get_activation_key, db_api_request_license_file, DBLicenseType, \
     db_embed_license_in_settings_csv, db_parameters_generate_binary, db_flash_binaries
 
+# ToDo: Update the parameters below to match your environment and account settings
 # Secret token to authenticate you with the DroneBridge licensing server
 MY_SECRET_TOKEN = "<ENTER YOUR TOKEN HERE - GET IT FROM DRONE-BRIDGE.COM WEBSITE>"
 # The serial port of the ESP32
-ESP_SERIAL_PORT = "COM21"
+ESP_SERIAL_PORT = "COM22"
+# Flashing baud rate of the ESP32. Lower to 115200 if flashing fails
+ESP_SERIAL_PORT_FLASH_BAUD_RATE = 460800
 # The path to the settings.csv file that comes with every release you may modify it by adding your own parameter values first
-PATH_SETTINGS_CSV = "DroneBridge_ESP32DLSE_100_Beta2/db_show_params.csv"
-# Path to the DLSE binaries (www.bin, db_esp32.bin etc.)
-DLSE_RELEASE_PATH = "DroneBridge_ESP32DLSE_100_Beta2/esp32c5_generic"
+# Recommended: You get it from the DLSE web interface, that way you are flashing a working config to all boards
+#                   Go to -> Save/Export Settings in the web interface of your ESP32 running DroneBridge DLSE
+PATH_SETTINGS_CSV = "DroneBridge_ESP32DLSE_BETA3/db_show_params.csv"
+# Path to the DLSE binaries (www.bin, db_esp32.bin etc.) -> Download & extract them from https://drone-bridge.com/dlse/
+DLSE_RELEASE_PATH = "DroneBridge_ESP32DLSE_BETA3/esp32c5_generic"
 
 
 
@@ -73,8 +78,8 @@ if path_to_settings_partition_bin is None:
 
 # 5. Flash the firmware with the settings to the ESP32
 # --------------
-# ToDo: Automate that step
-# Generate flashing table based on the addresses inside the flash_args.txt file.
+# ToDo: Generate flashing table based on the addresses inside the flash_args.txt file.
+#  THE SETTINGS BELOW ARE FOR ESP32-C5 & the DLSE BETA3 release only!
 address_binary_map = {
     0x2000: os.path.join(DLSE_RELEASE_PATH, 'bootloader.bin'),
     0x20000: os.path.join(DLSE_RELEASE_PATH, 'db_esp32.bin'),
@@ -83,4 +88,4 @@ address_binary_map = {
     0x3ac000: os.path.join(DLSE_RELEASE_PATH, 'www.bin'),
     0x9000: path_to_settings_partition_bin,
 }
-db_flash_binaries(ESP_SERIAL_PORT, address_binary_map, baud_rate=460800)
+db_flash_binaries(ESP_SERIAL_PORT, address_binary_map, baud_rate=ESP_SERIAL_PORT_FLASH_BAUD_RATE)
