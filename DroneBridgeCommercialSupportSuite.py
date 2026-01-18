@@ -111,7 +111,7 @@ def db_embed_license_in_settings_csv(_settings_csv_file_path: str, _license_file
         # Read all existing data
         rows = []
         with open(_settings_csv_file_path, 'r', newline='') as f:
-            reader = csv.reader(f)
+            reader = csv.reader(f, quotechar='#')
             rows = list(reader)
 
         license_namespace_header = ['license', 'namespace', '', '']
@@ -149,7 +149,7 @@ def db_embed_license_in_settings_csv(_settings_csv_file_path: str, _license_file
 
         # Write back to CSV file
         with open(output_file_path, 'w', newline='') as f:
-            writer = csv.writer(f)
+            writer = csv.writer(f, quotechar='#')
             writer.writerows(rows)
 
         print(f"✅ Created combined license and settings file: '{output_file_path}'")
@@ -378,14 +378,24 @@ def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_host
         print(f"Error: The file '{_csv_settings_file_path}' was not found.")
         return
 
+    comments = []
+    data_rows = []
+    fieldnames = None
+
     # Read the data from the CSV file
     try:
         with open(_csv_settings_file_path, 'r', newline='') as f:
-            # Using DictReader to easily access columns by key name
-            reader = csv.DictReader(f)
-            data = list(reader)
-            # Store the header separately to write it back later
-            header = reader.fieldnames
+            # We read the file line-by-line first
+            for line in f:
+                if line.lstrip().startswith('#'):
+                    comments.append(line)  # Store the comment line as-is
+                elif not fieldnames:
+                    # The first non-comment line is our header
+                    fieldnames = line.strip().split(',')
+                else:
+                    # Use DictReader logic for the data
+                    reader = csv.DictReader([line], fieldnames=fieldnames)
+                    data_rows.append(next(reader))
     except Exception as e:
         print(f"Error reading '{_csv_settings_file_path}': {e}")
         return
@@ -393,8 +403,11 @@ def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_host
     new_ip_octet = None
     original_hostname = None
 
+    ip_updated = False
+    hostname_updated = False
+
     # Find and update the IP address and hostname in the data
-    for row in data:
+    for row in data_rows:
         if row['key'] == 'ip_sta':
             if new_ip_octet is None:
                 # Increment IP by one
@@ -406,6 +419,7 @@ def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_host
                     row['value'] = '.'.join(ip_parts)
                     new_ip_octet = new_last_octet
                     print(f"Updated ip_sta to: {row['value']}")
+                    ip_updated = True
                 except (ValueError, IndexError) as e:
                     print(f"Could not parse IP address '{row['value']}': {e}")
                     return # Stop execution if IP is invalid
@@ -414,6 +428,7 @@ def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_host
                 row['value'] = new_ip
                 ip_parts = row['value'].split('.')
                 new_ip_octet = int(ip_parts[-1])
+                ip_updated = True
             else:
                 print(f"Given IP address '{new_ip}' is invalid. Skipping change of IP address.")
                 return
@@ -424,7 +439,7 @@ def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_host
 
 
     # Update the hostname using the new IP octet
-    for row in data:
+    for row in data_rows:
         if row['key'] == 'wifi_hostname':
             if new_hostname is None:
                 if new_ip_octet is not None and original_hostname is not None:
@@ -433,24 +448,33 @@ def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_host
                     base_hostname = ''.join(filter(str.isalpha, original_hostname))
                     row['value'] = f"{base_hostname}{new_ip_octet}"
                     print(f"Updated wifi_hostname to: {row['value']}")
+                    hostname_updated = True
                     break # Stop after updating
                 else:
                     print("Error setting wifi_hostname. New IP octet not set or original hostname not set.")
             else:
                 row['value'] = new_hostname
                 print(f"Updated wifi_hostname to: {row['value']}")
+                hostname_updated = True
                 break # Stop after updating
 
-    # Write the modified data back to the CSV file
-    try:
-        with open(_csv_settings_file_path, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=header)
-            writer.writeheader()
-            writer.writerows(data)
-        print(f"Successfully saved changes to '{_csv_settings_file_path}'.")
-    except Exception as e:
-        print(f"Error writing to '{_csv_settings_file_path}': {e}")
-        return
+    if not ip_updated and not hostname_updated:
+        print("ERROR: Did not update IP and hostname")
+    else:
+        # Write the modified data back to the CSV file
+        try:
+            with open(_csv_settings_file_path, 'w', newline='') as f:
+                # Write the comments back at the top
+                f.writelines(comments)
+
+                # Write the CSV data
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(data_rows)
+            print(f"Successfully saved changes to '{_csv_settings_file_path}'.")
+        except Exception as e:
+            print(f"Error writing to '{_csv_settings_file_path}': {e}")
+            return
 
 
 def db_api_add_custom_udp(_drone_bridge_url: str, _udp_client_target_ip: str, _udp_client_target_port: int, _save_udp_to_nvm=True) -> bool:

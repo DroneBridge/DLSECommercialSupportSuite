@@ -22,7 +22,7 @@ import argparse
 import os.path
 
 from DroneBridgeCommercialSupportSuite import db_get_activation_key, db_api_request_license_file, DBLicenseType, \
-    db_embed_license_in_settings_csv, db_parameters_generate_binary, db_flash_binaries
+    db_embed_license_in_settings_csv, db_parameters_generate_binary, db_flash_binaries, db_csv_update_parameters
 
 # ToDo: Update the parameters below to match your environment and account settings or use the command line arguments
 #  then run: python example_esp32_dlse_allinone_install.py --port COM22
