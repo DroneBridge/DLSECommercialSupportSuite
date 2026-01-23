@@ -31,7 +31,7 @@ from DroneBridgeCommercialSupportSuite import db_csv_update_parameters, db_param
 # 5. Generates settings partition from the changed .csv
 # 6. Flashes the new settings.bin via serial
 
-SETTINGS_CSV_FILE = 'parameters/db_show_params.csv'
+SETTINGS_CSV_FILE = 'DroneBridge_ESP32DLSE_BETA3/db_show_params.csv'
 
 # Manually set IP and hostname
 new_drone_ip = f"192.168.1.99"

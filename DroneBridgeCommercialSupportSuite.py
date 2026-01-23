@@ -26,12 +26,56 @@ import ipaddress
 import struct
 import subprocess
 import sys
-
+import tempfile
 import requests
+from datetime import datetime
 from urllib.parse import urljoin
 from enum import Enum
 from esptool import detect_chip
 from tqdm import tqdm
+from nvs_partition_tool.nvs_parser import NVS_Partition
+
+DLSE_SETTINGS_PARTITION_ADDRESS = 0x9000
+DLSE_SETTINGS_PARTITION_SIZE = 0x6000
+
+
+class DBLogger:
+    """
+    Singleton logger class for DroneBridge operations.
+    Ensures all logging from both user script and library functions goes to the same log file.
+    """
+    _instance = None
+    _log_file = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def create_log_file(self, log_dir_path: str, log_file_prefix="dlse_flashing_log") -> str:
+        """Set the log file path for this logger instance."""
+        os.makedirs(log_dir_path, exist_ok=True)
+        timestamp_file = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._log_file = os.path.join(log_dir_path, f"{log_file_prefix}_{timestamp_file}.log")
+        print(f"Created log file {self._log_file}")
+        return self._log_file
+
+    def log(self, message):
+        """Log a message with timestamp to console and file."""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        full_message = f"[{timestamp}] {message}"
+        print(full_message)
+        if self._log_file is None:
+            self.create_log_file("logs")
+        if self._log_file:
+            try:
+                with open(self._log_file, "a") as f:
+                    f.write(full_message + "\n")
+            except Exception as e:
+                print(f"Error writing to log file: {e}")
+        else:
+            print("Cannot log. No log file created by DBLogger")
+
 
 class DBLicenseType(Enum):
     TRIAL = 0
@@ -39,15 +83,200 @@ class DBLicenseType(Enum):
     ACTIVATED = 2
     EXPIRED = 3
 
+class DLSESupportedChips(Enum):
+    ESP32C3 = 5
+    ESP32C5 = 23
+    ESP32C6 = 13
+
+
+def db_is_dlse_lic_server_available(lic_server_address="https://drone-bridge.com/api/license/generate") -> bool:
+    logger = DBLogger()
+    try:
+        response = requests.get(lic_server_address, timeout=5)
+        if response.status_code < 500:
+            return True
+        else:
+            logger.log(f"❌ License server returned status code: {response.status_code}")
+            return False
+    except requests.RequestException as e:
+        logger.log(f"❌ License server not available: {e}")
+        return False
+
+def db_get_bin_folder(_chip_id: int):
+    logger = DBLogger()
+    # Folder names in the release binaries
+    DLSEBinFolderNames = {"C3_folder": "esp32c3_generic", "C5_folder": "esp32c5_generic",
+                          "C6_folder": "esp32c6_generic"}
+    if _chip_id == 5:
+        return DLSEBinFolderNames["C3_folder"]
+    elif _chip_id == 13:
+        return DLSEBinFolderNames["C5_folder"]
+    elif _chip_id == 23:
+        return DLSEBinFolderNames["C5_folder"]
+    else:
+        logger.log("db_get_bin_folder: error, unsupported chip id!")
+        return 0
+
+def db_get_dlse_lic_via_serial(_serial_port: str) -> str | None:
+    """Downloads the settings partition from ESP32 and extracts the license file.
+    Returns the path to the extracted license file or None if an error occurs."""
+    logger = DBLogger()
+
+    def progress_fn(data_len, length, offset):
+        print(f"{data_len} {length} {offset}")
+
+    esp = None
+    try:
+        # Connect to the ESP32
+        esp = detect_chip(_serial_port)
+        logger.log(f"Connected to {_serial_port}...")
+
+        # Read the settings partition from flash
+        logger.log(f"Reading settings partition at address 0x{DLSE_SETTINGS_PARTITION_ADDRESS:x}...")
+        partition_data = esp.read_flash(offset=DLSE_SETTINGS_PARTITION_ADDRESS, length=DLSE_SETTINGS_PARTITION_SIZE, progress_fn=progress_fn)
+
+        # Parse the NVS partition
+        nvs_partition = NVS_Partition("settings", bytearray(partition_data))
+
+        # Search for the license in namespace "license" with key "db_lic_key"
+        license_data = None
+        license_namespace_id = None
+
+        # First, find the namespace ID for "license"
+        for page in nvs_partition.pages:
+            if page.is_empty:
+                continue
+            for entry in page.entries:
+                if entry.state == "Written" and entry.metadata['type'] == 'uint8_t' and entry.key == "license":
+                    license_namespace_id = entry.metadata['namespace']
+                    break
+            if license_namespace_id is not None:
+                break
+
+        if license_namespace_id is None:
+            logger.log("❌ Error: 'license' namespace not found in NVS partition")
+            return None
+
+        # Now find the blob with key "db_lic_key" in that namespace
+        for page in nvs_partition.pages:
+            if page.is_empty:
+                continue
+            for entry in page.entries:
+                if (entry.state == "Written" and
+                    entry.metadata['namespace'] == license_namespace_id and
+                    entry.key == "db_lic_key" and
+                    entry.metadata['type'] == 'blob'):
+
+                    # Extract blob data from child entries
+                    blob_data = bytearray()
+                    for child in entry.children:
+                        blob_data += child.raw
+
+                    # Trim to actual size
+                    if entry.data and 'size' in entry.data:
+                        blob_data = blob_data[:entry.data['size']]
+
+                    license_data = bytes(blob_data)
+                    break
+            if license_data is not None:
+                break
+
+        if license_data is None:
+            logger.log("❌ Error: 'db_lic_key' blob not found in 'license' namespace")
+            return None
+
+        # Save the license file to a temporary location
+        temp_dir = tempfile.gettempdir()
+        license_file_path = os.path.join(temp_dir, "extracted_license.dlselic")
+
+        with open(license_file_path, 'wb') as f:
+            f.write(license_data)
+
+        logger.log(f"✅ License extracted successfully to: {license_file_path}")
+        # ToDo: Check validity of license file
+        return license_file_path
+
+    except Exception as e:
+        logger.log(f"❌ Error extracting license: {e}")
+        return None
+    finally:
+        if esp is not None:
+            esp._port.close()
+
+def db_get_esp32_chip_id(_serial_port: str) -> int | None:
+    """Connects to the ESP32 and gets the chip ID (tells us if it is a C3, C5 or C6 module).
+    Returns None if an error occurs."""
+    logger = DBLogger()
+    esp = None
+    chip_id = None
+    try:
+        esp = detect_chip(_serial_port)
+        print(f"Connected to {_serial_port}...")
+        try:
+            # Determine Chip ID (integer)
+            chip_id = esp.get_chip_id()
+        except Exception as e:
+            logger.log(f"Error getting chip ID: {e}")
+    except Exception as e:
+        print(f"Error getting chip ID: {e}")
+    finally:
+        if esp is not None:
+            esp._port.close()
+    return chip_id
+
+def db_create_address_binary_map(_esp_chip_id: int, _dlse_release_path: str,
+                                 _settings_partition_bin_path: str) -> dict | None:
+    """Creates the address to binary map based on flash_args.txt file.
+    Returns None if an error occurs."""
+    logger = DBLogger()
+    bin_folder = db_get_bin_folder(_esp_chip_id)
+    flash_args_path = os.path.join(_dlse_release_path, bin_folder, "flash_args.txt")
+
+    if not os.path.exists(flash_args_path):
+        logger.log(f"Error: flash_args.txt not found at {flash_args_path}")
+        return None
+
+    address_binary_map = {}
+    try:
+        with open(flash_args_path, 'r') as f:
+            content = f.read().strip()
+            # Split by whitespace and parse address-file pairs
+            parts = content.split()
+            i = 0
+            while i < len(parts):
+                part = parts[i]
+                # Check if this part is an address (starts with 0x)
+                if part.startswith('0x'):
+                    address = int(part, 16)
+                    # Next part should be the binary file
+                    if i + 1 < len(parts):
+                        binary_file_path = parts[i + 1]
+                        # Extract just the filename from the path
+                        binary_filename = os.path.basename(binary_file_path)
+                        address_binary_map[address] = os.path.join(_dlse_release_path, bin_folder, binary_filename)
+                        i += 2
+                    else:
+                        i += 1
+                else:
+                    i += 1
+        # Add settings partition at the end
+        address_binary_map[DLSE_SETTINGS_PARTITION_ADDRESS] = _settings_partition_bin_path
+        return address_binary_map
+    except Exception as e:
+        logger.log(f"Error parsing flash_args.txt: {e}")
+        return None
+
+
 def db_get_activation_key(_serial_port: str) -> str | None:
     """Connects to the ESP32 and calculates the activation key. Returns None if an error occurs."""
+    logger = DBLogger()
     activation_key = None
     esp = None
     try:
         # Connect to the ESP32
         # defaults: initial_baud=460800, trace_enabled=False, connect_mode='default_reset'
         esp = detect_chip(_serial_port)
-        print(f"Connecting to {_serial_port}...")
+        print(f"Connected to {_serial_port}...")
 
         # Read MAC Address
         mac = esp.read_mac()
@@ -63,7 +292,7 @@ def db_get_activation_key(_serial_port: str) -> str | None:
 
             # Read Chip ID (Type)
             chip_type = esp.get_chip_description()
-            print(f"Chip Type: {chip_type} ID: {chip_id} Rev: {chip_rev}")
+            logger.log(f"Chip Type: {chip_type} ID: {chip_id} Rev: {chip_rev}")
 
             # Use little-endian (<)
             # Ensure mac is bytes
@@ -73,10 +302,10 @@ def db_get_activation_key(_serial_port: str) -> str | None:
             activation_key = base64.b64encode(packed_data).decode('utf-8')
 
         except Exception as e:
-            print(f"Error calculating activation key: {e}")
+            logger.log(f"Error calculating activation key: {e}")
 
     except Exception as e:
-        print(f"Error: {e}")
+        logger.log(f"Error: {e}")
     finally:
         if esp is not None:
             esp._port.close()
@@ -92,12 +321,13 @@ def db_embed_license_in_settings_csv(_settings_csv_file_path: str, _license_file
     Entry format: db_lic_key,data,base64,<BASE64_LICENSE_CONTENT>
     Ensures 'license,namespace,,' header exists if adding new key.
     """
+    logger = DBLogger()
     if not os.path.exists(_settings_csv_file_path):
-        print(f"❌ Error: The file '{_settings_csv_file_path}' was not found.")
+        logger.log(f"❌ Error: The file '{_settings_csv_file_path}' was not found.")
         return None
 
     if not os.path.exists(_license_file_path):
-        print(f"❌ Error: The file '{_license_file_path}' was not found.")
+        logger.log(f"❌ Error: The file '{_license_file_path}' was not found.")
         return None
 
     try:
@@ -130,38 +360,34 @@ def db_embed_license_in_settings_csv(_settings_csv_file_path: str, _license_file
         if key_index != -1:
             # Update existing key
             rows[key_index] = license_key_row
-            print(f"Updated existing license key.")
+            logger.log(f"Updated existing license key.")
         else:
             # Key does not exist
             if not header_exists:
                 rows.append(license_namespace_header)
             rows.append(license_key_row)
-            print(f"Appended license key.")
+            logger.log(f"Appended license key.")
 
         # Determine output file path
         output_file_path = _settings_csv_file_path
         if create_new_file:
             base, ext = os.path.splitext(_settings_csv_file_path)
             output_file_path = f"{base}_lic_added{ext}"
-            print(f"Creating new settings file: '{output_file_path}'")
+            logger.log(f"Creating new settings file: '{output_file_path}'")
         else:
-            print(f"Updating existing settings file: '{output_file_path}'")
+            logger.log(f"Updating existing settings file: '{output_file_path}'")
 
         # Write back to CSV file
         with open(output_file_path, 'w', newline='') as f:
             writer = csv.writer(f, quotechar='#')
             writer.writerows(rows)
 
-        print(f"✅ Created combined license and settings file: '{output_file_path}'")
+        logger.log(f"✅ Created combined license and settings file: '{output_file_path}'")
         return output_file_path
 
     except Exception as e:
-        print(f"❌ Error updating '{_settings_csv_file_path}': {e}")
-        return False
-
-    except Exception as e:
-        print(f"❌ Error updating '{_settings_csv_file_path}': {e}")
-        return False
+        logger.log(f"❌ Error updating '{_settings_csv_file_path}': {e}")
+        return None
 
 
 def db_api_request_license_file(_activation_key: str, _token: str, _output_path="received_licenses/",
@@ -170,6 +396,7 @@ def db_api_request_license_file(_activation_key: str, _token: str, _output_path=
     """
     Requests the license file from the licensing server.
     """
+    logger = DBLogger()
     params = {
         "activationKey": _activation_key,
         "licenseType": _license_type.value,
@@ -180,7 +407,7 @@ def db_api_request_license_file(_activation_key: str, _token: str, _output_path=
     }
 
     try:
-        print(f"Requesting license from {base_url}...")
+        logger.log(f"Requesting license from {base_url}...")
         response = requests.get(base_url, params=params, headers=headers, stream=True)
 
         if response.status_code == 200:
@@ -197,14 +424,14 @@ def db_api_request_license_file(_activation_key: str, _token: str, _output_path=
             with open(filename, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
-            print(f"✅ License generated and saved to '{filename}'")
+            logger.log(f"✅ License generated and saved to '{filename}'")
             return filename
         else:
-            print(f"❌ Failed to generate license. Status Code: {response.status_code}")
-            print(f"Response: {response.text}")
+            logger.log(f"❌ Failed to generate license. Status Code: {response.status_code}")
+            logger.log(f"Response: {response.text}")
             return None
     except Exception as e:
-        print(f"❌ Error: {e}")
+        logger.log(f"❌ Error: {e}")
         return None
 
 def db_parameters_generate_binary(_path_to_settings_csv: str, partition_size="0x6000") -> str | None:
@@ -212,15 +439,16 @@ def db_parameters_generate_binary(_path_to_settings_csv: str, partition_size="0x
     Generates a NVS binary partition from the settings CSV file using the esp-idf-nvs-partition-gen tool.
     Returns the path to the generated .bin file or None if failed.
     """
+    logger = DBLogger()
     script_dir = os.path.dirname(os.path.abspath(__file__))
     nvs_tool_path = os.path.join(script_dir, "esp-idf-nvs-partition-gen", "esp_idf_nvs_partition_gen", "nvs_partition_gen.py")
 
     if not os.path.exists(nvs_tool_path):
-        print(f"❌ Error: NVS partition generator tool not found at '{nvs_tool_path}'")
+        logger.log(f"❌ Error: NVS partition generator tool not found at '{nvs_tool_path}'")
         return None
 
     if not os.path.exists(_path_to_settings_csv):
-        print(f"❌ Error: Input CSV file '{_path_to_settings_csv}' not found")
+        logger.log(f"❌ Error: Input CSV file '{_path_to_settings_csv}' not found")
         return None
 
     output_bin = os.path.splitext(_path_to_settings_csv)[0] + ".bin"
@@ -234,20 +462,20 @@ def db_parameters_generate_binary(_path_to_settings_csv: str, partition_size="0x
         partition_size
     ]
 
-    print(f"Generating binary from '{_path_to_settings_csv}'...")
+    logger.log(f"Generating binary from '{_path_to_settings_csv}'...")
     try:
         # Run the script and capture output
         result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         print(result.stdout)
-        print(f"✅ Successfully created '{output_bin}'")
+        logger.log(f"✅ Successfully created '{output_bin}'")
         return output_bin
     except subprocess.CalledProcessError as e:
-        print(f"❌ Error generating binary: {e}")
-        print("STDOUT:", e.stdout)
-        print("STDERR:", e.stderr)
+        logger.log(f"❌ Error generating binary: {e}")
+        logger.log("STDOUT:", e.stdout)
+        logger.log("STDERR:", e.stderr)
         return None
     except Exception as e:
-        print(f"❌ Error executing NVS tool: {e}")
+        logger.log(f"❌ Error executing NVS tool: {e}")
         return None
 
 def db_flash_binaries(serial_port: str, address_binary_map: dict, baud_rate=460800) -> bool:
@@ -259,14 +487,15 @@ def db_flash_binaries(serial_port: str, address_binary_map: dict, baud_rate=4608
     :param baud_rate: Baud rate for flashing (default 460800)
     :return: True if successful, False otherwise
     """
+    logger = DBLogger()
     if not address_binary_map:
-        print("Error: No binaries provided for flashing.")
+        logger.log("Error: No binaries provided for flashing.")
         return False
 
     # Verify files exist
     for addr, path in address_binary_map.items():
         if not os.path.exists(path):
-            print(f"Error: File not found '{path}' for address {addr}")
+            logger.log(f"Error: File not found '{path}' for address {addr}")
             return False
 
     cmd = [
@@ -283,17 +512,17 @@ def db_flash_binaries(serial_port: str, address_binary_map: dict, baud_rate=4608
         cmd.append(str(address))
         cmd.append(file_path)
 
-    print(f"Starting flash operation on {serial_port}...")
+    logger.log(f"Starting flash operation on {serial_port}...")
     try:
         # Using subprocess to isolate esptool execution
         subprocess.run(cmd, check=True)
-        print("✅ Flashing completed successfully!")
+        logger.log("✅ Flashing completed successfully!")
         return True
     except subprocess.CalledProcessError as e:
-        print(f"❌ Flashing failed with error code {e.returncode}")
+        logger.log(f"❌ Flashing failed with error code {e.returncode}")
         return False
     except Exception as e:
-        print(f"❌ An error occurred: {e}")
+        logger.log(f"❌ An error occurred: {e}")
         return False
 
 class FileWithProgress(object):
@@ -345,13 +574,14 @@ def upload_binary_file_with_progress(file_path, url):
     """
     Loads a binary file and posts it to a URL with a progress bar.
     """
+    logger = DBLogger()
     try:
         with FileWithProgress(file_path, None) as data: # The callback is now handled internally
             response = requests.post(url, data=data)
             response.raise_for_status()
             return response
     except Exception as e:
-        print(f"\n❌ Upload failed: {e}")
+        logger.log(f"\n❌ Upload failed: {e}")
         raise
 
 
@@ -367,16 +597,18 @@ def validate_ip(ip_string: str) -> bool:
         return False
 
 
-def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_hostname=None):
+def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_hostname=None) -> bool:
     """
     Reads the CSV, increments the IP and hostname by one if no new_ip or new_hostname are given
     Else it takes the new_ip or new_hostname.
     Saves the file.
     Updated .csv file can be used to generate a new settings.bin (partition) that can be flashed via serial.
+    Returns True if successful, False otherwise.
     """
+    logger = DBLogger()
     if not os.path.exists(_csv_settings_file_path):
-        print(f"Error: The file '{_csv_settings_file_path}' was not found.")
-        return
+        logger.log(f"Error: The file '{_csv_settings_file_path}' was not found.")
+        return False
 
     comments = []
     data_rows = []
@@ -397,8 +629,8 @@ def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_host
                     reader = csv.DictReader([line], fieldnames=fieldnames)
                     data_rows.append(next(reader))
     except Exception as e:
-        print(f"Error reading '{_csv_settings_file_path}': {e}")
-        return
+        logger.log(f"Error reading '{_csv_settings_file_path}': {e}")
+        return False
 
     new_ip_octet = None
     original_hostname = None
@@ -418,11 +650,11 @@ def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_host
                     ip_parts[-1] = str(new_last_octet)
                     row['value'] = '.'.join(ip_parts)
                     new_ip_octet = new_last_octet
-                    print(f"Updated ip_sta to: {row['value']}")
+                    logger.log(f"Updated ip_sta to: {row['value']}")
                     ip_updated = True
                 except (ValueError, IndexError) as e:
-                    print(f"Could not parse IP address '{row['value']}': {e}")
-                    return # Stop execution if IP is invalid
+                    logger.log(f"Could not parse IP address '{row['value']}': {e}")
+                    return False # Stop execution if IP is invalid
             elif validate_ip(new_ip):
                 # Use given IP
                 row['value'] = new_ip
@@ -430,8 +662,8 @@ def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_host
                 new_ip_octet = int(ip_parts[-1])
                 ip_updated = True
             else:
-                print(f"Given IP address '{new_ip}' is invalid. Skipping change of IP address.")
-                return
+                logger.log(f"Given IP address '{new_ip}' is invalid. Skipping change of IP address.")
+                return False
 
         if row['key'] == 'wifi_hostname':
             # Store the original hostname to modify it after finding the new IP octet
@@ -447,19 +679,20 @@ def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_host
                     # A more robust way would be to strip old numbers if they exist.
                     base_hostname = ''.join(filter(str.isalpha, original_hostname))
                     row['value'] = f"{base_hostname}{new_ip_octet}"
-                    print(f"Updated wifi_hostname to: {row['value']}")
+                    logger.log(f"Updated wifi_hostname to: {row['value']}")
                     hostname_updated = True
                     break # Stop after updating
                 else:
-                    print("Error setting wifi_hostname. New IP octet not set or original hostname not set.")
+                    logger.log("Error setting wifi_hostname. New IP octet not set or original hostname not set.")
             else:
                 row['value'] = new_hostname
-                print(f"Updated wifi_hostname to: {row['value']}")
+                logger.log(f"Updated wifi_hostname to: {row['value']}")
                 hostname_updated = True
                 break # Stop after updating
 
     if not ip_updated and not hostname_updated:
-        print("ERROR: Did not update IP and hostname")
+        logger.log("ERROR: Did not update IP and hostname")
+        return False
     else:
         # Write the modified data back to the CSV file
         try:
@@ -471,10 +704,11 @@ def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_host
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(data_rows)
-            print(f"Successfully saved changes to '{_csv_settings_file_path}'.")
+            logger.log(f"Successfully saved changes to '{_csv_settings_file_path}'.")
+            return True
         except Exception as e:
-            print(f"Error writing to '{_csv_settings_file_path}': {e}")
-            return
+            logger.log(f"Error writing to '{_csv_settings_file_path}': {e}")
+            return False
 
 
 def db_api_add_custom_udp(_drone_bridge_url: str, _udp_client_target_ip: str, _udp_client_target_port: int, _save_udp_to_nvm=True) -> bool:
@@ -614,3 +848,108 @@ def db_api_ota_perform_app_update_with_progress(_drone_bridge_url, _path_app_fil
     except requests.exceptions.RequestException as e:
         print(f"\n❌ Upload failed: {e}")
         return False
+
+
+def db_merge_user_parameters_with_release(_user_csv_path: str, _release_path: str) -> str | None:
+    """
+    Merges user parameter values into the release parameter file.
+    Takes parameter values from the user's CSV and copies them into a copy of the release CSV.
+    Detects and reports missing or obsolete parameters.
+
+    :param _user_csv_path: Path to the user's parameter CSV file
+    :param _release_path: Path to the release root directory (e.g., "DroneBridge_ESP32DLSE_BETA3")
+    :return: Path to the merged CSV file or None if an error occurs
+    """
+    logger = DBLogger()
+    release_csv_path = os.path.join(_release_path, "db_show_params.csv")
+
+    # Verify both files exist
+    if not os.path.exists(_user_csv_path):
+        logger.log(f"❌ Error: User parameter file '{_user_csv_path}' not found.")
+        return None
+
+    if not os.path.exists(release_csv_path):
+        logger.log(f"❌ Error: Release parameter file '{release_csv_path}' not found.")
+        return None
+
+    try:
+        # Read user parameters
+        user_params = {}
+        user_namespaces = []
+        with open(_user_csv_path, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                key = row.get('key', '').strip()
+                if row.get('type', '').strip() == 'namespace':
+                    user_namespaces.append(key)
+                else:
+                    user_params[key] = row
+
+        # Read release parameters
+        release_params = {}
+        release_rows = []
+        release_namespaces = []
+        with open(release_csv_path, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            for row in reader:
+                key = row.get('key', '').strip()
+                if row.get('type', '').strip() == 'namespace':
+                    release_namespaces.append(key)
+                release_params[key] = row
+                release_rows.append(row)
+
+        # Detect parameter differences
+        user_keys = set(user_params.keys())
+        release_keys = set(release_params.keys())
+
+        missing_in_user = release_keys - user_keys
+        obsolete_in_user = user_keys - release_keys
+
+        # Report differences
+        if missing_in_user:
+            logger.log(f"⚠️  Warning: {len(missing_in_user)} parameter(s) are specified in release settings file but not found/set in the file you provided:")
+            logger.log(f"    Check and add these parameters to your settings file with the desired values. Otherwise the firmware will assume the default parameter value which may lead to unexpected behavior!")
+            for key in sorted(missing_in_user):
+                if key:  # Skip empty keys
+                    logger.log(f"   - {key}")
+
+        if obsolete_in_user:
+            logger.log(f"⚠️  Warning: {len(obsolete_in_user)} parameter(s) are specified in your settings file are not found in release settings file:")
+            logger.log(f"    These parameters likely became obsolete in the newer release or you have made an error in your settings file.")
+            for key in sorted(obsolete_in_user):
+                if key:  # Skip empty keys
+                    logger.log(f"   - {key}")
+
+        if not missing_in_user and not obsolete_in_user:
+            logger.log("✅ User parameters match release parameters perfectly.")
+
+        # Create merged CSV: Start with release structure, update with user values
+        merged_rows = []
+        for row in release_rows:
+            key = row.get('key', '').strip()
+            if key in user_params:
+                # Use user's value for this parameter
+                merged_row = row.copy()
+                merged_row['value'] = user_params[key].get('value', '')
+                merged_rows.append(merged_row)
+            else:
+                # Keep release default
+                merged_rows.append(row)
+
+        # Create output filename
+        base, ext = os.path.splitext(_user_csv_path)
+        output_path = f"{base}_merged{ext}"
+
+        # Write merged CSV
+        with open(output_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(merged_rows)
+
+        logger.log(f"✅ Created merged parameter file: '{output_path}'")
+        return output_path
+
+    except Exception as e:
+        logger.log(f"❌ Error merging parameters: {e}")
+        return None
