@@ -16,7 +16,7 @@ dependencies = [
   "requests>=2.32.5",
   "esptool>=5.1.0",
   "tqdm>=4.67.1",
-  "cryptography>=46.0.1", # Required for esp-idf-nvs-partition-gen
+  "cryptography>=46.0.1",
   "mavsdk>=3.10.2",
   "pymavlink>=2.4.49",
 ]

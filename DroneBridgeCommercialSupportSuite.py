@@ -27,16 +27,23 @@ import struct
 import subprocess
 import sys
 import tempfile
+
+import esptool
 import requests
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import serialization
+from cryptography.exceptions import InvalidSignature
 from datetime import datetime
 from urllib.parse import urljoin
 from enum import Enum
-from esptool import detect_chip
 from tqdm import tqdm
 from nvs_partition_tool.nvs_parser import NVS_Partition
 
-DLSE_SETTINGS_PARTITION_ADDRESS = 0x9000
-DLSE_SETTINGS_PARTITION_SIZE = 0x6000
+DLSE_LICENSE_FOLDER = "received_licenses/" # Location of all received license files. Stored locally here
+
+DLSE_SETTINGS_PARTITION_ADDRESS = 0x9000 # Do not change
+DLSE_SETTINGS_PARTITION_SIZE = 0x6000 # Do not change
 
 
 class DBLogger:
@@ -69,7 +76,7 @@ class DBLogger:
             self.create_log_file("logs")
         if self._log_file:
             try:
-                with open(self._log_file, "a") as f:
+                with open(self._log_file, "a", encoding='utf-8') as f:
                     f.write(full_message + "\n")
             except Exception as e:
                 print(f"Error writing to log file: {e}")
@@ -88,12 +95,41 @@ class DLSESupportedChips(Enum):
     ESP32C5 = 23
     ESP32C6 = 13
 
+def db_get_dlse_lic_from_local_storage(activation_key: str, local_lic_folder=DLSE_LICENSE_FOLDER) -> str | None:
+    """
+    If we already have the license offline in the DLSE_LICENSE_FOLDER we can get it from there.
+    Returns the path to the extracted license file or None if an error occurs.
+    """
+    logger = DBLogger()
+
+    if not os.path.exists(local_lic_folder):
+        logger.log(f"❌ License folder '{local_lic_folder}' does not exist.")
+        return None
+
+    # Construct the expected license filename
+    license_filename = f"{activation_key}.dlselic"
+    license_file_path = os.path.join(local_lic_folder, license_filename)
+
+    if not os.path.exists(license_file_path):
+        logger.log(f"❌ License file not found in local storage: {license_file_path}")
+        return None
+
+    # Validate the license
+    is_valid, license_info = db_dlse_validate_license(license_file_path, match_activation_key=activation_key)
+    if not is_valid:
+        logger.log(f"❌ License file found in local storage, but it is invalid: {license_file_path}")
+        return None
+
+    logger.log(f"✅ Found valid license in local storage: {license_file_path}")
+    return license_file_path
+
 
 def db_is_dlse_lic_server_available(lic_server_address="https://drone-bridge.com/api/license/generate") -> bool:
     logger = DBLogger()
     try:
         response = requests.get(lic_server_address, timeout=5)
         if response.status_code < 500:
+            logger.log(f"✅ License server is reachable")
             return True
         else:
             logger.log(f"❌ License server returned status code: {response.status_code}")
@@ -117,23 +153,67 @@ def db_get_bin_folder(_chip_id: int):
         logger.log("db_get_bin_folder: error, unsupported chip id!")
         return 0
 
+def db_check_release_binaries_present(_dlse_release_path: str) -> bool:
+    """
+    Checks if the DroneBridge release binaries are present for all supported chip types.
+    Verifies that the necessary subfolders exist and contain the flash_args.txt file.
+
+    :param _dlse_release_path: Path to the DLSE release root directory
+    :return: True if all required binaries are present, False otherwise
+    """
+    logger = DBLogger()
+
+    if not os.path.exists(_dlse_release_path):
+        logger.log(f"❌ Release path '{_dlse_release_path}' does not exist.")
+        return False
+
+    # Check for db_show_params.csv in the release root
+    params_csv = os.path.join(_dlse_release_path, "db_show_params.csv")
+    if not os.path.exists(params_csv):
+        logger.log(f"❌ Missing db_show_params.csv in release folder '{_dlse_release_path}'.")
+        return False
+
+    # Check all supported chip folders
+    all_folders_present = True
+    for chip in DLSESupportedChips:
+        bin_folder = db_get_bin_folder(chip.value)
+        if bin_folder == 0:
+            continue
+
+        bin_folder_path = os.path.join(_dlse_release_path, bin_folder)
+        flash_args_path = os.path.join(bin_folder_path, "flash_args.txt")
+
+        if not os.path.exists(bin_folder_path):
+            logger.log(f"❌ Missing binary folder for {chip.name}: '{bin_folder_path}'")
+            all_folders_present = False
+        elif not os.path.exists(flash_args_path):
+            logger.log(f"❌ Missing flash_args.txt in '{bin_folder_path}'")
+            all_folders_present = False
+        else:
+            logger.log(f"    Found binaries for {chip.name} in '{bin_folder_path}'")
+
+    if all_folders_present:
+        logger.log(f"  ✅ All required release binaries are present in '{_dlse_release_path}'")
+
+    return all_folders_present
+
+
 def db_get_dlse_lic_via_serial(_serial_port: str) -> str | None:
     """Downloads the settings partition from ESP32 and extracts the license file.
     Returns the path to the extracted license file or None if an error occurs."""
     logger = DBLogger()
 
-    def progress_fn(data_len, length, offset):
-        print(f"{data_len} {length} {offset}")
-
-    esp = None
     try:
         # Connect to the ESP32
-        esp = detect_chip(_serial_port)
-        logger.log(f"Connected to {_serial_port}...")
-
-        # Read the settings partition from flash
-        logger.log(f"Reading settings partition at address 0x{DLSE_SETTINGS_PARTITION_ADDRESS:x}...")
-        partition_data = esp.read_flash(offset=DLSE_SETTINGS_PARTITION_ADDRESS, length=DLSE_SETTINGS_PARTITION_SIZE, progress_fn=progress_fn)
+        with esptool.detect_chip(_serial_port) as esp:
+            esp.connect()
+            esp = esptool.run_stub(esp)  # Run the stub loader (optional)
+            esptool.attach_flash(esp)  # Attach the flash memory chip, required for flash operations
+            esptool.flash_id(esp)  # Print information about the flash chip
+            logger.log(f"Connected to {_serial_port}...")
+            # Read the settings partition from flash
+            logger.log(f"Reading settings partition at address 0x{DLSE_SETTINGS_PARTITION_ADDRESS:x}...")
+            partition_data = esptool.read_flash(esp, DLSE_SETTINGS_PARTITION_ADDRESS, DLSE_SETTINGS_PARTITION_SIZE, output=None)
 
         # Parse the NVS partition
         nvs_partition = NVS_Partition("settings", bytearray(partition_data))
@@ -148,13 +228,13 @@ def db_get_dlse_lic_via_serial(_serial_port: str) -> str | None:
                 continue
             for entry in page.entries:
                 if entry.state == "Written" and entry.metadata['type'] == 'uint8_t' and entry.key == "license":
-                    license_namespace_id = entry.metadata['namespace']
+                    license_namespace_id = entry.data['value']
                     break
             if license_namespace_id is not None:
                 break
 
         if license_namespace_id is None:
-            logger.log("❌ Error: 'license' namespace not found in NVS partition")
+            logger.log("❌ Error: Namespace 'license' not found in NVS partition. Maybe the ESP32 was not activated yet?")
             return None
 
         # Now find the blob with key "db_lic_key" in that namespace
@@ -165,7 +245,7 @@ def db_get_dlse_lic_via_serial(_serial_port: str) -> str | None:
                 if (entry.state == "Written" and
                     entry.metadata['namespace'] == license_namespace_id and
                     entry.key == "db_lic_key" and
-                    entry.metadata['type'] == 'blob'):
+                    entry.metadata['type'] == 'blob_data'):
 
                     # Extract blob data from child entries
                     blob_data = bytearray()
@@ -182,7 +262,7 @@ def db_get_dlse_lic_via_serial(_serial_port: str) -> str | None:
                 break
 
         if license_data is None:
-            logger.log("❌ Error: 'db_lic_key' blob not found in 'license' namespace")
+            logger.log("❌ Error: 'db_lic_key' not found in 'license' namespace")
             return None
 
         # Save the license file to a temporary location
@@ -193,15 +273,93 @@ def db_get_dlse_lic_via_serial(_serial_port: str) -> str | None:
             f.write(license_data)
 
         logger.log(f"✅ License extracted successfully to: {license_file_path}")
-        # ToDo: Check validity of license file
+        if not db_dlse_validate_license(license_file_path):
+            logger.log(f"❌ Error license is invalid: {license_file_path}")
+            return None
+
         return license_file_path
 
     except Exception as e:
         logger.log(f"❌ Error extracting license: {e}")
         return None
-    finally:
-        if esp is not None:
-            esp._port.close()
+
+def db_dlse_validate_license(license_file: str, match_activation_key=None) -> tuple[bool, dict | None]:
+    """
+    Verifies the signature of a license file using the public key.
+
+    Supply match_activation_key as base64 encoded activation key to check if the license is valid for that specific activation key
+    """
+    def load_public_key(public_key_file="resources/pubkey_DLSE.pem"):
+        """Loads a public key from a file."""
+        try:
+            with open(public_key_file, "rb") as key_file:
+                _public_key = serialization.load_pem_public_key(key_file.read())
+        except FileNotFoundError:
+            print(f"❌ Public key not found at {public_key_file}")
+            return None
+        return _public_key
+
+    logger = DBLogger()
+    logger.log("Validating license...")
+    public_key = load_public_key()
+    if not public_key:
+        return False, None
+
+    with open(license_file, "rb") as f:
+        license_data = f.read()
+
+    # The last 512 bytes are the signature, before that are 4 bytes for the license type
+    # and 8 bytes for the timestamp. The rest is the activation key.
+    activation_key_len = len(license_data) - 512 - 4 - 8
+    if activation_key_len <= 0:
+        logger.log("❌ Invalid license file format.")
+        return False, None
+
+    # Unpack the license data to get the signature and the data that was signed
+    try:
+        activation_key, license_type, valid_till_timestamp, signature = struct.unpack(
+            f"<{activation_key_len}sIq512s", license_data
+        )
+    except struct.error:
+        logger.log("❌ Could not unpack license data. The file may be corrupt.")
+        return False, None
+
+    # Reconstruct the original data that was signed
+    data_to_verify = struct.pack(f"<{activation_key_len}sIq", activation_key, license_type, valid_till_timestamp)
+
+    # Verify the signature
+    try:
+        public_key.verify(
+            signature,
+            data_to_verify,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH
+            ),
+            hashes.SHA256()
+        )
+        logger.log("✅ License signature is valid.")
+        license_info = {
+            "activation_key_b64": base64.b64encode(activation_key).decode('utf-8'),
+            "license_type": license_type,
+            "valid_till": valid_till_timestamp,
+            "data_to_verify": base64.b64encode(data_to_verify)
+        }
+        # Additional check if the license is assigned to the specified activation key if provided as a parameter
+        if match_activation_key is not None:
+            if base64.b64encode(activation_key).decode('utf-8') != match_activation_key:
+                logger.log(f"❌ License verification failed since license is not assigned to the activation key {match_activation_key}")
+                return False, license_info
+            else:
+                logger.log(f"✅ License matches activation key {match_activation_key}")
+
+        return True, license_info
+    except InvalidSignature:
+        logger.log("❌ License signature is invalid.")
+        return False, None
+    except Exception as e:
+        logger.log(f"❌ Error during verification of the DLSE license file: {e}")
+        return False, None
 
 def db_get_esp32_chip_id(_serial_port: str) -> int | None:
     """Connects to the ESP32 and gets the chip ID (tells us if it is a C3, C5 or C6 module).
@@ -210,7 +368,7 @@ def db_get_esp32_chip_id(_serial_port: str) -> int | None:
     esp = None
     chip_id = None
     try:
-        esp = detect_chip(_serial_port)
+        esp = esptool.detect_chip(_serial_port)
         print(f"Connected to {_serial_port}...")
         try:
             # Determine Chip ID (integer)
@@ -275,7 +433,7 @@ def db_get_activation_key(_serial_port: str) -> str | None:
     try:
         # Connect to the ESP32
         # defaults: initial_baud=460800, trace_enabled=False, connect_mode='default_reset'
-        esp = detect_chip(_serial_port)
+        esp = esptool.detect_chip(_serial_port)
         print(f"Connected to {_serial_port}...")
 
         # Read MAC Address
@@ -390,7 +548,7 @@ def db_embed_license_in_settings_csv(_settings_csv_file_path: str, _license_file
         return None
 
 
-def db_api_request_license_file(_activation_key: str, _token: str, _output_path="received_licenses/",
+def db_api_request_license_file(_activation_key: str, _token: str, _output_path=DLSE_LICENSE_FOLDER,
                                 _license_type=DBLicenseType.ACTIVATED, _validity_days=0,
                                 base_url="https://drone-bridge.com/api/license/generate") -> str | None:
     """
@@ -597,12 +755,30 @@ def validate_ip(ip_string: str) -> bool:
         return False
 
 
-def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_hostname=None) -> bool:
+def db_csv_update_parameters(_csv_settings_file_path: str, _index: int, new_ip=None, new_hostname=None, new_ssid_ap=None) -> bool:
     """
-    Reads the CSV, increments the IP and hostname by one if no new_ip or new_hostname are given
-    Else it takes the new_ip or new_hostname.
+    Reads the CSV given with _csv_settings_file_path
+    If new_ip is None and ip_sta parameter is not empty:
+        Updates the last octet if the ip_sta parameter to the given _index: ip_sta=192.168.50.3 if _index was 3
+    else if ip_sta parameter is not empty:
+        Sets ip_sta to new_ip
+
+     If new_hostname is None:
+        Appends/Updates the hostname parameter with _index: wifi_hostname=Drone -> wifi_hostname=Drone3
+    else:
+        Sets wifi_hostname to new_hostname
+
+    If new_ssid_ap is None:
+        Appends/Updates the ssid_ap parameter with _index: ssid_ap=SSIDDrone34 -> ssid_ap=SSIDDrone3
+    else:
+        Sets ssid_ap to new_ssid_ap
+
+    The given _index will overwrite existing numbers at the end of the parameter value
+
+    In case the static IP or hostname are not configured in the csv given by _csv_settings_file_path this will be skipped.
     Saves the file.
-    Updated .csv file can be used to generate a new settings.bin (partition) that can be flashed via serial.
+    Validates IPv4 addresses to prevent wrong configuration.
+
     Returns True if successful, False otherwise.
     """
     logger = DBLogger()
@@ -632,66 +808,77 @@ def db_csv_update_parameters(_csv_settings_file_path: str, new_ip=None, new_host
         logger.log(f"Error reading '{_csv_settings_file_path}': {e}")
         return False
 
-    new_ip_octet = None
-    original_hostname = None
-
     ip_updated = False
     hostname_updated = False
+    ssid_ap_updated = False
 
-    # Find and update the IP address and hostname in the data
+    # Update parameters according to documentation
     for row in data_rows:
         if row['key'] == 'ip_sta':
-            if new_ip_octet is None:
-                # Increment IP by one
-                try:
-                    ip_parts = row['value'].split('.')
-                    last_octet = int(ip_parts[-1])
-                    new_last_octet = last_octet + 1
-                    ip_parts[-1] = str(new_last_octet)
-                    row['value'] = '.'.join(ip_parts)
-                    new_ip_octet = new_last_octet
-                    logger.log(f"Updated ip_sta to: {row['value']}")
-                    ip_updated = True
-                except (ValueError, IndexError) as e:
-                    logger.log(f"Could not parse IP address '{row['value']}': {e}")
-                    return False # Stop execution if IP is invalid
+            if new_ip is None:
+                if validate_ip(row['value']):
+                    # Update last octet to _index
+                    try:
+                        ip_parts = row['value'].split('.')
+                        ip_parts[-1] = str(_index)
+                        _ip_val = '.'.join(ip_parts)
+                        if validate_ip(_ip_val):
+                            row['value'] = _ip_val
+                            logger.log(f"Updated ip_sta to: {row['value']}")
+                            ip_updated = True
+                        else:
+                            logger.log(f"Proposed new static IP address '{_ip_val}' is invalid.")
+                            return False
+                    except (ValueError, IndexError) as e:
+                        logger.log(f"Could not parse IP address '{row['value']}': {e}")
+                        return False
+                else:
+                    logger.log("Skipping update of ip_sta since it is not set in the settings or the initially given IP address is not valid.")
+                    ip_updated = False
             elif validate_ip(new_ip):
                 # Use given IP
                 row['value'] = new_ip
-                ip_parts = row['value'].split('.')
-                new_ip_octet = int(ip_parts[-1])
+                logger.log(f"Updated ip_sta to: {row['value']}")
                 ip_updated = True
             else:
-                logger.log(f"Given IP address '{new_ip}' is invalid. Skipping change of IP address.")
+                logger.log(f"Given IP address '{new_ip}' is invalid.")
                 return False
 
-        if row['key'] == 'wifi_hostname':
-            # Store the original hostname to modify it after finding the new IP octet
-            original_hostname = row['value']
-
-
-    # Update the hostname using the new IP octet
-    for row in data_rows:
-        if row['key'] == 'wifi_hostname':
+        elif row['key'] == 'wifi_hostname':
             if new_hostname is None:
-                if new_ip_octet is not None and original_hostname is not None:
-                    # This logic assumes the base hostname doesn't end in numbers.
-                    # A more robust way would be to strip old numbers if they exist.
-                    base_hostname = ''.join(filter(str.isalpha, original_hostname))
-                    row['value'] = f"{base_hostname}{new_ip_octet}"
-                    logger.log(f"Updated wifi_hostname to: {row['value']}")
-                    hostname_updated = True
-                    break # Stop after updating
-                else:
-                    logger.log("Error setting wifi_hostname. New IP octet not set or original hostname not set.")
+                # Strip existing numbers from the end and append _index
+                original_value = row['value']
+                base_hostname = original_value.rstrip('0123456789')
+                row['value'] = f"{base_hostname}{_index}"
+                logger.log(f"Updated wifi_hostname to: {row['value']}")
+                hostname_updated = True
             else:
                 row['value'] = new_hostname
                 logger.log(f"Updated wifi_hostname to: {row['value']}")
                 hostname_updated = True
-                break # Stop after updating
 
-    if not ip_updated and not hostname_updated:
-        logger.log("ERROR: Did not update IP and hostname")
+        elif row['key'] == 'ssid_ap':
+            if new_ssid_ap is None:
+                # Strip existing numbers from the end and append _index
+                original_value = row['value']
+                base_ssid = original_value.rstrip('0123456789')
+                row['value'] = f"{base_ssid}{_index}"
+                logger.log(f"Updated ssid_ap to: {row['value']}")
+                ssid_ap_updated = True
+            else:
+                row['value'] = new_ssid_ap
+                logger.log(f"Updated ssid_ap to: {row['value']}")
+                ssid_ap_updated = True
+
+    if not ip_updated:
+        logger.log("⚠️ Did not update ip_sta")
+    if not ssid_ap_updated:
+        logger.log("⚠️ Did not update ssid_ap")
+    if not hostname_updated:
+        logger.log("⚠️ Did not update wifi_hostname")
+
+    if not ip_updated and not hostname_updated and not ssid_ap_updated:
+        logger.log("ERROR: Did not update any parameters")
         return False
     else:
         # Write the modified data back to the CSV file
@@ -850,7 +1037,7 @@ def db_api_ota_perform_app_update_with_progress(_drone_bridge_url, _path_app_fil
         return False
 
 
-def db_merge_user_parameters_with_release(_user_csv_path: str, _release_path: str) -> str | None:
+def db_csv_merge_user_parameters_with_release(_user_csv_path: str, _release_path: str) -> str | None:
     """
     Merges user parameter values into the release parameter file.
     Takes parameter values from the user's CSV and copies them into a copy of the release CSV.
@@ -877,10 +1064,17 @@ def db_merge_user_parameters_with_release(_user_csv_path: str, _release_path: st
         user_params = {}
         user_namespaces = []
         with open(_user_csv_path, 'r', newline='') as f:
-            reader = csv.DictReader(f)
+            # Read all lines and filter out comments and empty lines
+            all_lines = f.readlines()
+            non_comment_lines = [line for line in all_lines if line.strip() and not line.lstrip().startswith('#')]
+
+            reader = csv.DictReader(non_comment_lines)
             for row in reader:
-                key = row.get('key', '').strip()
-                if row.get('type', '').strip() == 'namespace':
+                if not row: continue
+                key = (row.get('key') or '').strip()
+                if not key: continue
+
+                if (row.get('type') or '').strip() == 'namespace':
                     user_namespaces.append(key)
                 else:
                     user_params[key] = row
@@ -890,13 +1084,21 @@ def db_merge_user_parameters_with_release(_user_csv_path: str, _release_path: st
         release_rows = []
         release_namespaces = []
         with open(release_csv_path, 'r', newline='') as f:
-            reader = csv.DictReader(f)
+            # Read all lines and filter out comments and empty lines
+            all_lines = f.readlines()
+            non_comment_lines = [line for line in all_lines if line.strip() and not line.lstrip().startswith('#')]
+
+            reader = csv.DictReader(non_comment_lines)
             fieldnames = reader.fieldnames
             for row in reader:
-                key = row.get('key', '').strip()
-                if row.get('type', '').strip() == 'namespace':
+                if not row: continue
+                key = (row.get('key') or '').strip()
+                if not key: continue
+
+                if (row.get('type') or '').strip() == 'namespace':
                     release_namespaces.append(key)
-                release_params[key] = row
+                else:
+                    release_params[key] = row
                 release_rows.append(row)
 
         # Detect parameter differences
@@ -908,7 +1110,7 @@ def db_merge_user_parameters_with_release(_user_csv_path: str, _release_path: st
 
         # Report differences
         if missing_in_user:
-            logger.log(f"⚠️  Warning: {len(missing_in_user)} parameter(s) are specified in release settings file but not found/set in the file you provided:")
+            logger.log(f"⚠️  Warning: {len(missing_in_user)} parameter(s) are used by the downloaded release but not found/set in the file you provided:")
             logger.log(f"    Check and add these parameters to your settings file with the desired values. Otherwise the firmware will assume the default parameter value which may lead to unexpected behavior!")
             for key in sorted(missing_in_user):
                 if key:  # Skip empty keys
@@ -916,7 +1118,7 @@ def db_merge_user_parameters_with_release(_user_csv_path: str, _release_path: st
 
         if obsolete_in_user:
             logger.log(f"⚠️  Warning: {len(obsolete_in_user)} parameter(s) are specified in your settings file are not found in release settings file:")
-            logger.log(f"    These parameters likely became obsolete in the newer release or you have made an error in your settings file.")
+            logger.log(f"    These parameters likely became obsolete in the release or you have made an error in your settings file. They will be ignored. Consider removing them from your settings file.")
             for key in sorted(obsolete_in_user):
                 if key:  # Skip empty keys
                     logger.log(f"   - {key}")
@@ -927,7 +1129,7 @@ def db_merge_user_parameters_with_release(_user_csv_path: str, _release_path: st
         # Create merged CSV: Start with release structure, update with user values
         merged_rows = []
         for row in release_rows:
-            key = row.get('key', '').strip()
+            key = (row.get('key') or '').strip()
             if key in user_params:
                 # Use user's value for this parameter
                 merged_row = row.copy()
