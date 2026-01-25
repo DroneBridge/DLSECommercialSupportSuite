@@ -36,11 +36,12 @@ SETTINGS_CSV_FILE = 'DroneBridge_ESP32DLSE_BETA3/db_show_params.csv'
 # Manually set IP and hostname
 new_drone_ip = f"192.168.1.99"
 new_drone_hostname = f"Drone99"
+new_ssid_ap = "Drone99AP"
 # Updates a .csv with a different IP and hostname that can be used to generate a settings.bin for flashing settings
-# db_csv_update_parameters(SETTINGS_CSV_FILE, new_ip=new_drone_ip, new_hostname=new_drone_hostname)
+# db_csv_update_parameters(SETTINGS_CSV_FILE, None, new_ip=new_drone_ip, new_hostname=new_drone_hostname, new_ssid_ap=new_ssid_ap)
 # SETTINGS_BIN_FILE_PATH = db_parameters_generate_binary(SETTINGS_CSV_FILE)
 
-# Update the .csv file with the new IP and hostname
+# Update the .csv file with the new IP and hostname and ap_ssid all ending with 55
 # Auto increment the IP and hostname by not providing new_ip or new_hostname as parameters (i.e., hostname will be Drone100)
-db_csv_update_parameters(SETTINGS_CSV_FILE)
+db_csv_update_parameters(SETTINGS_CSV_FILE, 55)
 SETTINGS_BIN_FILE_PATH = db_parameters_generate_binary(SETTINGS_CSV_FILE)

@@ -146,7 +146,7 @@ def db_get_bin_folder(_chip_id: int):
     if _chip_id == 5:
         return DLSEBinFolderNames["C3_folder"]
     elif _chip_id == 13:
-        return DLSEBinFolderNames["C5_folder"]
+        return DLSEBinFolderNames["C6_folder"]
     elif _chip_id == 23:
         return DLSEBinFolderNames["C5_folder"]
     else:
