@@ -122,7 +122,7 @@ def main():
             time.sleep(2.0)  # Allow time for device initialization
             _esp_chip_id = db_get_esp32_chip_id(port)
 
-            if _esp_chip_id is not None and _esp_chip_id in DLSESupportedChips:
+            if _esp_chip_id is not None and _esp_chip_id in [c.value for c in DLSESupportedChips]:
                 ESP_SERIAL_PORT = port
                 logger.log(f"Valid chip ID {_esp_chip_id} found on {ESP_SERIAL_PORT}. Starting process...")
 
