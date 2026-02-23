@@ -27,9 +27,13 @@ import struct
 import subprocess
 import sys
 import tempfile
+import socket
+import select
+import time
 
 import esptool
 import requests
+from pymavlink import mavutil
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import serialization
@@ -1155,3 +1159,108 @@ def db_csv_merge_user_parameters_with_release(_user_csv_path: str, _release_path
     except Exception as e:
         logger.log(f"❌ Error merging parameters: {e}")
         return None
+
+
+# ToDo: Add script that acts just like the export button in the webinterface. Generating a settings .csv from the current config using the REST:API
+
+def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2) -> list:
+    """
+    Scans the network for ESP32-C3, ESP32-C5, and ESP32-C6 devices.
+    Uses UDP broadcast to discover devices and requests AUTOPILOT_VERSION.
+    Returns a list of dictionaries containing device info.
+    """
+    logger = DBLogger()
+    found_devices = []
+    try:
+        network = ipaddress.ip_network(subnet_mask, strict=False)
+        broadcast_address = str(network.broadcast_address)
+    except ValueError as e:
+        logger.log(f"Invalid subnet mask: {e}")
+        return []
+
+    logger.log(f"Scanning network {network} (Broadcast: {broadcast_address}) for ESP32 devices...")
+
+    # Create UDP socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.setblocking(False)
+    
+    # Bind to an ephemeral port to receive replies
+    try:
+        sock.bind(('0.0.0.0', 0))
+    except Exception as e:
+        logger.log(f"Error binding socket: {e}")
+        return []
+
+    # Initialize MAVLink instance for encoding/decoding
+    # We use the class directly to avoid creating a full connection object
+    # We assume MAVLink v2 is desired/supported
+    os.environ['MAVLINK20'] = '1' 
+    mav = mavutil.mavlink.MAVLink(file=None, srcSystem=255)
+
+    # 1. Create Heartbeat message to trigger responses
+    hb_msg = mav.heartbeat_encode(
+        mavutil.mavlink.MAV_TYPE_GCS,
+        mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+        0, 0, 0
+    )
+    hb_buf = hb_msg.pack(mav)
+    
+    # 2. Create Request Autopilot Version message
+    # Target System 0 (Broadcast), Component 0 (Broadcast)
+    req_msg = mav.command_long_encode(
+        0, 0,
+        mavutil.mavlink.MAV_CMD_REQUEST_MESSAGE,
+        0,
+        148, # MAVLINK_MSG_ID_AUTOPILOT_VERSION
+        0, 0, 0, 0, 0, 0
+    )
+    req_buf = req_msg.pack(mav)
+
+    # Send to broadcast address on TARGET_PORT (14555)
+    target_port = 14555
+    try:
+        sock.sendto(hb_buf, (broadcast_address, target_port))
+        sock.sendto(req_buf, (broadcast_address, target_port))
+    except Exception as e:
+        logger.log(f"Error sending broadcast: {e}")
+        sock.close()
+        return []
+
+    # Listen for responses
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        ready = select.select([sock], [], [], 0.1)
+        if ready[0]:
+            try:
+                data, addr = sock.recvfrom(4096)
+                # Decode MAVLink
+                msgs = mav.parse_buffer(data)
+                if msgs:
+                    for msg in msgs:
+                        sys_id = msg.get_srcSystem()
+                        comp_id = msg.get_srcComponent()
+                        
+                        # Check if we already found this device
+                        device_key = (addr[0], sys_id, comp_id)
+                        existing = next((d for d in found_devices if d['key'] == device_key), None)
+                        
+                        if not existing:
+                            existing = {'key': device_key, 'ip': addr[0], 'sys_id': sys_id, 'comp_id': comp_id}
+                            found_devices.append(existing)
+                        
+                        if msg.get_type() == 'HEARTBEAT':
+                            existing['mav_type'] = msg.type
+                            existing['autopilot'] = msg.autopilot
+                        elif msg.get_type() == 'AUTOPILOT_VERSION':
+                            existing['board_version'] = msg.board_version
+                            existing['product_id'] = msg.product_id
+                            
+            except Exception as e:
+                # Ignore parsing errors
+                pass
+                
+    sock.close()
+    
+    logger.log(f"Found {len(found_devices)} devices.")
+    return found_devices

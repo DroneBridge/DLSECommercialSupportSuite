@@ -178,7 +178,7 @@ def main():
                     beep_failure()
                     continue
 
-                # ToDo: Add your custom scripts here to change other parameters in the settings by updating merged_csv_path
+                # ToDo: Add your custom scripts here to change other parameters in the settings by updating the .csv file located at merged_csv_path
 
                 # Embed the license within the settings.csv file
                 # --------------
