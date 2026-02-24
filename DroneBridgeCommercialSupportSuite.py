@@ -1,6 +1,6 @@
 # MIT License
 #
-# Copyright (c) 2025 Wolfgang Christl
+# Copyright (c) 2026 Wolfgang Christl & foremost systems UG (haftungsbeschränkt)
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -1163,7 +1163,7 @@ def db_csv_merge_user_parameters_with_release(_user_csv_path: str, _release_path
 
 # ToDo: Add script that acts just like the export button in the webinterface. Generating a settings .csv from the current config using the REST:API
 
-def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2) -> list:
+def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2, esp32_broadcast_port=14555, local_brcst_port=14550) -> list:
     """
     Scans the network for ESP32-C3, ESP32-C5, and ESP32-C6 devices.
     Uses UDP broadcast to discover devices and requests AUTOPILOT_VERSION.
@@ -1187,7 +1187,7 @@ def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2) -> list:
     
     # Bind to an ephemeral port to receive replies
     try:
-        sock.bind(('0.0.0.0', 0))
+        sock.bind(('0.0.0.0', local_brcst_port))
     except Exception as e:
         logger.log(f"Error binding socket: {e}")
         return []
@@ -1195,7 +1195,7 @@ def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2) -> list:
     # Initialize MAVLink instance for encoding/decoding
     # We use the class directly to avoid creating a full connection object
     # We assume MAVLink v2 is desired/supported
-    os.environ['MAVLINK20'] = '1' 
+    os.environ['MAVLINK20'] = '0'
     mav = mavutil.mavlink.MAVLink(file=None, srcSystem=255)
 
     # 1. Create Heartbeat message to trigger responses
@@ -1217,8 +1217,8 @@ def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2) -> list:
     )
     req_buf = req_msg.pack(mav)
 
-    # Send to broadcast address on TARGET_PORT (14555)
-    target_port = 14555
+    # Send to broadcast address on TARGET_PORT (esp32_broadcast_port)
+    target_port = esp32_broadcast_port
     try:
         sock.sendto(hb_buf, (broadcast_address, target_port))
         sock.sendto(req_buf, (broadcast_address, target_port))
@@ -1262,5 +1262,5 @@ def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2) -> list:
                 
     sock.close()
     
-    logger.log(f"Found {len(found_devices)} devices.")
+    logger.log(f"Found {len(found_devices)} ESP32 (DLSE) devices.")
     return found_devices

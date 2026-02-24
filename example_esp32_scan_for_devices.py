@@ -18,28 +18,10 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-
-
-import time
-from DroneBridgeCommercialSupportSuite import db_api_ota_perform_www_update, \
-    db_api_ota_perform_app_update_with_progress, db_scan_for_esp32_devices
-
-# Script calls to update the firmware over the air (OTA) - Settings remain unchanged after OTA update
-PATH_WWW_FILE = r"DroneBridge_ESP32DLSE_100_Beta4\DroneBridge_ESP32DLSE_BETA4\esp32c6_generic\www.bin"
-PATH_APP_FILE = r"DroneBridge_ESP32DLSE_100_Beta4\DroneBridge_ESP32DLSE_BETA4\esp32c6_generic\db_esp32.bin"
+from DroneBridgeCommercialSupportSuite import db_scan_for_esp32_devices
 
 if __name__ == "__main__":
     # Scan IP address range 192.168.1.0 to 192.168.1.255 for ESP32 devices
-    # esp32_broadcast_port is the port we send the broadcast to -> Check the DLSE configuration
-    # local_brcst_port is the port we listen for the response from the ESP32 -> Check the DLSE configuration
     detected_devices = db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=3, esp32_broadcast_port=14555, local_brcst_port=14550)
     for esp32_dlse_device in detected_devices:
-        URL_ESP32 = f"http://{esp32_dlse_device['ip']}/"
-        # Update the web-interface first since it will not reboot - give it the path to the www.bin
-        db_api_ota_perform_www_update(URL_ESP32, PATH_WWW_FILE)
-        # Give it some time to process the change
-        time.sleep(2)
-        # Update the application - give it the path to the db_esp32.bin -> This will trigger a reboot of the ESP32
-        db_api_ota_perform_app_update_with_progress(URL_ESP32, PATH_APP_FILE)
-
-    print("Done updating all ESP32s")
+        print(esp32_dlse_device)
