@@ -33,10 +33,9 @@ The suite includes several example scripts demonstrating different functionaliti
 
 ### Examples on individual functions
 
-*   **`example_esp32_dlse_allinone_install.py`**: A comprehensive script that derives the activation key, requests a license, embeds it into settings, generates a partition binary, and flashes the firmware. **Update `MY_SECRET_TOKEN` and `ESP_SERIAL_PORT` before running.**
 *   **`example_esp32_get_license.py`**: Standalone script to request a license file using an activation key.
 *   **`example_params_update_flash.py`**: Demonstrates how to update configuration parameters (like IP and Hostname) in the CSV and flash them.
-*   **`example_esp32_ota_update.py`**: Performs an Over-The-Air (OTA) firmware update for a range of IP addresses.
+*   **`example_esp32_ota_update.py`**: Performs an Over-The-Air (OTA) firmware update for all detected ESP32 DLSE devices. Turn off Skybrush Live to allow port binding by the script
 *   **`example_esp32_download_log.py`** & **`example_esp32_download_log_MAVSDK.py`**: Examples for downloading logs from the flight controller via the ESP32 bridge.
 
 ### Example

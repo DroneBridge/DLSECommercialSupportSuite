@@ -29,6 +29,8 @@ PATH_WWW_FILE = r"DroneBridge_ESP32DLSE_100_Beta4\DroneBridge_ESP32DLSE_BETA4\es
 PATH_APP_FILE = r"DroneBridge_ESP32DLSE_100_Beta4\DroneBridge_ESP32DLSE_BETA4\esp32c6_generic\db_esp32.bin"
 
 if __name__ == "__main__":
+    # --> TURN OFF SKYBRUSH LIVE
+
     # Scan IP address range 192.168.1.0 to 192.168.1.255 for ESP32 devices
     # esp32_broadcast_port is the port we send the broadcast to -> Check the DLSE configuration
     # local_brcst_port is the port we listen for the response from the ESP32 -> Check the DLSE configuration

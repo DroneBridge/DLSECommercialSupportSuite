@@ -21,6 +21,8 @@
 from DroneBridgeCommercialSupportSuite import db_scan_for_esp32_devices
 
 if __name__ == "__main__":
+    # --> TURN OFF SKYBRUSH LIVE
+
     # Scan IP address range 192.168.1.0 to 192.168.1.255 for ESP32 devices
     detected_devices = db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=3, esp32_broadcast_port=14555, local_brcst_port=14550)
     for esp32_dlse_device in detected_devices:
