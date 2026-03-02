@@ -1274,10 +1274,46 @@ def db_csv_merge_user_parameters_with_release(_user_csv_path: str, _release_path
 
 # ToDo: Add script that acts just like the export button in the webinterface. Generating a settings .csv from the current config using the REST:API
 
-def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2, esp32_broadcast_port=14555, local_brcst_port=14550) -> list:
+FIRMWARE_VERSION_TYPES = {
+    0:   "dev",
+    64:  "alpha",
+    128: "beta",
+    192: "rc",
+    255: "official",
+}
+
+def decode_flight_sw_version(flight_sw_version):
+    major       = (flight_sw_version >> 24) & 0xFF
+    minor       = (flight_sw_version >> 16) & 0xFF
+    patch       = (flight_sw_version >>  8) & 0xFF
+    release_num = (flight_sw_version >>  0) & 0xFF
+
+    # Release type is the base value (e.g. 128 = beta 1, 129 = beta 2)
+    base_type   = (release_num // 64) * 64
+    release_idx = release_num - base_type
+    type_str    = FIRMWARE_VERSION_TYPES.get(base_type, f"unknown(0x{base_type:02X})")
+
+    version_str = f"{major}.{minor}.{patch}-{type_str}"
+    if release_idx > 0:
+        version_str += f".{release_idx}"  # e.g. 1.2.3-beta.1
+
+    return {
+        'major':       major,
+        'minor':       minor,
+        'patch':       patch,
+        'release_num': release_num,
+        'type':        type_str,
+        'version_str': version_str,
+    }
+
+def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2, esp32_broadcast_port=14555, local_brcst_port=14550, _beta_4_support=True) -> list:
     """
     Scans the network for ESP32-C3, ESP32-C5, and ESP32-C6 devices.
     Uses UDP broadcast to discover devices and requests AUTOPILOT_VERSION.
+    Only lists devices with comp_id=240, vendor_id=0xDB32 and product_id=2.
+
+    _beta_4_support set to True: Skips check for vendor_id and product_id to be able to detect devices running versions earlier than DLSE BETA5
+
     Returns a list of dictionaries containing device info.
     """
     logger = DBLogger()
@@ -1295,7 +1331,7 @@ def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2, esp32_bro
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.setblocking(False)
-    
+
     # Bind to an ephemeral port to receive replies
     try:
         sock.bind(('0.0.0.0', local_brcst_port))
@@ -1304,8 +1340,6 @@ def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2, esp32_bro
         return []
 
     # Initialize MAVLink instance for encoding/decoding
-    # We use the class directly to avoid creating a full connection object
-    # We assume MAVLink v2 is desired/supported
     os.environ['MAVLINK20'] = '0'
     mav = mavutil.mavlink.MAVLink(file=None, srcSystem=255)
 
@@ -1316,23 +1350,22 @@ def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2, esp32_bro
         0, 0, 0
     )
     hb_buf = hb_msg.pack(mav)
-    
+
     # 2. Create Request Autopilot Version message
     # Target System 0 (Broadcast), Component 0 (Broadcast)
     req_msg = mav.command_long_encode(
         0, 0,
         mavutil.mavlink.MAV_CMD_REQUEST_MESSAGE,
         0,
-        148, # MAVLINK_MSG_ID_AUTOPILOT_VERSION
+        148,  # MAVLINK_MSG_ID_AUTOPILOT_VERSION
         0, 0, 0, 0, 0, 0
     )
     req_buf = req_msg.pack(mav)
 
-    # Send to broadcast address on TARGET_PORT (esp32_broadcast_port)
-    target_port = esp32_broadcast_port
+    # Send to broadcast address
     try:
-        sock.sendto(hb_buf, (broadcast_address, target_port))
-        sock.sendto(req_buf, (broadcast_address, target_port))
+        sock.sendto(hb_buf, (broadcast_address, esp32_broadcast_port))
+        sock.sendto(req_buf, (broadcast_address, esp32_broadcast_port))
     except Exception as e:
         logger.log(f"Error sending broadcast: {e}")
         sock.close()
@@ -1345,33 +1378,45 @@ def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2, esp32_bro
         if ready[0]:
             try:
                 data, addr = sock.recvfrom(4096)
-                # Decode MAVLink
                 msgs = mav.parse_buffer(data)
                 if msgs:
                     for msg in msgs:
-                        sys_id = msg.get_srcSystem()
+                        if msg.get_type() != 'AUTOPILOT_VERSION':
+                            continue
+
                         comp_id = msg.get_srcComponent()
-                        
-                        # Check if we already found this device
+                        if comp_id != 240:
+                            continue
+
+                        if not _beta_4_support:
+                            # Skip this check to be able to detect devices running versions earlier than DLSE BETA5
+                            if msg.vendor_id != 0xDB32 or msg.product_id != 2:
+                                continue
+
+                        sys_id     = msg.get_srcSystem()
                         device_key = (addr[0], sys_id, comp_id)
-                        existing = next((d for d in found_devices if d['key'] == device_key), None)
-                        
-                        if not existing:
-                            existing = {'key': device_key, 'ip': addr[0], 'sys_id': sys_id, 'comp_id': comp_id}
-                            found_devices.append(existing)
-                        
-                        if msg.get_type() == 'HEARTBEAT':
-                            existing['mav_type'] = msg.type
-                            existing['autopilot'] = msg.autopilot
-                        elif msg.get_type() == 'AUTOPILOT_VERSION':
-                            existing['board_version'] = msg.board_version
-                            existing['product_id'] = msg.product_id
-                            
-            except Exception as e:
-                # Ignore parsing errors
+
+                        # Skip if already found
+                        if any(d['key'] == device_key for d in found_devices):
+                            continue
+
+                        found_devices.append({
+                            'key':                device_key,
+                            'ip':                 addr[0],
+                            'sys_id':             sys_id,
+                            'comp_id':            comp_id,
+                            'middleware_sw_version': msg.middleware_sw_version, # Build Version
+                            'os_sw_version':       msg.os_sw_version, # CHIP_ID
+                            'board_version':      msg.board_version,
+                            'vendor_id':          msg.vendor_id,
+                            'product_id':         msg.product_id,
+                            'flight_sw_version':  decode_flight_sw_version(msg.flight_sw_version),
+                        })
+
+            except Exception:
                 pass
-                
+
     sock.close()
-    
+
     logger.log(f"Found {len(found_devices)} ESP32 (DLSE) devices.")
     return found_devices

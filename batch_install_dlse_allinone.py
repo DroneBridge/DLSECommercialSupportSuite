@@ -49,7 +49,7 @@ DLSE_RELEASE_PATH = "DroneBridge_ESP32DLSE_BETA4"
 LOG_DIR = "logs"
 START_DEVICE_ID = 18  # Starting ID for iterating over static IP, hostname index and ap_name with every flashing operation
 
-USE_CMD_LINE_ESPTOOL = True # Set to true if you encounter connection issues with the serial port. This maybe more stable.
+USE_CMD_LINE_ESPTOOL = False # Set to true if you encounter connection issues with the serial port. This maybe more stable.
 
 def main():
     global MY_SECRET_TOKEN, ESP_SERIAL_PORT_FLASH_BAUD_RATE, PATH_SETTINGS_CSV, DLSE_RELEASE_PATH, LOG_DIR, START_DEVICE_ID, USE_CMD_LINE_ESPTOOL
