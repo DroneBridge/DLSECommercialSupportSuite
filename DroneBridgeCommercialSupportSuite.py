@@ -111,7 +111,9 @@ def db_get_dlse_lic_from_local_storage(activation_key: str, local_lic_folder=DLS
         return None
 
     # Construct the expected license filename
-    license_filename = f"{activation_key}.dlselic"
+    # Escape path unsafe character "/" with "_"
+    safe_filename = activation_key.replace("/", "_")
+    license_filename = f"{safe_filename}.dlselic"
     license_file_path = os.path.join(local_lic_folder, license_filename)
 
     if not os.path.exists(license_file_path):
@@ -533,8 +535,10 @@ def db_embed_license_in_settings_csv(_settings_csv_file_path: str, _license_file
         # Determine output file path
         output_file_path = _settings_csv_file_path
         if create_new_file:
+            temp_dir = tempfile.gettempdir()
             base, ext = os.path.splitext(_settings_csv_file_path)
-            output_file_path = f"{base}_lic_added{ext}"
+            output_file_name = f"settings_with_lic_added{ext}"
+            output_file_path = os.path.join(temp_dir, output_file_name)
             logger.log(f"Creating new settings file: '{output_file_path}'")
         else:
             logger.log(f"Updating existing settings file: '{output_file_path}'")
@@ -557,6 +561,7 @@ def db_api_request_license_file(_activation_key: str, _token: str, _output_path=
                                 base_url="https://drone-bridge.com/api/license/generate") -> str | None:
     """
     Requests the license file from the licensing server.
+    Returns a path safe file name where all "/" characters are changed to "_"
     """
     logger = DBLogger()
     params = {
@@ -582,12 +587,14 @@ def db_api_request_license_file(_activation_key: str, _token: str, _output_path=
 
             if _output_path:
                 os.makedirs(_output_path, exist_ok=True)
-            filename = os.path.join(_output_path, filename)
-            with open(filename, 'wb') as f:
+            # Make file name path safe! BASE64 may contain "/" characters that need to be escaped by replacing them with "_"
+            safe_filename = filename.replace("/", "_")
+            safe_filename = os.path.join(_output_path, safe_filename)
+            with open(safe_filename, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
-            logger.log(f"✅ License generated and saved to '{filename}'")
-            return filename
+            logger.log(f"✅ License generated and saved to '{safe_filename}'")
+            return safe_filename
         else:
             logger.log(f"❌ Failed to generate license. Status Code: {response.status_code}")
             logger.log(f"Response: {response.text}")
@@ -1145,7 +1152,8 @@ def db_csv_merge_user_parameters_with_release(_user_csv_path: str, _release_path
 
         # Create output filename
         base, ext = os.path.splitext(_user_csv_path)
-        output_path = f"{base}_merged{ext}"
+        temp_dir = tempfile.gettempdir()
+        output_path = os.path.join(temp_dir, f"merged_settings{ext}")
 
         # Write merged CSV
         with open(output_path, 'w', newline='') as f:

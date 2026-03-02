@@ -43,9 +43,9 @@ ESP_SERIAL_PORT_FLASH_BAUD_RATE = 460800
 # The path to the settings.csv file that comes with every release you may modify it by adding your own parameter values first
 # Recommended: You get it from the DLSE web interface, that way you are flashing a working config to all boards
 #                   Go to -> Save/Export Settings in the web interface of your ESP32 running DroneBridge DLSE
-PATH_SETTINGS_CSV = "DroneBridge_ESP32DLSE_BETA3/db_show_params.csv"
+PATH_SETTINGS_CSV = "DroneBridge_ESP32DLSE_BETA4/db_show_params.csv"
 # Path to the DLSE release root directory -> Download & extract them from https://drone-bridge.com/dlse/
-DLSE_RELEASE_PATH = "DroneBridge_ESP32DLSE_BETA3"
+DLSE_RELEASE_PATH = "DroneBridge_ESP32DLSE_BETA4"
 LOG_DIR = "logs"
 START_DEVICE_ID = 18  # Starting ID for iterating over static IP, hostname index and ap_name with every flashing operation
 
