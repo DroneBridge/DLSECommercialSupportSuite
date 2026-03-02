@@ -49,9 +49,10 @@ DLSE_RELEASE_PATH = "DroneBridge_ESP32DLSE_BETA4"
 LOG_DIR = "logs"
 START_DEVICE_ID = 18  # Starting ID for iterating over static IP, hostname index and ap_name with every flashing operation
 
+USE_CMD_LINE_ESPTOOL = True # Set to true if you encounter connection issues with the serial port. This maybe more stable.
 
 def main():
-    global MY_SECRET_TOKEN, ESP_SERIAL_PORT_FLASH_BAUD_RATE, PATH_SETTINGS_CSV, DLSE_RELEASE_PATH, LOG_DIR, START_DEVICE_ID
+    global MY_SECRET_TOKEN, ESP_SERIAL_PORT_FLASH_BAUD_RATE, PATH_SETTINGS_CSV, DLSE_RELEASE_PATH, LOG_DIR, START_DEVICE_ID, USE_CMD_LINE_ESPTOOL
     # Parse command line arguments. These will overwrite the config above if set.
     parser = argparse.ArgumentParser(description='Install DroneBridge DLSE on ESP32.')
     parser.add_argument('--release-folder', required=False, type=str,
@@ -120,7 +121,7 @@ def main():
         for port in new_ports:
             logger.log(f"New device detected on {port}")
             time.sleep(2.0)  # Allow time for device initialization
-            _esp_chip_id = db_get_esp32_chip_id(port)
+            _esp_chip_id = db_get_esp32_chip_id(port, ESP_SERIAL_PORT_FLASH_BAUD_RATE, _use_cmd_line_tool=USE_CMD_LINE_ESPTOOL)
 
             if _esp_chip_id is not None and _esp_chip_id in [c.value for c in DLSESupportedChips]:
                 ESP_SERIAL_PORT = port
@@ -128,7 +129,7 @@ def main():
 
                 # Derive the activation key from the ESP32 that is attached via the serial port
                 # --------------
-                activation_key = db_get_activation_key(ESP_SERIAL_PORT)
+                activation_key = db_get_activation_key(ESP_SERIAL_PORT, ESP_SERIAL_PORT_FLASH_BAUD_RATE, _use_cmd_line_tool=USE_CMD_LINE_ESPTOOL)
                 if activation_key is None:
                     logger.log("❌ Failed to get activation key. Please check the logs for more information.")
                     beep_failure()
@@ -145,7 +146,7 @@ def main():
                     if _license_file_path is None:
                         # Try to read the license file from the esp via the serial port and store it locally for later
                         logger.log("  No fitting license file found locally. Trying to read the license from the ESP32 via serial...")
-                        _license_file_path = db_get_dlse_lic_via_serial(ESP_SERIAL_PORT)
+                        _license_file_path = db_get_dlse_lic_via_serial(ESP_SERIAL_PORT, ESP_SERIAL_PORT_FLASH_BAUD_RATE, _use_cmd_line_tool=USE_CMD_LINE_ESPTOOL)
                         if _license_file_path is None:
                             logger.log(
                                 "❌ Something went wrong with reading the license file from the ESP32. ABORTING flashing sequence to prevent loss of potentially activated ESP32")

@@ -30,6 +30,7 @@ import tempfile
 import socket
 import select
 import time
+import re
 
 import esptool
 import requests
@@ -204,22 +205,39 @@ def db_check_release_binaries_present(_dlse_release_path: str) -> bool:
     return all_folders_present
 
 
-def db_get_dlse_lic_via_serial(_serial_port: str) -> str | None:
+def db_get_dlse_lic_via_serial(_serial_port: str, _baud: int, _use_cmd_line_tool=False) -> str | None:
     """Downloads the settings partition from ESP32 and extracts the license file.
     Returns the path to the extracted license file or None if an error occurs."""
     logger = DBLogger()
 
     try:
         # Connect to the ESP32
-        with esptool.detect_chip(_serial_port) as esp:
-            esp.connect()
-            esp = esptool.run_stub(esp)  # Run the stub loader (optional)
-            esptool.attach_flash(esp)  # Attach the flash memory chip, required for flash operations
-            esptool.flash_id(esp)  # Print information about the flash chip
-            logger.log(f"Connected to {_serial_port}...")
-            # Read the settings partition from flash
-            logger.log(f"Reading settings partition at address 0x{DLSE_SETTINGS_PARTITION_ADDRESS:x}...")
-            partition_data = esptool.read_flash(esp, DLSE_SETTINGS_PARTITION_ADDRESS, DLSE_SETTINGS_PARTITION_SIZE, output=None)
+        if not _use_cmd_line_tool:
+            with esptool.detect_chip(_serial_port, baud=_baud) as esp:
+                esp.connect()
+                esp = esptool.run_stub(esp)  # Run the stub loader (optional)
+                esptool.attach_flash(esp)  # Attach the flash memory chip, required for flash operations
+                esptool.flash_id(esp)  # Print information about the flash chip
+                logger.log(f"Connected to {_serial_port}...")
+                # Read the settings partition from flash
+                logger.log(f"Reading settings partition at address 0x{DLSE_SETTINGS_PARTITION_ADDRESS:x}...")
+                partition_data = esptool.read_flash(esp, DLSE_SETTINGS_PARTITION_ADDRESS, DLSE_SETTINGS_PARTITION_SIZE, output=None)
+        else:
+            temp_settings_part_file = os.path.join(tempfile.gettempdir(), "read_settings_partition.bin")
+            cmd = [
+                sys.executable, "-m", "esptool",
+                "--port", _serial_port,
+                "--baud", str(_baud),
+                "read-flash",
+                str(DLSE_SETTINGS_PARTITION_ADDRESS),
+                str(DLSE_SETTINGS_PARTITION_SIZE),
+                temp_settings_part_file
+            ]
+            subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT)
+            partition_data = None
+            with open(temp_settings_part_file, 'rb') as f:
+                partition_data = f.read()
+            os.remove(temp_settings_part_file)
 
         # Parse the NVS partition
         nvs_partition = NVS_Partition("settings", bytearray(partition_data))
@@ -367,25 +385,53 @@ def db_dlse_validate_license(license_file: str, match_activation_key=None) -> tu
         logger.log(f"❌ Error during verification of the DLSE license file: {e}")
         return False, None
 
-def db_get_esp32_chip_id(_serial_port: str) -> int | None:
-    """Connects to the ESP32 and gets the chip ID (tells us if it is a C3, C5 or C6 module).
-    Returns None if an error occurs."""
+def db_get_esp32_chip_id(_serial_port: str, _baud_rate: int, _use_cmd_line_tool=False) -> int | None:
+    """
+    Connects to the ESP32 and gets the chip ID (tells us if it is a C3, C5 or C6 module).
+    Returns None if an error occurs.
+    If _use_cmd_line_tool is set, then the specified commandline esptool.py is used to detect the chip_id.
+    This maybe more robust in some cases but generally not needed.
+    """
     logger = DBLogger()
     esp = None
     chip_id = None
-    try:
-        esp = esptool.detect_chip(_serial_port)
-        print(f"Connected to {_serial_port}...")
+    if not _use_cmd_line_tool:
+        # Use the standard way with the embedded pyhon library to detect the chip id
         try:
-            # Determine Chip ID (integer)
-            chip_id = esp.get_chip_id()
+            esp = esptool.detect_chip(_serial_port, baud=_baud_rate)
+            print(f"Connected to {_serial_port}...")
+            try:
+                # Determine Chip ID (integer)
+                chip_id = esp.get_chip_id()
+            except Exception as e:
+                logger.log(f"Error getting chip ID: {e}")
         except Exception as e:
-            logger.log(f"Error getting chip ID: {e}")
-    except Exception as e:
-        print(f"Error getting chip ID: {e}")
-    finally:
-        if esp is not None:
-            esp._port.close()
+            print(f"Error getting chip ID: {e}")
+        finally:
+            if esp is not None:
+                esp._port.close()
+    else:
+        # Use the specified commandline esptool.py to detect the chip id
+        try:
+            # Run the command
+            cmd = [
+                sys.executable, "-m", "esptool",
+                "--port", _serial_port,
+                "--baud", str(_baud_rate),
+                "chip-id",
+            ]
+            output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT)
+            output_str = output.decode('utf-8')
+            if "ESP32-C3" in output_str:
+                chip_id = DLSESupportedChips.ESP32C3.value
+            elif "ESP32-C5" in output_str:
+                chip_id = DLSESupportedChips.ESP32C5.value
+            elif "ESP32-C6" in output_str:
+                chip_id = DLSESupportedChips.ESP32C6.value
+            else:
+                print(f"Unknown Chip ID using command line tool")
+        except Exception as e:
+            print(f"Error getting chip ID: {e}")
     return chip_id
 
 def db_create_address_binary_map(_esp_chip_id: int, _dlse_release_path: str,
@@ -431,48 +477,105 @@ def db_create_address_binary_map(_esp_chip_id: int, _dlse_release_path: str,
         return None
 
 
-def db_get_activation_key(_serial_port: str) -> str | None:
+def db_get_activation_key(_serial_port: str, _baud: int, _use_cmd_line_tool=False) -> str | None:
     """Connects to the ESP32 and calculates the activation key. Returns None if an error occurs."""
     logger = DBLogger()
     activation_key = None
     esp = None
-    try:
-        # Connect to the ESP32
-        # defaults: initial_baud=460800, trace_enabled=False, connect_mode='default_reset'
-        esp = esptool.detect_chip(_serial_port)
-        print(f"Connected to {_serial_port}...")
-
-        # Read MAC Address
-        mac = esp.read_mac()
-        mac_str = ':'.join(map(lambda x: '{:02x}'.format(x), mac))
-        print(f"MAC Address: {mac_str}")
-
-        # Calculate Activation Key
+    if not _use_cmd_line_tool:
+        # Use the standard way with the embedded pyhon library to detect the chip id
         try:
-            # Determine Chip ID (integer)
-            chip_id = esp.get_chip_id()
-            # Chip Revision
-            chip_rev = esp.get_chip_revision()
+            # Connect to the ESP32
+            # defaults: initial_baud=460800, trace_enabled=False, connect_mode='default_reset'
+            esp = esptool.detect_chip(_serial_port, baud=_baud)
+            print(f"Connected to {_serial_port}...")
 
-            # Read Chip ID (Type)
-            chip_type = esp.get_chip_description()
-            logger.log(f"Chip Type: {chip_type} ID: {chip_id} Rev: {chip_rev}")
+            # Read MAC Address
+            mac = esp.read_mac()
+            mac_str = ':'.join(map(lambda x: '{:02x}'.format(x), mac))
+            print(f"MAC Address: {mac_str}")
 
-            # Use little-endian (<)
-            # Ensure mac is bytes
-            mac_bytes = bytes(mac)
-            packed_data = struct.pack('<6sBH', mac_bytes, chip_id, chip_rev)
+            # Calculate Activation Key
+            try:
+                # Determine Chip ID (integer)
+                chip_id = esp.get_chip_id()
+                # Chip Revision
+                chip_rev = esp.get_chip_revision()
 
-            activation_key = base64.b64encode(packed_data).decode('utf-8')
+                # Read Chip ID (Type)
+                chip_type = esp.get_chip_description()
+                logger.log(f"Chip Type: {chip_type} ID: {chip_id} Rev: {chip_rev}")
+
+                # Use little-endian (<)
+                # Ensure mac is bytes
+                mac_bytes = bytes(mac)
+                packed_data = struct.pack('<6sBH', mac_bytes, chip_id, chip_rev)
+
+                activation_key = base64.b64encode(packed_data).decode('utf-8')
+
+            except Exception as e:
+                logger.log(f"Error calculating activation key: {e}")
 
         except Exception as e:
-            logger.log(f"Error calculating activation key: {e}")
+            logger.log(f"Error: {e}")
+        finally:
+            if esp is not None:
+                esp._port.close()
+    else:
+        # Use the specified commandline esptool.py to detect chip info + BASE MAC
+        try:
+            cmd = [
+                sys.executable, "-m", "esptool",
+                "--port", _serial_port,
+                "--baud", str(_baud),
+                "read_mac",
+            ]
+            output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT)
+            output_str = output.decode("utf-8", errors="replace")
 
-    except Exception as e:
-        logger.log(f"Error: {e}")
-    finally:
-        if esp is not None:
-            esp._port.close()
+            # Parse chip type line, e.g.:
+            # "Chip type:          ESP32-C6FH4 (QFN32) (revision v0.2)"
+            chip_type = None
+            chip_rev = None
+            base_mac = None
+
+            chip_type_match = re.search(r"Chip type:\s*(.+)", output_str)
+            if chip_type_match:
+                chip_type = chip_type_match.group(1).strip()
+
+            # Parse revision from either "revision v0.2" or "(revision v0.2)"
+            rev_match = re.search(r"revision\s+v?(\d+)(?:\.(\d+))?", output_str, re.IGNORECASE)
+            if rev_match:
+                major = int(rev_match.group(1))
+                minor = int(rev_match.group(2) or 0)
+                # Encoded as integer to fit 'H' in struct.pack.
+                chip_rev = major * 100 + minor
+
+            base_mac_match = re.search(r"BASE MAC:\s*([0-9a-fA-F:]{17})", output_str)
+            if base_mac_match:
+                base_mac = base_mac_match.group(1).lower()
+
+            if "ESP32-C3" in output_str:
+                chip_id = DLSESupportedChips.ESP32C3.value
+            elif "ESP32-C5" in output_str:
+                chip_id = DLSESupportedChips.ESP32C5.value
+            elif "ESP32-C6" in output_str:
+                chip_id = DLSESupportedChips.ESP32C6.value
+            else:
+                chip_id = None
+                logger.log("Unknown Chip ID using command line tool")
+
+            logger.log(f"Chip Type: {chip_type} ID: {chip_id} Rev: {chip_rev} BASE MAC: {base_mac}")
+
+            if chip_id is not None and chip_rev is not None and base_mac is not None:
+                mac_bytes = bytes.fromhex(base_mac.replace(":", ""))
+                packed_data = struct.pack("<6sBH", mac_bytes, chip_id, chip_rev)
+                activation_key = base64.b64encode(packed_data).decode("utf-8")
+            else:
+                logger.log("Could not derive activation key from esptool output (missing chip_id/chip_rev/base_mac).")
+
+        except Exception as e:
+            logger.log(f"Error getting MAC Address: {e}")
 
     return activation_key
 

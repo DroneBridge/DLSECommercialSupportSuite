@@ -7,7 +7,13 @@ from DroneBridgeCommercialSupportSuite import db_get_dlse_lic_via_serial, db_is_
 
 class SerialLicenseBackup(unittest.TestCase):
     def test_extract_license(self):
-        path_to_backup = db_get_dlse_lic_via_serial("COM49")
+        path_to_backup = db_get_dlse_lic_via_serial("COM18", 460800)
+        self.assertEqual(os.path.exists(path_to_backup), True, "License file does not exist")
+        valid, license_info = db_dlse_validate_license(path_to_backup)
+        self.assertEqual(valid, True, "License file is not valid")
+
+    def test_extract_license_cmd_line_tool(self):
+        path_to_backup = db_get_dlse_lic_via_serial("COM18", 460800, _use_cmd_line_tool=True)
         self.assertEqual(os.path.exists(path_to_backup), True, "License file does not exist")
         valid, license_info = db_dlse_validate_license(path_to_backup)
         self.assertEqual(valid, True, "License file is not valid")
