@@ -676,35 +676,94 @@ def db_api_request_license_file(_activation_key: str, _token: str, _output_path=
         "Authorization": f"Bearer {_token}"
     }
 
-    try:
-        logger.log(f"Requesting license from {base_url}...")
-        response = requests.get(base_url, params=params, headers=headers, stream=True)
+    # Hardening: retry transient failures (network/5xx/429) up to 3 attempts, use timeouts, validate download
+    max_attempts = 3
+    connect_timeout_s = 5
+    read_timeout_s = 30
 
-        if response.status_code == 200:
-            # Try to get filename from header if available, else use default
-            filename = f"{_activation_key}.dlselic"
-            if "Content-Disposition" in response.headers:
-                cd = response.headers["Content-Disposition"]
+    for attempt in range(1, max_attempts + 1):
+        try:
+            logger.log(f"Requesting license from {base_url}... (attempt {attempt}/{max_attempts})")
+            response = requests.get(
+                base_url,
+                params=params,
+                headers=headers,
+                stream=True,
+                timeout=(connect_timeout_s, read_timeout_s),
+            )
+
+            status = response.status_code
+
+            if status == 200:
+                # Try to get filename from header if available, else use default
+                filename = f"{_activation_key}.dlselic"
+                cd = response.headers.get("Content-Disposition", "")
                 if "filename=" in cd:
-                    filename = cd.split("filename=")[1].strip('"').strip()
+                    filename = cd.split("filename=", 1)[1].strip().strip('"').strip()
 
-            if _output_path:
-                os.makedirs(_output_path, exist_ok=True)
-            # Make file name path safe! BASE64 may contain "/" characters that need to be escaped by replacing them with "_"
-            safe_filename = filename.replace("/", "_")
-            safe_filename = os.path.join(_output_path, safe_filename)
-            with open(safe_filename, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            logger.log(f"✅ License generated and saved to '{safe_filename}'")
-            return safe_filename
-        else:
-            logger.log(f"❌ Failed to generate license. Status Code: {response.status_code}")
-            logger.log(f"Response: {response.text}")
+                if _output_path:
+                    os.makedirs(_output_path, exist_ok=True)
+
+                # Make file name path safe! BASE64 may contain "/" characters that need to be escaped by replacing them with "_"
+                safe_filename = filename.replace("/", "_")
+                safe_filename = os.path.join(_output_path, safe_filename)
+
+                bytes_written = 0
+                with open(safe_filename, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if not chunk:  # keep-alive chunks
+                            continue
+                        f.write(chunk)
+                        bytes_written += len(chunk)
+
+                response.close()
+
+                if bytes_written <= 0:
+                    logger.log("❌ License download returned 200 but contained no data.")
+                    try:
+                        os.remove(safe_filename)
+                    except OSError:
+                        pass
+                    # retry (could be a transient/proxy issue)
+                else:
+                    logger.log(f"✅ License generated and saved to '{safe_filename}'")
+                    return safe_filename
+
+            else:
+                # Read a small body safely for diagnostics (avoid huge logs)
+                try:
+                    resp_text = response.text
+                    if resp_text and len(resp_text) > 2000:
+                        resp_text = resp_text[:2000] + "...<truncated>"
+                except Exception:
+                    resp_text = "<unavailable>"
+                finally:
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
+
+                logger.log(f"❌ Failed to generate license. Status Code: {status}")
+                logger.log(f"Response: {resp_text}")
+
+                # Retry only on typical transient statuses
+                if status not in (429, 500, 502, 503, 504):
+                    return None
+
+        except (requests.Timeout, requests.ConnectionError, requests.RequestException) as e:
+            logger.log(f"❌ Request error: {e}")
+        except OSError as e:
+            # filesystem write errors are not transient in most cases -> don't spin retries
+            logger.log(f"❌ File error while saving license: {e}")
             return None
-    except Exception as e:
-        logger.log(f"❌ Error: {e}")
-        return None
+        except Exception as e:
+            logger.log(f"❌ Error: {e}")
+
+        # Backoff before next attempt (except after the last one)
+        if attempt < max_attempts:
+            time.sleep(1.0 * attempt)
+
+    return None
 
 def db_parameters_generate_binary(_path_to_settings_csv: str, partition_size="0x6000") -> str | None:
     """
@@ -1410,13 +1469,14 @@ def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2, esp32_bro
                             'board_version':      msg.board_version,
                             'vendor_id':          msg.vendor_id,
                             'product_id':         msg.product_id,
+                            'mac':                msg.uid,
                             'flight_sw_version':  decode_flight_sw_version(msg.flight_sw_version),
                         })
 
-            except Exception:
-                pass
+            except Exception as e:
+                logger.log(f"Error receiving broadcast: {e}")
 
     sock.close()
 
-    logger.log(f"Found {len(found_devices)} ESP32 (DLSE) devices.")
+    logger.log(f"\tFound {len(found_devices)} ESP32 (DLSE) device(s).")
     return found_devices
