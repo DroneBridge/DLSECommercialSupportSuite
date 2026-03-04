@@ -25,29 +25,42 @@ import time
 
 from DroneBridgeCommercialSupportSuite import DBLogger, db_scan_for_esp32_devices, db_api_ota_perform_www_update, \
     db_api_ota_perform_app_update_with_progress, db_check_release_binaries_present, db_get_bin_folder, \
-    DLSESupportedChips, db_api_get_info, is_valid_supported_dlse_chip
+    db_api_get_info, is_valid_supported_dlse_chip
 from batch_install_dlse_allinone import play_sound
 
 # "1.0.0-beta.4" # Only devices with this firmware will be affected. Set to "None" to target any detected device
-TARGET_VERSION = "0.0.0-dev.1" # Keep it to this for now. BETA4 and earlier will only report this version. For later releases you can adjust the string
+TARGET_VERSION = None # Put "0.0.0-dev.1" for targeting BETA4 and earlier. For later releases you can adjust the string
 # Path to the DLSE release root directory -> Download & extract them from https://drone-bridge.com/dlse/
 DLSE_RELEASE_PATH = "DroneBridge_ESP32DLSE_BETA4"
+SUBNET_MASK = '192.168.1.0/24' # IP address range to scan for devices. Here it will scan for 192.168.1.0-254
 LOG_DIR = "logs"
 
 def main():
-    global DLSE_RELEASE_PATH, LOG_DIR
+    global DLSE_RELEASE_PATH, LOG_DIR, TARGET_VERSION
     # Parse command line arguments. These will overwrite the config above if set.
     parser = argparse.ArgumentParser(description='Install DroneBridge DLSE on ESP32.')
     parser.add_argument('--release-folder', required=False, type=str,
                         help='Folder path to the root directory of the release e.g. /DroneBridge_ESP32DLSE_BETA3 . Download & extract them from https://drone-bridge.com/dlse/')
+    parser.add_argument('--subnetmask', required=False, type=str,
+                        help='Subnet mask describing where to scan for devices. Default: 192.168.1.0/24')
+    parser.add_argument('--target-version', required=False, type=str,
+                        help='Specify the ESP32s DLSE version that you want to upgrade. Only ESP32s running that version '
+                             'will be upgraded. All other devices will be skipped. '
+                             'Example: 1.0.0-beta.3 for v1.0.0 BETA3 release '
+                             'Set to 0.0.0-dev.1 in case you want to target DLSE Beta4 and earlier. These versions are all identifying with 0.0.0-dev.1. '
+                             'If parameter is not supplied, all detected devices will be upgraded.')
     args = parser.parse_args()
 
     if args.release_folder:
         DLSE_RELEASE_PATH = args.release_folder
+    if args.subnetmask:
+        SUBNET_MASK = args.subnetmask
+    if args.target_version:
+        TARGET_VERSION = args.target_version
 
     # Initialize the singleton logger
     logger = DBLogger()
-    logger.create_log_file("logs", log_file_prefix="dlse_ota_log")
+    logger.create_log_file("logs", log_file_prefix="dlse_ota_update_log")
 
     logger.log(f"Using release folder: {DLSE_RELEASE_PATH}")
     # Check if the DroneBridge binaries are present
@@ -65,7 +78,7 @@ def main():
     # Scan IP address range 192.168.1.0 to 192.168.1.255 for ESP32 devices
     # esp32_broadcast_port is the port we send the broadcast to -> Check the DLSE configuration
     # local_brcst_port is the port we listen for the response from the ESP32 -> Check the DLSE configuration
-    detected_devices = db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=3, esp32_broadcast_port=14555,
+    detected_devices = db_scan_for_esp32_devices(subnet_mask=SUBNET_MASK, timeout=3, esp32_broadcast_port=14555,
                                                  local_brcst_port=14550, _beta_4_support=True)
     if len(detected_devices) == 0:
         logger.log("No DLSE devices found in the local network!")
