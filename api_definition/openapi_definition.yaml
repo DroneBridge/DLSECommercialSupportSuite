@@ -547,8 +547,8 @@ components:
           example: 3.2
         cpu_load:
           type: number
-          description: CPU utilisation percentage (0–100)
-          example: 18
+          description: CPU utilisation percentage multiplied by 100 (0–100)
+          example: 5018
 
     ConnectedStation:
       type: object
@@ -588,8 +588,8 @@ components:
           description: >
             Radio/operating mode of the ESP32. Must not be changed at runtime;
             only takes effect after reboot.
-            1 = DB_WIFI_MODE_AP (Wi-Fi AP, 802.11b),
-            2 = DB_WIFI_MODE_STA (Wi-Fi client, 802.11b + LR),
+            1 = Wi-Fi AP, 802.11b,
+            2 = Wi-Fi client, 802.11b,
           enum: [1, 2]
           default: 1
           example: 1
@@ -769,7 +769,7 @@ components:
         # ── Serial / UART ──────────────────────────────────────────────────
         baud:
           type: integer
-          description: UART baud rate.
+          description: UART baud rate. Stick to the options available in the web ui to prevent issues.
           minimum: 1200
           maximum: 5000000
           default: 115200
@@ -824,8 +824,7 @@ components:
           type: integer
           description: >
             Maximum payload size (bytes) per over-the-air packet in transparent
-            or MAVLink mode. Capped to 250 bytes minus header overhead in
-            ESP-NOW mode.
+            or MAVLink mode. Stick to the options in the web UI to prevent issues
           minimum: 16
           maximum: 1056
           default: 576
