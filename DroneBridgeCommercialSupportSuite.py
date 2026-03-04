@@ -100,6 +100,18 @@ class DLSESupportedChips(Enum):
     ESP32C5 = 23
     ESP32C6 = 13
 
+def is_valid_supported_dlse_chip(value: int):
+    """
+    Check if the provided value represents a valid and supported DSLE Chip ID
+    :param value: Chip ID to check for DLSE support
+    :return: True if supported, False otherwise
+    """
+    try:
+        DLSESupportedChips(value)
+        return True
+    except ValueError:
+        return False
+
 def db_get_dlse_lic_from_local_storage(activation_key: str, local_lic_folder=DLSE_LICENSE_FOLDER) -> str | None:
     """
     If we already have the license offline in the DLSE_LICENSE_FOLDER we can get it from there.
@@ -1096,6 +1108,76 @@ def db_api_add_custom_udp(_drone_bridge_url: str, _udp_client_target_ip: str, _u
         print(response.content.decode())
         return False
 
+def db_api_get_info(_drone_bridge_url: str) -> dict | None:
+    """
+    Fetch system/build info from the ESP32 REST API.
+
+    OpenAPI: GET /api/system/info -> application/json (SystemInfo)
+    Returns:
+        Parsed JSON dict on success, otherwise None.
+    """
+    logger = DBLogger()
+    target_url = urljoin(_drone_bridge_url, "api/system/info")
+
+    max_attempts = 4
+    connect_timeout_s = 3
+    read_timeout_s = 5
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            logger.log(f"Requesting system info from {target_url} (attempt {attempt}/{max_attempts})...")
+            resp = requests.get(
+                target_url,
+                headers={"Accept": "application/json"},
+                timeout=(connect_timeout_s, read_timeout_s),
+            )
+
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                except ValueError as e:
+                    logger.log(f"❌ Invalid JSON in response from {target_url}: {e}")
+                    data = None
+                finally:
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
+
+                if isinstance(data, dict):
+                    return data
+
+                logger.log(f"❌ Expected JSON object from {target_url}, got: {type(data).__name__}")
+                return None
+
+            # Non-200: log and retry only if likely transient
+            status = resp.status_code
+            try:
+                body_preview = resp.text
+                if body_preview and len(body_preview) > 500:
+                    body_preview = body_preview[:500] + "...<truncated>"
+            except Exception:
+                body_preview = "<unavailable>"
+            finally:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+
+            logger.log(f"❌ GET {target_url} failed with HTTP {status}. Response: {body_preview}")
+
+            if status not in (429, 500, 502, 503, 504):
+                return None
+
+        except (requests.Timeout, requests.ConnectionError, requests.RequestException) as e:
+            logger.log(f"❌ Request error while calling {target_url}: {e}")
+        except Exception as e:
+            logger.log(f"❌ Unexpected error while calling {target_url}: {e}")
+
+        if attempt < max_attempts:
+            time.sleep(0.5 * (2 ** (attempt - 1)))
+
+    return None
 
 def db_api_add_static_ip(_drone_bridge_url: str, _static_ip: str, _static_ip_netmask: str, _static_ip_gateway: str) -> bool:
     """

@@ -242,6 +242,7 @@ def process_dlse_device(device: Dict[str, Any], session: requests.Session,
     Returns True if successful or already activated.
     """
     device_ip = device.get("ip")
+    sys_id = device.get("sys_id")
     if not device_ip:
         return False
 
@@ -258,7 +259,7 @@ def process_dlse_device(device: Dict[str, Any], session: requests.Session,
 
         # Skip if already activated
         if db_webapi_check_is_activated(session, device_ip):
-            logger.log(f"Already activated: {device_ip} - {activation_key} skipping this device in future scans")
+            logger.log(f"Already activated: {device_ip} - SYS_ID: {sys_id} - {activation_key} skipping this device in future scans")
             successful_ips.add(device_ip)
             processed_keys.add(activation_key)
             return True

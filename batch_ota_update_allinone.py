@@ -24,10 +24,12 @@ import os.path
 import time
 
 from DroneBridgeCommercialSupportSuite import DBLogger, db_scan_for_esp32_devices, db_api_ota_perform_www_update, \
-    db_api_ota_perform_app_update_with_progress, db_check_release_binaries_present, db_get_bin_folder
+    db_api_ota_perform_app_update_with_progress, db_check_release_binaries_present, db_get_bin_folder, \
+    DLSESupportedChips, db_api_get_info, is_valid_supported_dlse_chip
 from batch_install_dlse_allinone import play_sound
 
-TARGET_VERSION = "0.0.0-dev.1" # "1.0.0-beta.4" # Only devices with this firmware will be affected. Set to "None" to target any detected device
+# "1.0.0-beta.4" # Only devices with this firmware will be affected. Set to "None" to target any detected device
+TARGET_VERSION = "0.0.0-dev.1" # Keep it to this for now. BETA4 and earlier will only report this version. For later releases you can adjust the string
 # Path to the DLSE release root directory -> Download & extract them from https://drone-bridge.com/dlse/
 DLSE_RELEASE_PATH = "DroneBridge_ESP32DLSE_BETA4"
 LOG_DIR = "logs"
@@ -58,12 +60,13 @@ def main():
 
     logger.log("Starting OTA update of all ESP32 devices in the local network")
     logger.log("*** TURN OFF SKYBRUSH LIVE to free up the broadcast port ***")
+    logger.log("Your settings and license will be unaffected by this update.")
 
     # Scan IP address range 192.168.1.0 to 192.168.1.255 for ESP32 devices
     # esp32_broadcast_port is the port we send the broadcast to -> Check the DLSE configuration
     # local_brcst_port is the port we listen for the response from the ESP32 -> Check the DLSE configuration
     detected_devices = db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=3, esp32_broadcast_port=14555,
-                                                 local_brcst_port=14550)
+                                                 local_brcst_port=14550, _beta_4_support=True)
     if len(detected_devices) == 0:
         logger.log("No DLSE devices found in the local network!")
         beep_failure()
@@ -73,7 +76,7 @@ def main():
             selected_device = "[X]"
             if TARGET_VERSION is not None and _device['flight_sw_version']['version_str'] != TARGET_VERSION:
                 selected_device = "[ ]"
-            logger.log(f"\t{selected_device} IP {_device['ip']} - firmware Version {_device['flight_sw_version']['version_str']}")
+            logger.log(f"\t{selected_device} IP {_device['ip']} SYS_ID: {_device['sys_id']} - firmware Version {_device['flight_sw_version']['version_str']}")
 
     # Ask user if he wants to continue with the update
     user_input = input(
@@ -82,31 +85,71 @@ def main():
         logger.log("OTA update cancelled by user.")
         return
 
-    for esp32_dlse_device in detected_devices:
-        if TARGET_VERSION is not None and esp32_dlse_device['flight_sw_version']['version_str'] != TARGET_VERSION:
-            logger.log(f"Skipping device {esp32_dlse_device['ip']} as it is not running the required version {TARGET_VERSION}")
-            continue
-        logger.log(f"Updating device {esp32_dlse_device['ip']}")
+    # Flashing loop
+    failed_devices = []
+    successful_devices = []
+    try:
+        for esp32_dlse_device in detected_devices:
+            if TARGET_VERSION is not None and esp32_dlse_device['flight_sw_version']['version_str'] != TARGET_VERSION:
+                logger.log(f"Skipping device {esp32_dlse_device['ip']} as it is not running the required target version {TARGET_VERSION}")
+                continue
+            logger.log(f"Updating device {esp32_dlse_device['ip']} ...")
 
-        firmware_folder = db_get_bin_folder(chip_id)
+            # ToDo: In the future the CHIP_ID can be extracted from the detected_devices - For BETA4 and earlier this is not possible so we must get it via a second request
+            esp32_info = db_api_get_info(f"http://{esp32_dlse_device['ip']}")
+            if esp32_info is None:
+                logger.log(f"❌ Could not get system info from device {esp32_dlse_device['ip']}. Skipping device")
+                failed_devices.append(esp32_dlse_device)
+                continue
 
-        path_www_file = os.path.join(DLSE_RELEASE_PATH, firmware_folder, "www.bin")
-        path_app_file = os.path.join(DLSE_RELEASE_PATH, firmware_folder, "db_esp32.bin")
-        url_esp32 = f"http://{esp32_dlse_device['ip']}/"
-        # Update the web-interface first since it will not reboot - give it the path to the www.bin
-        if not db_api_ota_perform_www_update(url_esp32, path_www_file):
-            beep_failure()
-            logger.log(f"Could not update web-interface of device {esp32_dlse_device['ip']}")
-            continue
-        # Give it some time to process the change
-        time.sleep(2)
-        # Update the application - give it the path to the db_esp32.bin -> This will trigger a reboot of the ESP32
-        if db_api_ota_perform_app_update_with_progress(url_esp32, path_app_file):
+            esp32_chip_id = esp32_info['esp_chip_model']
+            if not is_valid_supported_dlse_chip(esp32_chip_id):
+                logger.log(f"❌ DLSE Device reported unsupported invalid chip ID {esp32_chip_id}. Skipping device")
+                failed_devices.append(esp32_dlse_device)
+                continue
+
+            # Get the correct firmware from the release folder
+            firmware_folder = db_get_bin_folder(esp32_chip_id)
+
+            # Set the paths to the release binaries and checks if the files exist
+            path_www_file = os.path.join(DLSE_RELEASE_PATH, firmware_folder, "www.bin")
+            path_app_file = os.path.join(DLSE_RELEASE_PATH, firmware_folder, "db_esp32.bin")
+            if not os.path.exists(path_www_file):
+                logger.log(f"❌ Missing {path_www_file} - Stopping update operation. Check and correct your release binary files first!")
+                return
+            if not os.path.exists(path_app_file):
+                logger.log(f"❌ Missing {path_www_file} - Stopping update operation. Check and correct your release binary files first!")
+                return
+
+            url_esp32 = f"http://{esp32_dlse_device['ip']}/"
+            # Update the web-interface first since it will not reboot - give it the path to the www.bin
+            if not db_api_ota_perform_www_update(url_esp32, path_www_file):
+                beep_failure()
+                failed_devices.append(esp32_dlse_device)
+                logger.log(f"❌ Could not update web-interface of device {esp32_dlse_device['ip']} - Skipping device update")
+                continue
+            # Give it some time to process the change
+            time.sleep(2)
+            # Update the application - give it the path to the db_esp32.bin -> This will trigger a reboot of the ESP32
+            if not db_api_ota_perform_app_update_with_progress(url_esp32, path_app_file):
+                beep_failure()
+                failed_devices.append(esp32_dlse_device)
+                logger.log(f"❌ Could not update application of device {esp32_dlse_device['ip']} - Skipping device update")
+                continue
             beep_success()
-        else:
-            beep_failure()
-            logger.log(f"Could not update application of device {esp32_dlse_device['ip']}")
-            continue
+            # Add it to the list of successfully updated devices
+            successful_devices.append(esp32_dlse_device)
+    except Exception as e:
+        logger.log(f"❌ Failed to update all devices. {e}")
+    finally:
+        logger.log(f"OTA update finished. {len(successful_devices)} devices updated successfully. {len(failed_devices)} devices failed to update.")
+        logger.log("\n⚠️ Failed devices:\n" + _format_device_list_for_print(failed_devices))
+        logger.log("\n✅ Successful devices:\n" + _format_device_list_for_print(successful_devices))
+
+def _format_device_list_for_print(devices: list) -> str:
+    if not devices:
+        return "  (none)"
+    return "\n".join(f"  - {item}" for item in devices)
 
 def beep_success():
     play_sound("resources/new-notification-011-364050.wav")

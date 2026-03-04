@@ -469,8 +469,8 @@ components:
           example: "ABCD1234EFGH"
         esp_chip_model:
           type: number
-          description: Numeric chip model ID as returned by esp_chip_info()
-          example: 1
+          description: Numeric chip id, 5=ESP32C3, 13=ESP32C6, 23=ESP32C5
+          enum: [5, 13, 23]
         has_rf_switch:
           type: number
           description: "1 if an RF switch is present on the board, 0 otherwise"
