@@ -1,0 +1,1089 @@
+openapi: 3.0.3
+info:
+  title: DroneBridge ESP32 REST API
+  description: >
+    HTTP REST API for the DroneBridge ESP32 firmware. Provides endpoints for
+    reading system information and statistics, managing settings, controlling
+    UDP client connections, uploading/downloading license files, and performing
+    OTA firmware/web-app updates.
+  version: "1.0.0"
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://192.168.2.1
+    description: Default ESP32 AP address
+
+tags:
+  - name: System
+    description: Read-only system information and runtime statistics
+  - name: Settings
+    description: Read and write device configuration
+  - name: Clients
+    description: Manage active UDP client connections
+  - name: License
+    description: Upload and download DroneBridge license files
+  - name: OTA
+    description: Over-the-air firmware and web-app updates
+  - name: Static
+    description: Serve static web-app files from the ESP32 filesystem
+
+paths:
+
+  # ──────────────────────────────────────────────
+  # SYSTEM
+  # ──────────────────────────────────────────────
+
+  /api/system/info:
+    get:
+      tags: [System]
+      summary: Get build and hardware information
+      description: >
+        Returns ESP-IDF version, firmware build/version numbers, chip model,
+        MAC address, license status, activation key, and whether serial is
+        tunnelled over JTAG.
+      operationId: getSystemInfo
+      responses:
+        "200":
+          description: System info retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemInfo"
+
+  /api/system/stats:
+    get:
+      tags: [System]
+      summary: Get runtime statistics
+      description: >
+        Returns serial byte counters, TCP/UDP connection counts, connected
+        station details (AP mode) or RSSI/IP (STA mode), flight-controller
+        power and armed state, battery voltage and current, and CPU load.
+      operationId: getSystemStats
+      responses:
+        "200":
+          description: Runtime stats retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStats"
+
+  /api/system/clients:
+    get:
+      tags: [System, Clients]
+      summary: List active UDP client connections
+      description: Returns the list of UDP IP:port pairs the ESP32 is currently forwarding data to.
+      operationId: getSystemClients
+      responses:
+        "200":
+          description: Client list retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientList"
+
+  # ──────────────────────────────────────────────
+  # SETTINGS
+  # ──────────────────────────────────────────────
+
+  /api/settings:
+    get:
+      tags: [Settings]
+      summary: Get all device settings
+      description: >
+        Returns all internally stored configuration parameters together with
+        their data-type metadata. The exact set of keys mirrors the firmware's
+        parameter table (db_parameters).
+      operationId: getSettings
+      responses:
+        "200":
+          description: Settings retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettingsResponse"
+
+    post:
+      tags: [Settings]
+      summary: Update device settings
+      description: >
+        Accepts a JSON object whose keys are parameter names. Only the keys
+        that are present are updated; all others keep their current values.
+        **The device will reboot automatically after persisting the new settings.**
+        Returns an error if the drone is currently armed.
+      operationId: postSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SettingsRequest"
+            examples:
+              wifi_ssid:
+                summary: Change Wi-Fi SSID and password
+                value:
+                  wifi_ssid: "MyDrone"
+                  wifi_pass: "secret123"
+      responses:
+        "200":
+          description: Settings accepted; device will reboot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+              examples:
+                success:
+                  value:
+                    status: success
+                    msg: "Settings changed! Rebooting ..."
+        "400":
+          description: Request body too large (≥ 10 240 bytes)
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: content too long
+        "422":
+          description: Drone is armed – settings cannot be changed while armed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+              examples:
+                armed:
+                  value:
+                    status: failed
+                    msg: "Cannot change settings while drone is armed"
+        "500":
+          description: Internal server error while receiving data
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  # ──────────────────────────────────────────────
+  # CLIENTS – UDP
+  # ──────────────────────────────────────────────
+
+  /api/settings/clients/udp:
+    post:
+      tags: [Clients]
+      summary: Add a UDP client connection
+      description: >
+        Registers a new UDP destination (IPv4 address + port). The ESP32 will
+        start forwarding serial data to this endpoint immediately.
+        Optionally persists the entry to NVM so it survives reboots.
+      operationId: addUdpClient
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UdpClientRequest"
+            examples:
+              typical:
+                summary: Add GCS at 192.168.2.255:14550 and persist
+                value:
+                  ip: "192.168.2.255"
+                  port: 14550
+                  save: true
+      responses:
+        "200":
+          description: Result of the add operation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+              examples:
+                success:
+                  value:
+                    status: success
+                    msg: "Added UDP connection!"
+                failed:
+                  value:
+                    status: failed
+                    msg: "Failed to add UDP connection!"
+        "400":
+          description: Request body too large
+          content:
+            text/plain:
+              schema:
+                type: string
+        "500":
+          description: Internal server error while receiving data
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/settings/clients/clear_udp:
+    delete:
+      tags: [Clients]
+      summary: Remove all UDP client connections
+      description: >
+        Clears the entire in-memory UDP client list and erases the
+        single persisted UDP client from NVM. Ground-control software
+        will need to re-register after this call.
+      operationId: clearUdpClients
+      responses:
+        "200":
+          description: All UDP clients removed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+              examples:
+                success:
+                  value:
+                    status: success
+                    msg: "Removed all UDP clients"
+
+  # ──────────────────────────────────────────────
+  # LICENSE
+  # ──────────────────────────────────────────────
+
+  /api/license:
+    post:
+      tags: [License]
+      summary: Upload and activate a license file
+      description: >
+        Accepts a raw binary license file (`db_license_key_t` struct).
+        The file size must match `sizeof(db_license_key_t)` exactly.
+        Example cURL invocation:
+        `curl -X POST -H "Content-Type: application/octet-stream" --data-binary @license.bin http://192.168.2.1/api/license`
+      operationId: uploadLicense
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: Raw binary license key structure (db_license_key_t)
+      responses:
+        "200":
+          description: Activation attempted; check `success` field for result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LicenseUploadResponse"
+              examples:
+                success:
+                  value:
+                    success: true
+                    message: "License activated successfully"
+                    type: "Professional"
+                    expiration: "2026-12-31"
+                failed:
+                  value:
+                    success: false
+                    error: "License activation failed"
+        "400":
+          description: Content-Length is 0 or exceeds the size of db_license_key_t
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Invalid license file size
+        "408":
+          description: Receive timeout while uploading the file
+        "500":
+          description: Server-side memory allocation failure
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Memory allocation failed
+
+    get:
+      tags: [License]
+      summary: Download the currently loaded license file
+      description: >
+        Returns the raw binary `db_license_key_t` struct as an octet stream.
+        The `Content-Disposition` header will contain a filename derived from
+        the activation key encoded in Base64, e.g. `attachment; filename="ABCD1234.dlselic"`.
+      operationId: downloadLicense
+      responses:
+        "200":
+          description: Binary license file
+          headers:
+            Content-Disposition:
+              description: Suggested filename for the downloaded file
+              schema:
+                type: string
+                example: 'attachment; filename="ABCD1234.dlselic"'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "500":
+          description: Failed to encode activation key to Base64
+
+  # ──────────────────────────────────────────────
+  # OTA
+  # ──────────────────────────────────────────────
+
+  /update/firmware:
+    post:
+      tags: [OTA]
+      summary: Upload a new application firmware image (OTA)
+      description: >
+        Streams a new application binary to the OTA partition and reboots
+        into it upon successful write. The handler is implemented in `db_ota.c`
+        (`db_ota_app_update_handler`).
+      operationId: otaFirmwareUpdate
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: ESP32 application binary (.bin)
+      responses:
+        "200":
+          description: Firmware update accepted and device will reboot
+        "400":
+          description: Bad or incomplete image
+        "500":
+          description: OTA write failure
+
+  /update/www:
+    post:
+      tags: [OTA]
+      summary: Upload a new web-app filesystem image (OTA)
+      description: >
+        Streams a new SPIFFS/LittleFS web-app image to the www partition.
+        Implemented by `db_ota_www_update_handler` in `db_ota.c`.
+      operationId: otaWwwUpdate
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: ESP32 filesystem image (.bin)
+      responses:
+        "200":
+          description: Web-app image updated successfully
+        "400":
+          description: Bad or incomplete image
+        "500":
+          description: OTA write failure
+
+  # ──────────────────────────────────────────────
+  # STATIC FILES (wildcard catch-all)
+  # ──────────────────────────────────────────────
+
+  /{path}:
+    get:
+      tags: [Static]
+      summary: Serve static web-app files
+      description: >
+        Wildcard handler that maps any GET request to a file on the ESP32's
+        VFS filesystem (SPIFFS/LittleFS). Requests to `/` are redirected to
+        `/index.html`. Supported MIME types: `text/html`, `application/javascript`,
+        `text/css`, `image/png`, `image/x-icon`, `text/xml` (SVG).
+      operationId: getStaticFile
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+          description: >
+            Relative path to the static file, e.g. `index.html`, `app.js`,
+            `style.css`. A bare `/` serves `index.html`.
+      responses:
+        "200":
+          description: File contents with appropriate Content-Type header
+          content:
+            text/html:
+              schema:
+                type: string
+            application/javascript:
+              schema:
+                type: string
+            text/css:
+              schema:
+                type: string
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/x-icon:
+              schema:
+                type: string
+                format: binary
+            text/xml:
+              schema:
+                type: string
+        "500":
+          description: File not found or read error on the VFS
+
+# ──────────────────────────────────────────────────────────────────────────────
+# COMPONENT SCHEMAS
+# ──────────────────────────────────────────────────────────────────────────────
+
+components:
+  schemas:
+
+    SystemInfo:
+      type: object
+      description: Static build and hardware information
+      properties:
+        idf_version:
+          type: string
+          description: ESP-IDF version string
+          example: "v5.2.1"
+        db_build_version:
+          type: number
+          description: Monotonic build number
+          example: 42
+        major_version:
+          type: number
+          example: 1
+        minor_version:
+          type: number
+          example: 5
+        patch_version:
+          type: number
+          example: 0
+        maturity_version:
+          type: string
+          description: Release maturity label (e.g. "release", "beta", "rc1")
+          example: "release"
+        license_type:
+          type: string
+          description: Human-readable license type
+          example: "Professional"
+        expiration_date:
+          type: string
+          description: >
+            License expiration date as a formatted string, or "Never" for
+            perpetual licenses, or a remaining-time string for trial licenses.
+          example: "2026-12-31"
+        activation_key:
+          type: string
+          description: Base64-encoded activation key for this device
+          example: "ABCD1234EFGH"
+        esp_chip_model:
+          type: number
+          description: Numeric chip model ID as returned by esp_chip_info()
+          example: 1
+        has_rf_switch:
+          type: number
+          description: "1 if an RF switch is present on the board, 0 otherwise"
+          enum: [0, 1]
+        esp_mac:
+          type: string
+          description: Primary MAC address of the ESP32 (colon-separated hex)
+          example: "AA:BB:CC:DD:EE:FF"
+        serial_via_JTAG:
+          type: number
+          description: "1 if serial is tunnelled over JTAG, 0 otherwise"
+          enum: [0, 1]
+
+    SystemStats:
+      type: object
+      description: Runtime counters and connection status
+      properties:
+        read_bytes:
+          type: number
+          description: Total bytes read from the UART since last boot
+          example: 102400
+        tcp_connected:
+          type: number
+          description: Number of currently connected TCP clients
+          example: 1
+        udp_connected:
+          type: number
+          description: Number of UDP destinations in the active client list
+          example: 2
+        udp_clients:
+          type: array
+          description: List of active UDP destinations as "IP:port" strings
+          items:
+            type: string
+            example: "192.168.2.255:14550"
+        current_client_ip:
+          type: string
+          description: >
+            IP address of the ESP32 in STA mode (only present when
+            radio_mode == DB_WIFI_MODE_STA)
+          example: "192.168.1.42"
+        esp_rssi:
+          type: number
+          description: >
+            RSSI of the upstream AP in STA mode (only present when
+            radio_mode == DB_WIFI_MODE_STA)
+          example: -65
+        connected_sta:
+          type: array
+          description: >
+            List of associated Wi-Fi stations (only present when
+            radio_mode == DB_WIFI_MODE_AP or DB_WIFI_MODE_AP_LR)
+          items:
+            $ref: "#/components/schemas/ConnectedStation"
+        fc_pw_state:
+          type: number
+          description: >
+            Flight-controller power state.
+            `1` = powered, `0` = unpowered, `-1` = power management disabled.
+          example: 1
+        fc_armed_state:
+          type: number
+          description: >
+            UAV armed state as reported by the power-management module.
+            `0` = disarmed, `1` = armed.
+          example: 0
+        battery_voltage:
+          type: number
+          description: Battery voltage in volts (ADC measurement)
+          example: 12.4
+        battery_current:
+          type: number
+          description: Battery current in amperes (ADC measurement)
+          example: 3.2
+        cpu_load:
+          type: number
+          description: CPU utilisation percentage (0–100)
+          example: 18
+
+    ConnectedStation:
+      type: object
+      description: A single Wi-Fi station associated with the ESP32 AP
+      properties:
+        sta_mac:
+          type: string
+          description: MAC address of the station (colon-separated hex)
+          example: "11:22:33:44:55:66"
+        sta_rssi:
+          type: number
+          description: RSSI of the station as seen by the AP
+          example: -58
+
+    ClientList:
+      type: object
+      description: Active UDP forwarding destinations
+      properties:
+        udp_clients:
+          type: array
+          description: List of "IP:port" strings
+          items:
+            type: string
+            example: "192.168.2.255:14550"
+
+    SettingsParams:
+      type: object
+      description: >
+        All configurable firmware parameters. Each field maps directly to a
+        `db_parameter_t` entry (the `db_name` field).  
+        Boolean parameters are represented as `0`/`1` (UINT8 min/max false/true).  
+        GPIO parameters accept any valid ESP32 GPIO number (0–SOC_GPIO_IN_RANGE_MAX).
+      properties:
+
+        # ── Radio / Wi-Fi ──────────────────────────────────────────────────
+        esp32_mode:
+          type: integer
+          description: >
+            Radio/operating mode of the ESP32. Must not be changed at runtime;
+            only takes effect after reboot. (`E_DB_WIFI_MODE` enum.)
+            1 = DB_WIFI_MODE_AP (Wi-Fi AP, 802.11b),
+            2 = DB_WIFI_MODE_STA (Wi-Fi client, 802.11b + LR),
+            3 = DB_WIFI_MODE_AP_LR (ESP32 Wi-Fi LR mode, 802.11b),
+            4 = DB_WIFI_MODE_ESPNOW_AIR (ESP-NOW broadcast, air side),
+            5 = DB_WIFI_MODE_ESPNOW_GND (ESP-NOW ground station),
+            6 = DB_BLUETOOTH_MODE (Bluetooth BLE).
+          enum: [1, 2, 3, 4, 5, 6]
+          default: 1
+          example: 1
+
+        ssid:
+          type: string
+          description: Wi-Fi SSID to connect to in client (STA) mode.
+          minLength: 1
+          maxLength: 32
+          default: "DroneBridge for ESP32"
+          example: "MyNetwork"
+
+        ssid_ap:
+          type: string
+          description: SSID broadcast by the ESP32 in Wi-Fi AP mode.
+          minLength: 1
+          maxLength: 32
+          default: "DroneBridge for ESP32"
+          example: "DroneBridge for ESP32"
+
+        wifi_pass:
+          type: string
+          description: Password for Wi-Fi connections and ESP-NOW encryption.
+          minLength: 7
+          maxLength: 64
+          default: "dronebridge"
+          example: "dronebridge"
+
+        wifi_pass_ap:
+          type: string
+          description: Password for the Wi-Fi access point in AP mode.
+          minLength: 7
+          maxLength: 64
+          default: "dronebridge"
+          example: "dronebridge"
+
+        ap_ip:
+          type: string
+          format: ipv4
+          description: IPv4 address assigned to the ESP32 when operating in Wi-Fi AP mode.
+          minLength: 8
+          maxLength: 16
+          default: "192.168.2.1"
+          example: "192.168.2.1"
+
+        ip_sta:
+          type: string
+          format: ipv4
+          description: >
+            Static IPv4 address used in Wi-Fi client (STA) mode.
+            Leave empty to use DHCP. If set, ip_sta_gw and ip_sta_netmsk must also be provided.
+          minLength: 0
+          maxLength: 16
+          default: ""
+          example: "192.168.1.50"
+
+        ip_sta_gw:
+          type: string
+          format: ipv4
+          description: >
+            Gateway IP address used when a static IP (ip_sta) is configured in STA mode.
+          minLength: 0
+          maxLength: 16
+          default: ""
+          example: "192.168.1.1"
+
+        ip_sta_netmsk:
+          type: string
+          description: Subnet mask used when a static IP (ip_sta) is configured in STA mode.
+          minLength: 0
+          maxLength: 16
+          default: ""
+          example: "255.255.255.0"
+
+        udp_client_ip:
+          type: string
+          format: ipv4
+          description: >
+            IPv4 address of the first/persisted UDP client target.
+            Only this entry is saved to NVM; additional clients can be registered
+            at runtime via POST /api/settings/clients/udp.
+            Leave empty if no persistent UDP client is needed.
+          minLength: 0
+          maxLength: 16
+          default: ""
+          example: "192.168.2.255"
+
+        wifi_hostname:
+          type: string
+          description: >
+            mDNS/DHCP hostname of the ESP32, used in both AP and STA mode.
+            Defaults to the lwIP CONFIG_LWIP_LOCAL_HOSTNAME compile-time value.
+          minLength: 1
+          maxLength: 32
+          default: "dronebridge"
+          example: "dronebridge"
+
+        wifi_chan:
+          type: integer
+          description: Wi-Fi channel used in AP and ESP-NOW mode.
+          minimum: 1
+          maximum: 165
+          default: 6
+          example: 6
+
+        wifi_en_gn:
+          type: integer
+          description: >
+            Allow 802.11b/g/n(/ax) mode.
+            `0` = 802.11b only (best range); `1` = b/g/n/ax where supported.
+          enum: [0, 1]
+          default: 0
+
+        wifi_dis_udpdet:
+          type: integer
+          description: >
+            Disable automatic UDP client detection.
+            When `1`, only manually registered UDP clients receive serial traffic;
+            senders of incoming UDP packets are no longer auto-added.
+          enum: [0, 1]
+          default: 0
+
+        udp_local_port:
+          type: integer
+          description: Local UDP port the ESP32 listens on for incoming GCS messages.
+          minimum: 1
+          maximum: 65535
+          default: 14555
+          example: 14555
+
+        wifi_brcst_nudp:
+          type: integer
+          description: >
+            Broadcast serial data to the broadcast address when no known UDP
+            client exists, enabling auto-detection by GCS tools like Skybrush.
+          enum: [0, 1]
+          default: 1
+
+        wifi_brcst_port:
+          type: integer
+          description: >
+            UDP port used for broadcast transmissions when no known UDP client
+            is registered (linked to `wifi_brcst_nudp`).
+          minimum: 1
+          maximum: 65535
+          default: 14550
+          example: 14550
+
+        # ── Antenna ────────────────────────────────────────────────────────
+        radio_ant_selec:
+          type: integer
+          description: >
+            Antenna selection.
+            Maps to `DB_ANTENNA_SELECTION_*` constants:
+            `0` = internal, `1` = external, `2` = auto diversity.
+            Diversity requires a hardware RF switch (e.g. SeeedStudio ESP32-C6).
+          minimum: 0
+          maximum: 2
+          default: 0
+
+        radio_ant_sw:
+          type: integer
+          description: >
+            GPIO number connected to the external antenna switch signal.
+            Set to `0` to disable.
+          minimum: 0
+          default: 0
+
+        radio_ant_en:
+          type: integer
+          description: >
+            GPIO used to enable the external antenna switch circuit.
+            Set to `0` if not needed.
+          minimum: 0
+          default: 0
+
+        # ── Serial / UART ──────────────────────────────────────────────────
+        baud:
+          type: integer
+          description: UART baud rate.
+          minimum: 1200
+          maximum: 5000000
+          default: 115200
+          example: 115200
+
+        gpio_tx:
+          type: integer
+          description: GPIO number of the UART TX pin.
+          minimum: 0
+          example: 17
+
+        gpio_rx:
+          type: integer
+          description: GPIO number of the UART RX pin.
+          minimum: 0
+          example: 16
+
+        gpio_rts:
+          type: integer
+          description: >
+            GPIO number of the UART RTS pin.
+            Set to the same value as `gpio_cts` to disable hardware flow control.
+          minimum: 0
+
+        gpio_cts:
+          type: integer
+          description: >
+            GPIO number of the UART CTS pin.
+            Set to the same value as `gpio_rts` to disable hardware flow control.
+          minimum: 0
+
+        rts_thresh:
+          type: integer
+          description: >
+            UART RTS threshold. Controls when the RTS line is asserted.
+            Leave at the default unless you have a specific reason to change it.
+          minimum: 1
+          maximum: 127
+          default: 127
+
+        proto:
+          type: integer
+          description: >
+            Serial telemetry protocol / parser.
+            Maps to `DB_SERIAL_PROTOCOL_*` constants:
+            `0` = MAVLink (parsed, only complete frames forwarded);
+            `4` = Transparent (raw pass-through).
+          minimum: 0
+          maximum: 4
+          default: 0
+
+        trans_pack_size:
+          type: integer
+          description: >
+            Maximum payload size (bytes) per over-the-air packet in transparent
+            or MAVLink mode. Capped to 250 bytes minus header overhead in
+            ESP-NOW mode.
+          minimum: 16
+          maximum: 1056
+          default: 576
+
+        serial_timeout:
+          type: integer
+          description: >
+            Serial read timeout in milliseconds. After this period without new
+            bytes the accumulated data is sent over the air even if
+            `trans_pack_size` has not been reached.
+          minimum: 1
+          maximum: 65535
+          default: 50
+
+        # ── UDP client (persisted) ─────────────────────────────────────────
+        udp_client_port:
+          type: integer
+          description: >
+            Remote port of the persisted UDP client / GCS endpoint.
+            `0` means no client is persisted.
+          minimum: 0
+          maximum: 65535
+          default: 0
+
+        # ── MAVLink / RSSI ─────────────────────────────────────────────────
+        rep_rssi_dbm:
+          type: integer
+          description: >
+            RSSI reporting unit in MAVLink RADIO_STATUS messages.
+            `1` = dBm (QGroundControl); `0` = 0-100 percentage (Mission Planner).
+          enum: [0, 1]
+          default: 1
+
+        # ── DroneShow / Skybrush integration ──────────────────────────────
+        show_det_flash:
+          type: integer
+          description: >
+            Enable detection of the flight controller entering firmware-flash
+            mode so the ESP32 can react accordingly.
+          enum: [0, 1]
+          default: 1
+
+        show_ap_fail_to:
+          type: integer
+          description: >
+            Timeout in milliseconds for the ESP32 to connect to the configured
+            access point in STA mode. If the timeout expires a failsafe AP is
+            started using the AP-mode settings.
+          minimum: 0
+          default: 90000
+          example: 90000
+
+        show_pm_en_hb:
+          type: integer
+          description: >
+            Emit a fake MAVLink heartbeat on behalf of the flight controller
+            while it is powered down, so the GCS does not lose the connection.
+          enum: [0, 1]
+          default: 1
+
+        show_pm_en:
+          type: integer
+          description: >
+            Enable the ESP32 power-management subsystem for the flight
+            controller. Must be supported by the hardware.
+          enum: [0, 1]
+          default: 0
+
+        show_pm_gpio:
+          type: integer
+          description: GPIO number connected to the flight-controller power control pin.
+          minimum: 0
+
+        show_pm_logic:
+          type: integer
+          description: >
+            Logic level of the power control GPIO.
+            Maps to `DB_PM_LOGIC_*`: `0` = active-low; `1` = active-high.
+          enum: [0, 1]
+
+        show_pm_pulse_l:
+          type: integer
+          description: >
+            Duration in milliseconds of the pulse on the power control GPIO
+            when it emulates a toggle button. Set to `0` for level-triggered
+            (latching) power control.
+          minimum: 0
+          maximum: 65535
+          default: 0
+
+        show_pm_qu_gpio:
+          type: integer
+          description: >
+            GPIO used to sense whether the flight controller is currently
+            powered. Set to `0` to disable power-state sensing.
+          minimum: 0
+          default: 0
+
+        show_pm_en_emcy:
+          type: integer
+          description: >
+            Allow the power-off command to execute even while the drone is
+            armed or in an unknown state. Intended for emergency power-off
+            (e.g. Skybrush kill button).
+          enum: [0, 1]
+          default: 0
+
+        show_en_syid_ip:
+          type: integer
+          description: >
+            Derive the MAVLink system ID from the last octet of the configured
+            static IPv4 address instead of `show_man_sysid`.
+            The system ID is also overwritten the first time a MAVLink packet
+            with a system ID is received from the flight controller.
+          enum: [0, 1]
+          default: 1
+
+        show_man_sysid:
+          type: integer
+          description: >
+            Manually assigned MAVLink system ID used until the flight
+            controller's system ID is learned or `show_en_syid_ip` takes over.
+          minimum: 0
+          maximum: 255
+          default: 1
+
+        # ── ADC – Battery Voltage ──────────────────────────────────────────
+        adc_v_en:
+          type: integer
+          description: Enable battery voltage monitoring via the ESP32 ADC.
+          enum: [0, 1]
+          default: 0
+
+        adc_v_gpio:
+          type: integer
+          description: GPIO number connected to the battery voltage sense circuit.
+          minimum: 0
+          default: 0
+
+        adc_v_multi:
+          type: integer
+          description: >
+            Voltage ADC multiplier / scaling factor used to convert the raw ADC
+            reading to actual battery voltage.
+          minimum: 1
+          maximum: 65535
+          default: 110
+
+        # ── ADC – Battery Current ──────────────────────────────────────────
+        adc_a_en:
+          type: integer
+          description: Enable battery current monitoring via the ESP32 ADC.
+          enum: [0, 1]
+          default: 0
+
+        adc_a_gpio:
+          type: integer
+          description: GPIO number connected to the battery current sense circuit.
+          minimum: 0
+          default: 0
+
+        adc_a_multi:
+          type: integer
+          description: >
+            Current ADC multiplier in mA/V used to convert the raw ADC reading
+            to actual current draw.
+          minimum: 1
+          default: 36364
+          example: 36364
+
+    SettingsResponse:
+      description: >
+        Response to `GET /api/settings`. Contains all parameter values **plus**
+        a companion key for each parameter with a `_type` suffix (e.g.
+        `baud_type: "number"`) written by `db_param_write_all_params_data_types_json`.
+      allOf:
+        - $ref: "#/components/schemas/SettingsParams"
+        - type: object
+          description: Per-parameter data-type metadata keys (one per parameter, suffix `_type`).
+          additionalProperties:
+            type: string
+          example:
+            baud_type: "number"
+            proto_type: "number"
+            wifi_chan_type: "number"
+
+    SettingsRequest:
+      description: >
+        Body for `POST /api/settings`. Send only the keys you want to change;
+        all others keep their current values. Key names must exactly match the
+        `db_name` field of the firmware parameter table.
+      allOf:
+        - $ref: "#/components/schemas/SettingsParams"
+
+    UdpClientRequest:
+      type: object
+      required:
+        - ip
+        - port
+      properties:
+        ip:
+          type: string
+          format: ipv4
+          description: IPv4 address of the UDP destination
+          example: "192.168.2.255"
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: UDP destination port
+          example: 14550
+        save:
+          type: boolean
+          description: >
+            If `true`, persist this client to NVM so it is restored after
+            a reboot. Only one entry can be persisted at a time.
+          default: false
+
+    LicenseUploadResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the license was activated successfully
+        message:
+          type: string
+          description: Human-readable success message (only present on success)
+          example: "License activated successfully"
+        type:
+          type: string
+          description: License type string (only present on success)
+          example: "Professional"
+        expiration:
+          type: string
+          description: Expiration date string (only present on success)
+          example: "2026-12-31"
+        error:
+          type: string
+          description: Error message (only present on failure)
+          example: "License activation failed"
+
+    StatusResponse:
+      type: object
+      description: Generic status/message response used by several endpoints
+      properties:
+        status:
+          type: string
+          enum: [success, failed]
+          example: success
+        msg:
+          type: string
+          example: "Settings changed! Rebooting ..."
