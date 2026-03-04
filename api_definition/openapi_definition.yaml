@@ -94,7 +94,7 @@ paths:
       description: >
         Returns all internally stored configuration parameters together with
         their data-type metadata. The exact set of keys mirrors the firmware's
-        parameter table (db_parameters).
+        settings.csv table that is used to flash the firmware with pre-applied settings.
       operationId: getSettings
       responses:
         "200":
@@ -248,10 +248,9 @@ paths:
       tags: [License]
       summary: Upload and activate a license file
       description: >
-        Accepts a raw binary license file (`db_license_key_t` struct).
-        The file size must match `sizeof(db_license_key_t)` exactly.
+        Accepts a raw binary license file.
         Example cURL invocation:
-        `curl -X POST -H "Content-Type: application/octet-stream" --data-binary @license.bin http://192.168.2.1/api/license`
+        `curl -X POST -H "Content-Type: application/octet-stream" --data-binary @license.dlselic http://192.168.2.1/api/license`
       operationId: uploadLicense
       requestBody:
         required: true
@@ -260,7 +259,7 @@ paths:
             schema:
               type: string
               format: binary
-              description: Raw binary license key structure (db_license_key_t)
+              description: Raw binary license key file (.dlselic)
       responses:
         "200":
           description: Activation attempted; check `success` field for result
@@ -273,14 +272,14 @@ paths:
                   value:
                     success: true
                     message: "License activated successfully"
-                    type: "Professional"
+                    type: "ACTIVATED"
                     expiration: "2026-12-31"
                 failed:
                   value:
                     success: false
                     error: "License activation failed"
         "400":
-          description: Content-Length is 0 or exceeds the size of db_license_key_t
+          description: Content-Length is 0 or exceeds the size of the license key
           content:
             text/plain:
               schema:
@@ -300,7 +299,7 @@ paths:
       tags: [License]
       summary: Download the currently loaded license file
       description: >
-        Returns the raw binary `db_license_key_t` struct as an octet stream.
+        Returns the raw binary license file as an octet stream.
         The `Content-Disposition` header will contain a filename derived from
         the activation key encoded in Base64, e.g. `attachment; filename="ABCD1234.dlselic"`.
       operationId: downloadLicense
@@ -331,8 +330,7 @@ paths:
       summary: Upload a new application firmware image (OTA)
       description: >
         Streams a new application binary to the OTA partition and reboots
-        into it upon successful write. The handler is implemented in `db_ota.c`
-        (`db_ota_app_update_handler`).
+        into it upon successful write.
       operationId: otaFirmwareUpdate
       requestBody:
         required: true
@@ -341,7 +339,7 @@ paths:
             schema:
               type: string
               format: binary
-              description: ESP32 application binary (.bin)
+              description: ESP32 application binary (db_esp32.bin)
       responses:
         "200":
           description: Firmware update accepted and device will reboot
@@ -356,7 +354,6 @@ paths:
       summary: Upload a new web-app filesystem image (OTA)
       description: >
         Streams a new SPIFFS/LittleFS web-app image to the www partition.
-        Implemented by `db_ota_www_update_handler` in `db_ota.c`.
       operationId: otaWwwUpdate
       requestBody:
         required: true
@@ -365,7 +362,7 @@ paths:
             schema:
               type: string
               format: binary
-              description: ESP32 filesystem image (.bin)
+              description: ESP32 filesystem image (www.bin)
       responses:
         "200":
           description: Web-app image updated successfully
@@ -459,7 +456,7 @@ components:
         license_type:
           type: string
           description: Human-readable license type
-          example: "Professional"
+          example: "ACTIVATED"
         expiration_date:
           type: string
           description: >
@@ -580,10 +577,9 @@ components:
     SettingsParams:
       type: object
       description: >
-        All configurable firmware parameters. Each field maps directly to a
-        `db_parameter_t` entry (the `db_name` field).  
+        All configurable firmware parameters. 
         Boolean parameters are represented as `0`/`1` (UINT8 min/max false/true).  
-        GPIO parameters accept any valid ESP32 GPIO number (0–SOC_GPIO_IN_RANGE_MAX).
+        GPIO parameters accept any valid ESP32 GPIO number (0 – maximum supported GPIO by the chip).
       properties:
 
         # ── Radio / Wi-Fi ──────────────────────────────────────────────────
@@ -591,14 +587,10 @@ components:
           type: integer
           description: >
             Radio/operating mode of the ESP32. Must not be changed at runtime;
-            only takes effect after reboot. (`E_DB_WIFI_MODE` enum.)
+            only takes effect after reboot.
             1 = DB_WIFI_MODE_AP (Wi-Fi AP, 802.11b),
             2 = DB_WIFI_MODE_STA (Wi-Fi client, 802.11b + LR),
-            3 = DB_WIFI_MODE_AP_LR (ESP32 Wi-Fi LR mode, 802.11b),
-            4 = DB_WIFI_MODE_ESPNOW_AIR (ESP-NOW broadcast, air side),
-            5 = DB_WIFI_MODE_ESPNOW_GND (ESP-NOW ground station),
-            6 = DB_BLUETOOTH_MODE (Bluetooth BLE).
-          enum: [1, 2, 3, 4, 5, 6]
+          enum: [1, 2]
           default: 1
           example: 1
 
@@ -752,7 +744,7 @@ components:
           description: >
             Antenna selection.
             Maps to `DB_ANTENNA_SELECTION_*` constants:
-            `0` = internal, `1` = external, `2` = auto diversity.
+            `0` = internal, `1` = external, `2` = auto diversity (not supported for now).
             Diversity requires a hardware RF switch (e.g. SeeedStudio ESP32-C6).
           minimum: 0
           maximum: 2
@@ -825,8 +817,7 @@ components:
             Maps to `DB_SERIAL_PROTOCOL_*` constants:
             `0` = MAVLink (parsed, only complete frames forwarded);
             `4` = Transparent (raw pass-through).
-          minimum: 0
-          maximum: 4
+          enum: [0, 4]
           default: 0
 
         trans_pack_size:
@@ -1007,9 +998,7 @@ components:
 
     SettingsResponse:
       description: >
-        Response to `GET /api/settings`. Contains all parameter values **plus**
-        a companion key for each parameter with a `_type` suffix (e.g.
-        `baud_type: "number"`) written by `db_param_write_all_params_data_types_json`.
+        Response to `GET /api/settings`.
       allOf:
         - $ref: "#/components/schemas/SettingsParams"
         - type: object
@@ -1017,9 +1006,9 @@ components:
           additionalProperties:
             type: string
           example:
-            baud_type: "number"
-            proto_type: "number"
-            wifi_chan_type: "number"
+            baud: "number"
+            proto: "number"
+            wifi_chan: "number"
 
     SettingsRequest:
       description: >
@@ -1066,7 +1055,7 @@ components:
         type:
           type: string
           description: License type string (only present on success)
-          example: "Professional"
+          example: "ACTIVATED"
         expiration:
           type: string
           description: Expiration date string (only present on success)
