@@ -17,7 +17,7 @@ This suite provides tools and scripts to manage, configure, and license DroneBri
     *   Change settings via Wi-Fi
 *   Ready to use scripts for:
     *   Batch Installation via Serial
-    *   Batch Over-The-Air License Activation for DLSE Drones
+    *   Batch Over-The-Air Firmware Update for DLSE Drones
     *   Batch Over-The-Air License Activation for DLSE Drones
 
 ## Prerequisites
@@ -92,7 +92,7 @@ The script above will:
 
 Running the script multiple times requesting a license with the same activation key (ESP32 ID) will not result in the loss of multiple credits. Re-generation of a license is free of course.
 
-## Batch Over-The-Air Update for DLSE Drones
+## Batch Over-The-Air Firmware Update for DLSE Devices
 
 Update the firmware of your drone swarm over the air.
 
@@ -107,7 +107,7 @@ Or in case you want to target only ESP32s running a specific target version:
 ```bash
 python batch_ota_update_allinone.py --release_folder "DroneBridge_ESP32DLSE_BETA3"  --subnetmask "192.168.1.0/24" --target-version "1.0.0-beta.3"
 ```
-If parameter is not supplied, all detected devices will be upgraded.
+If a parameter is not supplied, all detected devices will be upgraded.
 
 ### Parameters
 
