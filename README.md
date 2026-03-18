@@ -3,7 +3,22 @@
 Drone Light Show Edition Support Suite for DroneBridge for ESP32.
 
 This suite provides tools and scripts to manage, configure, and license DroneBridge for ESP32 devices, specifically for the Drone Light Show Edition (DLSE).
-**Build the tools you need for DroneBridge DLSE! Make use of a lot of alrady existing scripts and the library as well as a OpenAPI description on the WiFi configuration endpoint!**
+**Build the tools you need for DroneBridge DLSE! Make use of a lot of already existing scripts and the library as well as an OpenAPI description on the WiFi configuration endpoint!**
+
+## Features
+
+*   OpenAPI Definition
+*   Functions to manage your DLSE devices
+    *   Upload/Download DLSE License
+    *   Get Activation Key via Wi-Fi
+    *   Remote Reset of ESP32
+    *   Scan for DLSE devices on the network
+    *   Drone Log download
+    *   Change settings via Wi-Fi
+*   Ready to use scripts for:
+    *   Batch Installation via Serial
+    *   Batch Over-The-Air License Activation for DLSE Drones
+    *   Batch Over-The-Air License Activation for DLSE Drones
 
 ## Prerequisites
 
@@ -41,7 +56,7 @@ The suite includes several example scripts demonstrating different functionaliti
 *   **`example_esp32_ota_update.py`**: Performs an Over-The-Air (OTA) firmware update for all detected ESP32 DLSE devices. Turn off Skybrush Live to allow port binding by the script
 *   **`example_esp32_download_log.py`** & **`example_esp32_download_log_MAVSDK.py`**: Examples for downloading logs from the flight controller via the ESP32 bridge.
 
-## Batch Installation via Serial Manual for DLSE Drones
+## Manual for Batch Installation via Serial for DLSE Drones
 Example for a fully automated activation and installation of DLSE on a ESP32 connected via serial, including a pre-defined configuration:
 Run the script first. Then plug in the ESP32 via serial.
 ```bash
