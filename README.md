@@ -99,7 +99,7 @@ python batch_install_dlse_allinone.py \
 | `--token` | Your secret token from [drone-bridge.com](https://drone-bridge.com). |
 | `--release-folder` | Path to the folder containing the DLSE firmware binaries you downloaded in Step 3. |
 | `--settings-file` | Path to the settings file you exported from the ESP32 web interface in Step 1. |
-| `--start-index` | A numeric postfix appended to `ssid_ap`, `wifi_hostname`, and `ip_sta` for each flashed unit. For example, with `--start-index 33` the access point SSID becomes `<YOUR_SSID>33`. |
+| `--start-index` | A numeric postfix appended to `ssid_ap`, `wifi_hostname`, and `ip_sta` for each flashed unit. For example, with `--start-index 33`, the access point SSID becomes `<YOUR_SSID>33` and the static IP of the ESP32 will be `192.168.50.33` if your config has set `192.168.50.1` as static IP. |
 
 #### What the script does
 
