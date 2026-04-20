@@ -31,9 +31,12 @@ import socket
 import select
 import time
 import re
-
 import esptool
 import requests
+
+from typing import Set, Dict, Any, Optional, Tuple
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from pymavlink import mavutil
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -43,13 +46,18 @@ from datetime import datetime
 from urllib.parse import urljoin
 from enum import Enum
 from tqdm import tqdm
+from pathlib import Path
 from nvs_partition_tool.nvs_parser import NVS_Partition
+
+# Parameters for the request session using the web/REST:API of DLSE
+MAX_RETRIES = 3
+BACKOFF_FACTOR = 2.0
+REQUEST_TIMEOUT = 5
 
 DLSE_LICENSE_FOLDER = "received_licenses/" # Location of all received license files. Stored locally here
 
 DLSE_SETTINGS_PARTITION_ADDRESS = 0x9000 # Do not change
 DLSE_SETTINGS_PARTITION_SIZE = 0x6000 # Do not change
-
 
 class DBLogger:
     """
@@ -1289,6 +1297,131 @@ def db_api_ota_perform_app_update_with_progress(_drone_bridge_url, _path_app_fil
         return False
 
 
+class LicenseActivationError(Exception):
+    """Non-retryable activation error"""
+    pass
+
+def db_api_create_request_session(retries: int = MAX_RETRIES,
+                                      backoff_factor: float = BACKOFF_FACTOR) -> requests.Session:
+    """Create session with automatic retries for transient errors."""
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+def db_api_get_activation_key(session: requests.Session,
+                                  device_ip: str,
+                                  token: str) -> Optional[str]:
+    """
+    Fetch activation key from REST API with exponential backoff.
+    Returns None if permanently failed or key unavailable.
+    """
+    info_endpoint = "/api/system/info"
+    endpoint = f"http://{device_ip}{info_endpoint}"
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = session.get(
+                endpoint,
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                timeout=REQUEST_TIMEOUT
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            key = data.get("activation_key") or data.get("key")
+
+            if not key:
+                raise LicenseActivationError("API response missing activation_key")
+            return key
+
+        except requests.exceptions.RequestException:
+            if attempt < MAX_RETRIES - 1:
+                sleep_time = BACKOFF_FACTOR ** attempt
+                time.sleep(sleep_time)
+            else:
+                return None
+        except (LicenseActivationError, ValueError, KeyError):
+            # Non-retryable: bad JSON or missing fields
+            return None
+
+    return None
+
+
+def db_api_upload_license(session: requests.Session,
+                              device_ip: str,
+                              license_path: Path) -> Tuple[bool, str]:
+    """
+    Upload license to device with retries. Distinguishes retryable vs permanent failures.
+    Returns: (success: bool, message: str)
+    """
+    license_endpoint = "/api/license"
+
+    url = f"http://{device_ip}{license_endpoint}"
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            with open(license_path, 'rb') as f:
+                license_data = f.read()
+
+            response = session.post(
+                url,
+                data=license_data,
+                headers={'Content-Type': 'application/octet-stream'},
+                timeout=REQUEST_TIMEOUT
+            )
+
+            if response.status_code == 200:
+                try:
+                    result = response.json()
+                    if result.get('success'):
+                        return True, result.get('message', 'Activated')
+                    else:
+                        error = result.get('error', result.get('msg', 'Unknown'))
+                        # Permanent errors: don't retry
+                        if any(x in error.lower() for x in ['invalid', 'corrupt', 'format', 'wrong']):
+                            return False, f"Permanent error: {error}"
+                        raise requests.exceptions.RequestException(error)
+                except ValueError:
+                    return False, "Invalid JSON response from device"
+            else:
+                response.raise_for_status()
+
+        except requests.exceptions.RequestException:
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(BACKOFF_FACTOR ** attempt)
+            else:
+                return False, "Max retries exceeded"
+        except Exception as e:
+            return False, f"Unexpected error during upload of license: {e}"
+
+    return False, "Upload failed"
+
+
+def db_api_check_is_activated(session: requests.Session, device_ip: str) -> bool:
+    """Check if device already has valid license to avoid redundant API calls."""
+    try:
+        info_endpoint = "/api/system/info"
+        resp = session.get(f"http://{device_ip}{info_endpoint}", timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            lic_type = data.get('license_type', '').lower()
+            # Check if already activated (not trial/unactivated)
+            if 'activated' in lic_type:
+                return True
+    except Exception as e:
+        print(f"Error checking activation status: {e}")
+    return False
+
+
 def db_csv_merge_user_parameters_with_release(_user_csv_path: str, _release_path: str) -> str | None:
     """
     Merges user parameter values into the release parameter file.
@@ -1421,6 +1554,23 @@ FIRMWARE_VERSION_TYPES = {
 }
 
 def decode_flight_sw_version(flight_sw_version):
+    """
+    Decodes a flight software version identifier into its individual components such
+    as major, minor, patch versions, release type, and formatted version string.
+
+    :param flight_sw_version: An integer representing the encoded flight software
+        version. The version contains major, minor, patch numbers, and release type
+        packed in a 32-bit format.
+    :return: A dictionary containing decoded software version details:
+        - 'major': The major version number.
+        - 'minor': The minor version number.
+        - 'patch': The patch version number.
+        - 'release_num': The release number corresponding to the type and index.
+        - 'type': A string representing the firmware release type (e.g., beta,
+          release, etc.).
+        - 'version_str': A formatted version string including all components.
+    :rtype: dict[str, int | str]
+    """
     major       = (flight_sw_version >> 24) & 0xFF
     minor       = (flight_sw_version >> 16) & 0xFF
     patch       = (flight_sw_version >>  8) & 0xFF
@@ -1428,7 +1578,7 @@ def decode_flight_sw_version(flight_sw_version):
 
     # Release type is the base value (e.g. 128 = beta 1, 129 = beta 2)
     base_type   = (release_num // 64) * 64
-    release_idx = release_num - base_type
+    release_idx = release_num - base_type + 1 # +1 because our index starts with 1 and not with 0
     type_str    = FIRMWARE_VERSION_TYPES.get(base_type, f"unknown(0x{base_type:02X})")
 
     version_str = f"{major}.{minor}.{patch}-{type_str}"

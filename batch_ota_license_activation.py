@@ -24,13 +24,12 @@ import pathlib
 import time
 import sys
 from pathlib import Path
-from typing import Set, Dict, Any, Optional, Tuple
+from typing import Set, Dict, Any
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 from DroneBridgeCommercialSupportSuite import DBLogger, db_scan_for_esp32_devices, \
-    db_api_request_license_file, DLSE_LICENSE_FOLDER, db_dlse_validate_license
+    db_api_request_license_file, DLSE_LICENSE_FOLDER, db_dlse_validate_license, db_api_upload_license, \
+    db_api_check_is_activated, db_api_get_activation_key, db_api_create_request_session
 
 # Configuration
 MY_SECRET_TOKEN = "<Add Token here or as command line argument --token>"
@@ -40,10 +39,6 @@ ESP32_REMOTE_BROADCAST_PORT = 14550 # As configured in the web interface of the 
 
 # Parameters for retries - adjust if necessary
 SCAN_INTERVAL = 10  # Seconds between scans
-MAX_RETRIES = 3
-BACKOFF_FACTOR = 2.0
-REQUEST_TIMEOUT = 5
-
 
 # =============================================================================
 # DLSE OTA License Activation Tool
@@ -108,132 +103,6 @@ REQUEST_TIMEOUT = 5
 #          - Processed IPs and activation keys
 
 
-class LicenseActivationError(Exception):
-    """Non-retryable activation error"""
-    pass
-
-
-def setup_retry_session(retries: int = MAX_RETRIES,
-                        backoff_factor: float = BACKOFF_FACTOR) -> requests.Session:
-    """Create session with automatic retries for transient errors."""
-    session = requests.Session()
-    retry_strategy = Retry(
-        total=retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    return session
-
-
-def db_webapi_get_activation_key(session: requests.Session,
-                                 device_ip: str,
-                                 token: str) -> Optional[str]:
-    """
-    Fetch activation key from REST API with exponential backoff.
-    Returns None if permanently failed or key unavailable.
-    """
-    info_endpoint = "/api/system/info"
-    endpoint = f"http://{device_ip}{info_endpoint}"
-
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = session.get(
-                endpoint,
-                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-                timeout=REQUEST_TIMEOUT
-            )
-            response.raise_for_status()
-
-            data = response.json()
-            key = data.get("activation_key") or data.get("key")
-
-            if not key:
-                raise LicenseActivationError("API response missing activation_key")
-            return key
-
-        except requests.exceptions.RequestException:
-            if attempt < MAX_RETRIES - 1:
-                sleep_time = BACKOFF_FACTOR ** attempt
-                time.sleep(sleep_time)
-            else:
-                return None
-        except (LicenseActivationError, ValueError, KeyError):
-            # Non-retryable: bad JSON or missing fields
-            return None
-
-    return None
-
-
-def db_webapi_upload_license(session: requests.Session,
-                             device_ip: str,
-                             license_path: Path) -> Tuple[bool, str]:
-    """
-    Upload license to device with retries. Distinguishes retryable vs permanent failures.
-    Returns: (success: bool, message: str)
-    """
-    license_endpoint = "/api/license"
-
-    url = f"http://{device_ip}{license_endpoint}"
-
-    for attempt in range(MAX_RETRIES):
-        try:
-            with open(license_path, 'rb') as f:
-                license_data = f.read()
-
-            response = session.post(
-                url,
-                data=license_data,
-                headers={'Content-Type': 'application/octet-stream'},
-                timeout=REQUEST_TIMEOUT
-            )
-
-            if response.status_code == 200:
-                try:
-                    result = response.json()
-                    if result.get('success'):
-                        return True, result.get('message', 'Activated')
-                    else:
-                        error = result.get('error', result.get('msg', 'Unknown'))
-                        # Permanent errors: don't retry
-                        if any(x in error.lower() for x in ['invalid', 'corrupt', 'format', 'wrong']):
-                            return False, f"Permanent error: {error}"
-                        raise requests.exceptions.RequestException(error)
-                except ValueError:
-                    return False, "Invalid JSON response from device"
-            else:
-                response.raise_for_status()
-
-        except requests.exceptions.RequestException:
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(BACKOFF_FACTOR ** attempt)
-            else:
-                return False, "Max retries exceeded"
-        except Exception as e:
-            return False, f"Unexpected error during upload of license: {e}"
-
-    return False, "Upload failed"
-
-
-def db_webapi_check_is_activated(session: requests.Session, device_ip: str) -> bool:
-    """Check if device already has valid license to avoid redundant API calls."""
-    try:
-        info_endpoint = "/api/system/info"
-        resp = session.get(f"http://{device_ip}{info_endpoint}", timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            lic_type = data.get('license_type', '').lower()
-            # Check if already activated (not trial/unactivated)
-            if 'activated' in lic_type:
-                return True
-    except Exception as e:
-        print(f"Error checking activation status: {e}")
-    return False
-
-
 def process_dlse_device(device: Dict[str, Any], session: requests.Session,
                         successful_ips: Set[str], processed_keys: Set[str], logger) -> bool:
     """
@@ -243,12 +112,13 @@ def process_dlse_device(device: Dict[str, Any], session: requests.Session,
     """
     device_ip = device.get("ip")
     sys_id = device.get("sys_id")
-    if not device_ip:
+    if not device_ip or not isinstance(device_ip, str):
+        print("❌ Invalid device IP (process_dlse_device())")
         return False
 
     try:
         # Get key
-        activation_key = db_webapi_get_activation_key(session, device_ip, MY_SECRET_TOKEN)
+        activation_key = db_api_get_activation_key(session, device_ip, MY_SECRET_TOKEN)
         if not activation_key:
             logger.log(f"❌ Failed to get key for {device_ip}")
             return False
@@ -258,7 +128,7 @@ def process_dlse_device(device: Dict[str, Any], session: requests.Session,
             return True
 
         # Skip if already activated
-        if db_webapi_check_is_activated(session, device_ip):
+        if db_api_check_is_activated(session, device_ip):
             logger.log(f"Already activated: {device_ip} - SYS_ID: {sys_id} - {activation_key} skipping this device in future scans")
             successful_ips.add(device_ip)
             processed_keys.add(activation_key)
@@ -275,7 +145,7 @@ def process_dlse_device(device: Dict[str, Any], session: requests.Session,
             return False
 
         # Attempt upload
-        success, msg = db_webapi_upload_license(session, device_ip, pathlib.Path(lic_path))
+        success, msg = db_api_upload_license(session, device_ip, pathlib.Path(lic_path))
 
         if success:
             logger.log(f"🔑 Activated {device_ip} - {activation_key} 🔑")
@@ -325,7 +195,7 @@ def main():
     if args.esp32remotebrcstport:
         ESP32_REMOTE_BROADCAST_PORT = args.esp32remotebrcstport
 
-    session = setup_retry_session()
+    session = db_api_create_request_session()
     successful_ips: Set[str] = set()
     processed_keys: Set[str] = set()
 
