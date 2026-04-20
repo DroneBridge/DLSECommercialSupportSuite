@@ -215,3 +215,6 @@ __marimo__/
 /my_parameters/
 test/test_resources/db_show_params_user_diff_release_merged.csv
 test/test_resources/db_show_params_user_same_release_merged.csv
+/DroneBridge_ESP32_v2_2_0_stable/
+/DroneBridge_ESP32DLSE_BETA4
+/DroneBridge_ESP32DLSE_BETA5

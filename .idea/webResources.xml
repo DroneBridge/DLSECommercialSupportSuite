@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebResourcesPaths">
+    <contentEntries>
+      <entry url="file://$PROJECT_DIR$">
+        <entryData>
+          <resourceRoots>
+            <path value="file://$PROJECT_DIR$/DroneBridge_ESP32DLSE_BETA3" />
+            <path value="file://$PROJECT_DIR$/DroneBridge_ESP32DLSE_100_Beta2" />
+            <path value="file://$PROJECT_DIR$/test/test_resources" />
+            <path value="file://$PROJECT_DIR$/DroneBridge_ESP32DLSE_BETA4" />
+            <path value="file://$PROJECT_DIR$/DroneBridge_ESP32DLSE_BETA5" />
+          </resourceRoots>
+        </entryData>
+      </entry>
+    </contentEntries>
+  </component>
+</project>

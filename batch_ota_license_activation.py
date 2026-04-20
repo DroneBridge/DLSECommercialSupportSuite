@@ -340,8 +340,8 @@ def main():
                 devices = db_scan_for_esp32_devices(
                     subnet_mask=SUBNET_MASK,
                     timeout=2,
-                    esp32_broadcast_port=14555,
-                    local_brcst_port=14550,
+                    esp32_broadcast_port=ESP32_LOCAL_BROADCAST_PORT,
+                    local_brcst_port=ESP32_REMOTE_BROADCAST_PORT,
                     _beta_4_support=True
                 )
 

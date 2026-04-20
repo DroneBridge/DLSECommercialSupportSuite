@@ -31,18 +31,24 @@ from batch_install_dlse_allinone import play_sound
 # "1.0.0-beta.4" # Only devices with this firmware will be affected. Set to "None" to target any detected device
 TARGET_VERSION = None # Put "0.0.0-dev.1" for targeting BETA4 and earlier. For later releases you can adjust the string
 # Path to the DLSE release root directory -> Download & extract them from https://drone-bridge.com/dlse/
-DLSE_RELEASE_PATH = "DroneBridge_ESP32DLSE_BETA4"
+DLSE_RELEASE_PATH = "DroneBridge_ESP32DLSE_BETA5"
 SUBNET_MASK = '192.168.1.0/24' # IP address range to scan for devices. Here it will scan for 192.168.1.0-254
+ESP32_LOCAL_BROADCAST_PORT = 14555  # As configured in the web interface of the ESP32 (open on your ESP32)
+ESP32_REMOTE_BROADCAST_PORT = 14550 # As configured in the web interface of the ESP32 (open on your GCS)
 LOG_DIR = "logs"
 
 def main():
-    global DLSE_RELEASE_PATH, LOG_DIR, TARGET_VERSION
+    global DLSE_RELEASE_PATH, LOG_DIR, TARGET_VERSION, SUBNET_MASK, ESP32_LOCAL_BROADCAST_PORT, ESP32_REMOTE_BROADCAST_PORT
     # Parse command line arguments. These will overwrite the config above if set.
     parser = argparse.ArgumentParser(description='Install DroneBridge DLSE on ESP32.')
     parser.add_argument('--release-folder', required=False, type=str,
                         help='Folder path to the root directory of the release e.g. /DroneBridge_ESP32DLSE_BETA3 . Download & extract them from https://drone-bridge.com/dlse/')
     parser.add_argument('--subnetmask', required=False, type=str,
                         help='Subnet mask describing where to scan for devices. Default: 192.168.1.0/24')
+    parser.add_argument('--esp32localbrcstport', required=False, type=int,
+                        help='ESP32 broadcast port. Default: 14555')
+    parser.add_argument('--esp32remotebrcstport', required=False, type=int,
+                        help='ESP32 local broadcast port. Default: 14550')
     parser.add_argument('--target-version', required=False, type=str,
                         help='Specify the ESP32s DLSE version that you want to upgrade. Only ESP32s running that version '
                              'will be upgraded. All other devices will be skipped. '
@@ -57,6 +63,10 @@ def main():
         SUBNET_MASK = args.subnetmask
     if args.target_version:
         TARGET_VERSION = args.target_version
+    if args.esp32localbrcstport:
+        ESP32_LOCAL_BROADCAST_PORT = args.esp32localbrcstport
+    if args.esp32remotebrcstport:
+        ESP32_REMOTE_BROADCAST_PORT = args.esp32remotebrcstport
 
     # Initialize the singleton logger
     logger = DBLogger()
@@ -78,8 +88,8 @@ def main():
     # Scan IP address range 192.168.1.0 to 192.168.1.255 for ESP32 devices
     # esp32_broadcast_port is the port we send the broadcast to -> Check the DLSE configuration
     # local_brcst_port is the port we listen for the response from the ESP32 -> Check the DLSE configuration
-    detected_devices = db_scan_for_esp32_devices(subnet_mask=SUBNET_MASK, timeout=3, esp32_broadcast_port=14555,
-                                                 local_brcst_port=14550, _beta_4_support=True)
+    detected_devices = db_scan_for_esp32_devices(subnet_mask=SUBNET_MASK, timeout=3, esp32_broadcast_port=ESP32_LOCAL_BROADCAST_PORT,
+                                                 local_brcst_port=ESP32_REMOTE_BROADCAST_PORT, _beta_4_support=True)
     if len(detected_devices) == 0:
         logger.log("No DLSE devices found in the local network!")
         beep_failure()

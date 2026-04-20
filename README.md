@@ -121,11 +121,11 @@ Update the firmware of your drone swarm over the air.
 > Requires TX & RX GPIO pins to be configured and TRAIL mode being not expired in order to detect the ESP32
 
 ```bash
-python batch_ota_update_allinone.py --release_folder "DroneBridge_ESP32DLSE_BETA3"  --subnetmask "192.168.1.0/24"
+python batch_ota_update_allinone.py --release_folder "DroneBridge_ESP32DLSE_BETA3"  --subnetmask "192.168.1.0/24 --esp32localbrcstport 14555 --esp32remotebrcstport 14550"
 ```
 Or in case you want to target only ESP32s running a specific target version:
 ```bash
-python batch_ota_update_allinone.py --release_folder "DroneBridge_ESP32DLSE_BETA3"  --subnetmask "192.168.1.0/24" --target-version "1.0.0-beta.3"
+python batch_ota_update_allinone.py --release_folder "DroneBridge_ESP32DLSE_BETA3"  --subnetmask "192.168.1.0/24" --target-version "1.0.0-beta.3 --esp32localbrcstport 14555 --esp32remotebrcstport 14550"
 ```
 If a parameter is not supplied, all detected devices will be upgraded.
 
@@ -136,6 +136,8 @@ If a parameter is not supplied, all detected devices will be upgraded.
 | `--release_folder` | Path to the root directory of the release, e.g. `DroneBridge_ESP32DLSE_BETA3`. |
 | `--subnetmask` | IP address range to scan for devices. |
 | `--target-version` | Only upgrade ESP32s running this specific DLSE version — all other devices are skipped. Use `"0.0.0-dev.1"` to target DLSE Beta4 and earlier, as all those versions identify with that version string. |
+| `--esp32localbrcstport` | As configured in the web interface of the ESP32 (open on your ESP32) (udp_local_port) - Default: 14555 |
+| `--esp32remotebrcstport` | As configured in the web interface of the ESP32 (open on your GCS) (wifi_brcst_port) - Default: 14550 |
 
 ### Example Output
 
