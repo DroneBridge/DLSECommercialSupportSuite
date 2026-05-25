@@ -19,6 +19,8 @@ dependencies = [
   "cryptography>=46.0.1",
   "mavsdk>=3.10.2",
   "pymavlink>=2.4.49",
+  # UI dependencies
+  "PySide6>=6.8.0",
 ]
 
 [project.urls]
