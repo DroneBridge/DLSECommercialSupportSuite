@@ -43,6 +43,35 @@ This suite provides tools and scripts to manage, configure, and license DroneBri
     pip install .
     ```
 
+## Updating This Repository
+
+Use the update script for your terminal to fetch the newest code from the configured GitHub remote default branch, currently `origin/main`. The scripts stash tracked local changes, pull with `--ff-only`, update submodules, and then reapply the stash. Untracked local files such as logs, received licenses, firmware folders, and local parameter exports are not stashed or deleted.
+
+PowerShell:
+
+```powershell
+.\update_repository.ps1
+```
+
+Linux/macOS terminal:
+
+```bash
+chmod +x update_repository.sh
+./update_repository.sh
+```
+
+To update from `origin/master` explicitly:
+
+```powershell
+.\update_repository.ps1 -Branch master
+```
+
+```bash
+./update_repository.sh --branch master
+```
+
+If the pull or stash reapply reports conflicts, run `git status`, resolve the conflicts, and keep the generated stash until you have confirmed your local changes are restored.
+
 ## Usage
 
 The suite includes several example scripts demonstrating different functionalities. Before running any script, open it and check for configuration variables (like `MY_SECRET_TOKEN`, `ESP_SERIAL_PORT`, or IP addresses) that need to be updated for your environment.
