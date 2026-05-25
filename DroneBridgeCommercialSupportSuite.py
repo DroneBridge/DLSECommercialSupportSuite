@@ -1535,6 +1535,53 @@ def db_api_get_json(session: requests.Session, device_ip: str, endpoint: str,
     return None
 
 
+def db_api_reboot_esp32_device(session: requests.Session, device_ip: str,
+                               timeout: float = REQUEST_TIMEOUT,
+                               logger: DBLogger | None = None) -> bool:
+    """
+    Reboot one ESP32 through the REST settings endpoint.
+
+    :param session: Requests session used for retry configuration and connection reuse.
+    :param device_ip: IPv4 address or hostname of the ESP32 without protocol.
+    :param timeout: Request timeout in seconds.
+    :param logger: Optional DBLogger instance. A shared logger is created when omitted.
+    :return: ``True`` when ``POST /api/settings`` accepts the empty settings
+        payload with HTTP 200, otherwise ``False``. Request failures are logged
+        and are not raised.
+    """
+    active_logger = logger or DBLogger()
+    if not device_ip or not isinstance(device_ip, str):
+        active_logger.log("Invalid ESP32 IP address for REST reboot.")
+        return False
+
+    endpoint = f"http://{device_ip.strip()}/api/settings"
+    try:
+        response = session.post(
+            endpoint,
+            json={},
+            headers={"Accept": "application/json"},
+            timeout=timeout,
+        )
+    except requests.RequestException as e:
+        active_logger.log(f"REST reboot request failed for {device_ip}: {e}")
+        return False
+
+    if response.status_code == 200:
+        active_logger.log(f"REST reboot accepted by {device_ip}.")
+        return True
+
+    try:
+        body_preview = response.text
+        if body_preview and len(body_preview) > 500:
+            body_preview = body_preview[:500] + "...<truncated>"
+    except Exception:
+        body_preview = "<unavailable>"
+    active_logger.log(
+        f"REST reboot failed for {device_ip} with HTTP {response.status_code}. Response: {body_preview}"
+    )
+    return False
+
+
 def db_api_get_device_details(session: requests.Session, device_ip: str,
                               token: str | None = None) -> dict[str, Any]:
     """
@@ -1948,6 +1995,60 @@ def decode_flight_sw_version(flight_sw_version):
         'type':        type_str,
         'version_str': version_str,
     }
+
+
+def db_mavlink_reboot_esp32_devices(subnet_mask: str = "192.168.1.0/24",
+                                    esp32_broadcast_port: int = 14555,
+                                    source_system: int = 255,
+                                    target_system: int = 0,
+                                    target_component: int = 0,
+                                    logger: DBLogger | None = None) -> bool:
+    """
+    Reboot ESP32 devices by sending the MAVLink reboot command to the subnet broadcast address.
+
+    :param subnet_mask: IPv4 CIDR used to derive the broadcast address.
+    :param esp32_broadcast_port: UDP port open on the ESP32 devices.
+    :param source_system: MAVLink system ID used by this sender.
+    :param target_system: MAVLink target system ID. Use ``0`` for broadcast.
+    :param target_component: MAVLink target component ID. Use ``0`` for broadcast.
+    :param logger: Optional DBLogger instance. A shared logger is created when omitted.
+    :return: ``True`` when the UDP MAVLink command was sent, otherwise ``False``.
+        UDP delivery and ESP32 reboot completion cannot be confirmed by this function.
+    """
+    active_logger = logger or DBLogger()
+    try:
+        network = ipaddress.ip_network(subnet_mask, strict=False)
+        broadcast_address = str(network.broadcast_address)
+    except ValueError as e:
+        active_logger.log(f"Invalid subnet mask for MAVLink reboot: {e}")
+        return False
+
+    os.environ['MAVLINK20'] = '1'
+    connection_string = f"udpout:{broadcast_address}:{esp32_broadcast_port}"
+    try:
+        master = mavutil.mavlink_connection(connection_string, source_system=source_system)
+        master.mav.command_long_send(
+            target_system,
+            target_component,
+            mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+        )
+        active_logger.log(f"Sent MAVLink reboot command to {broadcast_address}:{esp32_broadcast_port}.")
+        close = getattr(master, "close", None)
+        if callable(close):
+            close()
+        return True
+    except Exception as e:
+        active_logger.log(f"Failed to send MAVLink reboot command to {connection_string}: {e}")
+        return False
+
 
 def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2, esp32_broadcast_port=14555, local_brcst_port=14550, _beta_4_support=True) -> list:
     """

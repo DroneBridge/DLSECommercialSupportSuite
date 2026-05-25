@@ -24,6 +24,7 @@ This suite provides tools and scripts to manage, configure, and license DroneBri
     *   Batch Installation via Serial
     *   Batch Over-The-Air Firmware Update for DLSE Drones
     *   Batch Over-The-Air License Activation for DLSE Drones
+    *   Batch Over-The-Air Reboot for DLSE Drones
 
 ## Prerequisites
 
@@ -281,10 +282,37 @@ python batch_ota_license_activation.py --token <YOUR_SECRET_TOKEN> -e --subnetma
 [2026-03-04 23:34:42] Processed activation keys: {'mKM*****DQIA'}
 ```
 
+## Batch Over-The-Air Reboot for DLSE Devices
+
+Reboot all detected ESP32 DLSE devices in one confirmed operation. The script first tries MAVLink discovery. If at least one ESP32 is discovered, it sends one MAVLink broadcast reboot command to the subnet broadcast address. If MAVLink discovers no devices, it falls back to HTTP discovery with `GET /api/system/info` and reboots each detected device by sending `{}` to `POST /api/settings`.
+
+> [!CAUTION]
+> Requires Skybrush Live to be turned off when using MAVLink discovery or reboot, because the broadcast port must be available.
+> The script asks for confirmation before sending reboot commands. Test with a small batch before rebooting a full fleet.
+
+```bash
+python batch_ota_reboot.py --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
+```
+
+To force the slower but more reliable REST path for both discovery and reboot:
+
+```bash
+python batch_ota_reboot.py --force-rest --subnetmask "192.168.1.0/24" --http-timeout 1.0 --http-workers 20
+```
+
+### Parameters
+*   `--subnetmask`: IP address range to scan for devices to reboot. Default: `192.168.1.0/24`.
+*   `--esp32localbrcstport`: As configured in the ESP32 web interface (open on your ESP32) (`udp_local_port`). Default: `14555`.
+*   `--esp32remotebrcstport`: As configured in the ESP32 web interface (open on your GCS) (`wifi_brcst_port`). Default: `14550`.
+*   `--force-rest`: Skip MAVLink discovery and reboot through HTTP scan plus `POST /api/settings`.
+*   `--http-timeout`: Per-host HTTP timeout for REST discovery and reboot requests. Default: `1.0` seconds.
+*   `--http-workers`: Maximum concurrent HTTP scan and reboot workers. Default: `20`, capped at `64`.
+
 ## Key Scripts
 
 *   **`batch_install_dlse_allinone.py`**:  Flashes board over a serial link. Batch installation script that takes care of it all. Applying settings, flashing & activation. It can pull license from the ESP32 prior to flashing in case the license server is not available.
 *   **`batch_ota_license_activation.py`**: Installs DLSE licenses over the air (OTA) for all detected devices on the specified subnet.
+*   **`batch_ota_reboot.py`**: Reboots all detected ESP32 DLSE devices using MAVLink broadcast first, with an HTTP settings-endpoint fallback or forced REST mode.
 *   **`batch_ota_update_allinone.py`**: Updates firmware over the air for all detected devices on the specified subnet and with the specified firmware version.
 *   **`DroneBridgeCommercialSupportSuite.py`**: The main library file containing helper functions.
 
