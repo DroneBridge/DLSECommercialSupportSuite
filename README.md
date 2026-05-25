@@ -47,6 +47,30 @@ This suite provides tools and scripts to manage, configure, and license DroneBri
 
 The suite includes several example scripts demonstrating different functionalities. Before running any script, open it and check for configuration variables (like `MY_SECRET_TOKEN`, `ESP_SERIAL_PORT`, or IP addresses) that need to be updated for your environment.
 
+## PySide6 User Interface
+
+The first UI workflow supports over-the-air DLSE license activation. It discovers ESP32s with MAVLink broadcast and/or HTTP scanning, displays detected devices in a filterable table, shows REST details for the selected ESP32, checks the DroneBridge license server every 5 seconds, and activates licenses only after an explicit confirmation.
+
+Install the package with UI dependencies from the repository root:
+
+```bash
+python -m pip install -e .
+```
+
+Run the UI:
+
+```bash
+python -m ui
+```
+
+License activation requires a DroneBridge license server token. The UI preloads the token from `DRONEBRIDGE_SECRET_TOKEN` when the environment variable is set, or you can enter a token for the current session. The UI does not persist the token. Regular activated licenses use the existing default validity behavior, and evaluation licenses always request a fixed 60-day validity.
+
+Activated licenses are cached in `received_licenses/` for offline recovery and serial batch flashing. Evaluation licenses are downloaded to a temporary location for immediate validation/upload only and are removed after use, so they do not get mixed into the offline activated-license cache.
+
+The license server base URL is configured in `DroneBridgeCommercialSupportSuite.py` with `DLSE_LICENSE_SERVER_BASE_URL`. For local testing, point that constant or the relevant function argument to your local server base URL, for example `http://127.0.0.1:8000`; the suite appends `/api/license/generate` internally.
+
+Before activating devices, make sure Skybrush Live is stopped, the ESP32s are reachable on the selected subnet, the configured UDP broadcast ports match the ESP32 settings, and `received_licenses/` is writable. HTTP scanning defaults to 20 concurrent probes with a 1 second per-host timeout to avoid flooding the network.
+
 ## Automated DLSE Batch Installation
 <img alt="Gemini_Generated_Image_kvejvukvejvukvej" src="https://github.com/user-attachments/assets/a069d8a4-fb42-4b4c-b2d6-70a67f0ac5ed" />
 This script allows for batch processing of drones for a show.
@@ -96,7 +120,7 @@ python batch_install_dlse_allinone.py \
 
 | Parameter | Description |
 |---|---|
-| `--token` | Your secret token from [drone-bridge.com](https://drone-bridge.com). |
+| `--token` | Your secret token from [drone-bridge.com](https://drone-bridge.com). You can also set `DRONEBRIDGE_SECRET_TOKEN`; `--token` overrides the environment variable. |
 | `--release-folder` | Path to the folder containing the DLSE firmware binaries you downloaded in Step 3. |
 | `--settings-file` | Path to the settings file you exported from the ESP32 web interface in Step 1. |
 | `--start-index` | A numeric postfix appended to `ssid_ap`, `wifi_hostname`, and `ip_sta` for each flashed unit. For example, with `--start-index 33`, the access point SSID becomes `<YOUR_SSID>33` and the static IP of the ESP32 will be `192.168.50.33` if your config has set `192.168.50.1` as static IP. |
@@ -180,17 +204,25 @@ Status Code: 200
 ## Batch Over-The-Air License Activation for DLSE Drones
 <img alt="Gemini_Generated_Image_scabxascabxascab" src="https://github.com/user-attachments/assets/6152d740-2bde-496f-b818-a8bf9077b872" />
 Activates all ESP32s on the subnet by requesting a license from the license server and installing it via a WiFi connection. Requires Skybrush Live to be turned off.    
+Device discovery first uses MAVLink UDP broadcast. If no devices respond, the script falls back to an HTTP scan of the same `--subnetmask` using `GET /api/system/info` with 20 concurrent probes and a 1 second per-host timeout.
 
 > [!CAUTION]
 > Requires Skybrush Live to be turned off.
 > Requires TX & RX GPIO pins to be configured and TRAIL mode being not expired in order to detect the ESP32
 
 ```bash
-python batch_ota_license_activation.py --token <YOUR_SECRET_TOKEN> ----subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
+python batch_ota_license_activation.py --token <YOUR_SECRET_TOKEN> --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
+```
+
+To request 60-day evaluation licenses only, add `-e`:
+
+```bash
+python batch_ota_license_activation.py --token <YOUR_SECRET_TOKEN> -e --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
 ```
 
 ### Parameters
 *   `--token`: Your secret activation token received from `drone-bridge.com/dlse` user dashboard
+*   `-e`, `--evaluation`: Request 60-day evaluation licenses instead of activated licenses. Evaluation licenses are temporary and are not stored in `received_licenses/`.
 *   `--subnetmask`: IP address range to scan for devices to activate
 *   `--esp32localbrcstport`: As configured in the web interface of the ESP32 (open on your ESP32) (udp_local_port)
 *   `--esp32remotebrcstport`: As configured in the web interface of the ESP32 (open on your GCS) (wifi_brcst_port)

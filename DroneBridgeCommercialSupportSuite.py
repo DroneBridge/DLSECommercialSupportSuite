@@ -34,6 +34,8 @@ import re
 import esptool
 import requests
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from typing import Set, Dict, Any, Optional, Tuple
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -54,7 +56,10 @@ MAX_RETRIES = 3
 BACKOFF_FACTOR = 2.0
 REQUEST_TIMEOUT = 5
 
-DLSE_LICENSE_FOLDER = "received_licenses/" # Location of all received license files. Stored locally here
+DLSE_LICENSE_SERVER_BASE_URL = "https://drone-bridge.com"
+DLSE_LICENSE_GENERATE_PATH = "/api/license/generate"
+
+DLSE_LICENSE_FOLDER = "received_licenses/" # Location of all received license files (excluding the EVALUATION licenses). Stored locally here.
 
 DLSE_SETTINGS_PARTITION_ADDRESS = 0x9000 # Do not change
 DLSE_SETTINGS_PARTITION_SIZE = 0x6000 # Do not change
@@ -102,6 +107,26 @@ class DBLicenseType(Enum):
     EVALUATION = 1
     ACTIVATED = 2
     EXPIRED = 3
+
+
+class DBLicenseActivationStatus(Enum):
+    """Machine-readable states for over-the-air DLSE license activation."""
+    ACTIVATED = "activated"
+    ALREADY_ACTIVATED = "already_activated"
+    SKIPPED_DUPLICATE = "skipped_duplicate"
+    FAILED = "failed"
+
+
+@dataclass
+class DBLicenseActivationResult:
+    """Structured result returned after attempting OTA license activation."""
+    device_ip: str
+    success: bool
+    status: DBLicenseActivationStatus
+    message: str
+    activation_key: str | None = None
+    license_path: str | None = None
+    sys_id: int | None = None
 
 class DLSESupportedChips(Enum):
     ESP32C3 = 5
@@ -151,8 +176,33 @@ def db_get_dlse_lic_from_local_storage(activation_key: str, local_lic_folder=DLS
     return license_file_path
 
 
-def db_is_dlse_lic_server_available(lic_server_address="https://drone-bridge.com/api/license/generate") -> bool:
+def db_build_dlse_license_generate_url(base_url: str = DLSE_LICENSE_SERVER_BASE_URL) -> str:
+    """
+    Build the DLSE license generation endpoint from a configurable server base URL.
+
+    :param base_url: License server base URL such as ``https://drone-bridge.com``.
+        Passing the full ``/api/license/generate`` endpoint is also accepted for
+        backwards compatibility.
+    :return: Full URL for the license generation API endpoint.
+    """
+    clean_base_url = (base_url or DLSE_LICENSE_SERVER_BASE_URL).strip()
+    if clean_base_url.rstrip("/").endswith(DLSE_LICENSE_GENERATE_PATH):
+        return clean_base_url.rstrip("/")
+    return urljoin(f"{clean_base_url.rstrip('/')}/", DLSE_LICENSE_GENERATE_PATH.lstrip("/"))
+
+
+def db_is_dlse_lic_server_available(lic_server_address: str = DLSE_LICENSE_SERVER_BASE_URL) -> bool:
+    """
+    Check whether the configured DLSE license server is reachable.
+
+    :param lic_server_address: License server base URL. The default is
+        ``DLSE_LICENSE_SERVER_BASE_URL``. A full ``/api/license/generate`` URL is
+        accepted for compatibility with existing callers.
+    :return: ``True`` when the server responds with a non-5xx status, otherwise
+        ``False`` for server errors or request failures.
+    """
     logger = DBLogger()
+    lic_server_address = db_build_dlse_license_generate_url(lic_server_address)
     try:
         response = requests.get(lic_server_address, timeout=5)
         if response.status_code < 500:
@@ -678,12 +728,27 @@ def db_embed_license_in_settings_csv(_settings_csv_file_path: str, _license_file
 
 def db_api_request_license_file(_activation_key: str, _token: str, _output_path=DLSE_LICENSE_FOLDER,
                                 _license_type=DBLicenseType.ACTIVATED, _validity_days=0,
-                                base_url="https://drone-bridge.com/api/license/generate") -> str | None:
+                                base_url: str = DLSE_LICENSE_SERVER_BASE_URL) -> str | None:
     """
     Requests the license file from the licensing server.
-    Returns a path safe file name where all "/" characters are changed to "_"
+
+    :param _activation_key: Activation key from the ESP32.
+    :param _token: Bearer token for the DroneBridge license server.
+    :param _output_path: Directory where the downloaded license file is stored.
+        Evaluation licenses use a temporary directory when this is left at the
+        default ``DLSE_LICENSE_FOLDER`` so they do not enter the offline cache.
+    :param _license_type: Type of license to request.
+    :param _validity_days: Validity period for evaluation licenses.
+    :param base_url: License server base URL. A full ``/api/license/generate``
+        URL is accepted for compatibility with existing callers.
+    :return: Path-safe downloaded license file path, or ``None`` when the server
+        request, response validation, or file write fails.
     """
     logger = DBLogger()
+    license_generate_url = db_build_dlse_license_generate_url(base_url)
+    output_path = _output_path
+    if _license_type == DBLicenseType.EVALUATION and _output_path == DLSE_LICENSE_FOLDER:
+        output_path = os.path.join(tempfile.gettempdir(), "dronebridge_evaluation_licenses")
     params = {
         "activationKey": _activation_key,
         "licenseType": _license_type.value,
@@ -700,9 +765,9 @@ def db_api_request_license_file(_activation_key: str, _token: str, _output_path=
 
     for attempt in range(1, max_attempts + 1):
         try:
-            logger.log(f"Requesting license from {base_url}... (attempt {attempt}/{max_attempts})")
+            logger.log(f"Requesting license from {license_generate_url}... (attempt {attempt}/{max_attempts})")
             response = requests.get(
-                base_url,
+                license_generate_url,
                 params=params,
                 headers=headers,
                 stream=True,
@@ -718,12 +783,12 @@ def db_api_request_license_file(_activation_key: str, _token: str, _output_path=
                 if "filename=" in cd:
                     filename = cd.split("filename=", 1)[1].strip().strip('"').strip()
 
-                if _output_path:
-                    os.makedirs(_output_path, exist_ok=True)
+                if output_path:
+                    os.makedirs(output_path, exist_ok=True)
 
                 # Make file name path safe! BASE64 may contain "/" characters that need to be escaped by replacing them with "_"
                 safe_filename = filename.replace("/", "_")
-                safe_filename = os.path.join(_output_path, safe_filename)
+                safe_filename = os.path.join(output_path, safe_filename)
 
                 bytes_written = 0
                 with open(safe_filename, "wb") as f:
@@ -1420,6 +1485,296 @@ def db_api_check_is_activated(session: requests.Session, device_ip: str) -> bool
     except Exception as e:
         print(f"Error checking activation status: {e}")
     return False
+
+
+def db_mask_sensitive_value(value: str | None, visible_chars: int = 6) -> str:
+    """
+    Mask sensitive values for logs and UI status messages.
+
+    :param value: Secret, activation key, token, or payload identifier to mask.
+    :param visible_chars: Number of trailing characters to keep visible.
+    :return: Masked string that preserves limited correlation value, or an empty string.
+    """
+    if not value:
+        return ""
+    if len(value) <= visible_chars:
+        return "*" * len(value)
+    return f"{'*' * (len(value) - visible_chars)}{value[-visible_chars:]}"
+
+
+def db_api_get_json(session: requests.Session, device_ip: str, endpoint: str,
+                    token: str | None = None, timeout: float = REQUEST_TIMEOUT) -> dict | None:
+    """
+    Fetch a JSON object from one ESP32 REST endpoint.
+
+    :param session: Requests session used for retry configuration and connection reuse.
+    :param device_ip: IPv4 address or hostname of the ESP32 without protocol.
+    :param endpoint: REST path such as ``/api/system/info``.
+    :param token: Optional bearer token to pass when the endpoint requires it.
+    :param timeout: Request timeout in seconds.
+    :return: Parsed JSON dictionary on HTTP 200, otherwise ``None``.
+    """
+    clean_endpoint = endpoint if endpoint.startswith("/") else f"/{endpoint}"
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        response = session.get(
+            f"http://{device_ip}{clean_endpoint}",
+            headers=headers,
+            timeout=timeout,
+        )
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        if isinstance(data, dict):
+            return data
+    except (requests.RequestException, ValueError):
+        return None
+    return None
+
+
+def db_api_get_device_details(session: requests.Session, device_ip: str,
+                              token: str | None = None) -> dict[str, Any]:
+    """
+    Fetch the REST data used by the UI detail panel for one ESP32.
+
+    :param session: Requests session used for HTTP calls.
+    :param device_ip: IPv4 address or hostname of the ESP32 without protocol.
+    :param token: Optional bearer token for endpoints that require authentication.
+    :return: Dictionary with ``system_info``, ``settings``, ``stats``, and ``errors`` keys.
+    """
+    details: dict[str, Any] = {
+        "ip": device_ip,
+        "system_info": None,
+        "settings": None,
+        "stats": None,
+        "errors": {},
+    }
+    endpoint_map = {
+        "system_info": "/api/system/info",
+        "settings": "/api/settings",
+        "stats": "/api/system/stats",
+    }
+    for key, endpoint in endpoint_map.items():
+        data = db_api_get_json(session, device_ip, endpoint, token=token)
+        if data is None:
+            details["errors"][key] = f"Failed to fetch {endpoint}"
+        else:
+            details[key] = data
+    return details
+
+
+def db_scan_for_esp32_devices_by_ip_range(subnet_mask: str = "192.168.1.0/24",
+                                          timeout: float = 1.0,
+                                          max_workers: int = 20) -> list[dict[str, Any]]:
+    """
+    Discover ESP32 devices by probing ``GET /api/system/info`` across an IPv4 range.
+
+    :param subnet_mask: IPv4 CIDR such as ``192.168.1.0/24``.
+    :param timeout: Per-host HTTP request timeout in seconds.
+    :param max_workers: Maximum concurrent probes used to avoid flooding the network.
+    :return: List of discovered device dictionaries with at least ``ip`` and ``system_info``.
+    """
+    logger = DBLogger()
+    try:
+        network = ipaddress.ip_network(subnet_mask, strict=False)
+    except ValueError as e:
+        logger.log(f"Invalid subnet mask: {e}")
+        return []
+
+    workers = max(1, min(max_workers, 64))
+    hosts = list(network.hosts())
+    found_devices: list[dict[str, Any]] = []
+
+    def probe_host(host_ip: str) -> dict[str, Any] | None:
+        probe_session = db_api_create_request_session(retries=0, backoff_factor=0)
+        try:
+            data = db_api_get_json(probe_session, host_ip, "/api/system/info", timeout=timeout)
+            if data is None:
+                return None
+            return {
+                "ip": host_ip,
+                "system_info": data,
+                "activation_key": data.get("activation_key") or data.get("key"),
+                "mac": data.get("esp_mac"),
+            }
+        finally:
+            probe_session.close()
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {executor.submit(probe_host, str(host)): str(host) for host in hosts}
+        for future in as_completed(future_map):
+            try:
+                device = future.result()
+            except Exception as e:
+                logger.log(f"HTTP discovery error for {future_map[future]}: {e}")
+                continue
+            if device is not None:
+                found_devices.append(device)
+
+    found_devices.sort(key=lambda item: ipaddress.ip_address(item["ip"]))
+    logger.log(f"\tFound {len(found_devices)} ESP32 device(s) via HTTP scan.")
+    return found_devices
+
+
+def db_api_activate_dlse_device(device: Dict[str, Any], session: requests.Session, token: str,
+                                processed_keys: Set[str] | None = None,
+                                successful_ips: Set[str] | None = None,
+                                license_type: DBLicenseType = DBLicenseType.ACTIVATED,
+                                validity_days: int = 0,
+                                logger: DBLogger | None = None) -> DBLicenseActivationResult:
+    """
+    Activate a single DLSE ESP32 over the REST API using the established batch flow.
+
+    :param device: Device dictionary containing at least an ``ip`` key and optionally ``sys_id``.
+    :param session: Requests session used for ESP32 HTTP requests.
+    :param token: DroneBridge license server token. It is not logged by this function.
+    :param processed_keys: Optional activation-key set used to skip duplicate devices.
+    :param successful_ips: Optional IP set updated when activation succeeds or is already active.
+    :param license_type: License kind to request from the license server.
+    :param validity_days: Evaluation validity in days. Use ``60`` for UI evaluation licenses.
+    :param logger: Optional DBLogger instance. A shared logger is created when omitted.
+    :return: Structured activation result for UI display and CLI summaries.
+    """
+    active_logger = logger or DBLogger()
+    device_ip = device.get("ip")
+    sys_id = device.get("sys_id")
+    if not device_ip or not isinstance(device_ip, str):
+        return DBLicenseActivationResult(
+            device_ip="",
+            sys_id=sys_id,
+            success=False,
+            status=DBLicenseActivationStatus.FAILED,
+            message="Invalid device IP",
+        )
+    if not token or token == "<Add Token here or as an environment variable DRONEBRIDGE_SECRET_TOKEN or as command line argument --token>":
+        return DBLicenseActivationResult(
+            device_ip=device_ip,
+            sys_id=sys_id,
+            success=False,
+            status=DBLicenseActivationStatus.FAILED,
+            message="Missing DroneBridge license server token",
+        )
+
+    keys_seen = processed_keys if processed_keys is not None else set()
+    ips_seen = successful_ips if successful_ips is not None else set()
+
+    try:
+        activation_key = db_api_get_activation_key(session, device_ip, token)
+        masked_key = db_mask_sensitive_value(activation_key)
+        if not activation_key:
+            active_logger.log(f"Failed to get activation key for {device_ip}")
+            return DBLicenseActivationResult(
+                device_ip=device_ip,
+                sys_id=sys_id,
+                success=False,
+                status=DBLicenseActivationStatus.FAILED,
+                message="Failed to get activation key",
+            )
+
+        if activation_key in keys_seen:
+            active_logger.log(f"Skipping duplicate activation key for {device_ip}: {masked_key}")
+            return DBLicenseActivationResult(
+                device_ip=device_ip,
+                sys_id=sys_id,
+                success=True,
+                status=DBLicenseActivationStatus.SKIPPED_DUPLICATE,
+                message="Activation key was already processed",
+                activation_key=activation_key,
+            )
+
+        if db_api_check_is_activated(session, device_ip):
+            active_logger.log(f"Already activated: {device_ip} - SYS_ID: {sys_id} - {masked_key}")
+            ips_seen.add(device_ip)
+            keys_seen.add(activation_key)
+            return DBLicenseActivationResult(
+                device_ip=device_ip,
+                sys_id=sys_id,
+                success=True,
+                status=DBLicenseActivationStatus.ALREADY_ACTIVATED,
+                message="Device is already activated",
+                activation_key=activation_key,
+            )
+
+        lic_path = db_api_request_license_file(
+            activation_key,
+            token,
+            _license_type=license_type,
+            _validity_days=validity_days,
+        )
+        if lic_path is None:
+            active_logger.log(f"Failed to get license file from server for {device_ip}: {masked_key}")
+            return DBLicenseActivationResult(
+                device_ip=device_ip,
+                sys_id=sys_id,
+                success=False,
+                status=DBLicenseActivationStatus.FAILED,
+                message="Failed to get license file from server",
+                activation_key=activation_key,
+            )
+
+        remove_downloaded_license = license_type == DBLicenseType.EVALUATION
+
+        license_valid, _license_info = db_dlse_validate_license(lic_path, match_activation_key=activation_key)
+        if not license_valid:
+            active_logger.log(f"Downloaded license failed validation for {device_ip}: {masked_key}")
+            if remove_downloaded_license:
+                try:
+                    os.remove(lic_path)
+                except OSError as e:
+                    active_logger.log(f"Failed to remove temporary evaluation license {lic_path}: {e}")
+            return DBLicenseActivationResult(
+                device_ip=device_ip,
+                sys_id=sys_id,
+                success=False,
+                status=DBLicenseActivationStatus.FAILED,
+                message="Downloaded license failed validation",
+                activation_key=activation_key,
+                license_path=None if remove_downloaded_license else lic_path,
+            )
+
+        success, msg = db_api_upload_license(session, device_ip, Path(lic_path))
+        if remove_downloaded_license:
+            try:
+                os.remove(lic_path)
+            except OSError as e:
+                active_logger.log(f"Failed to remove temporary evaluation license {lic_path}: {e}")
+        if success:
+            active_logger.log(f"Activated {device_ip} - {masked_key}")
+            ips_seen.add(device_ip)
+            keys_seen.add(activation_key)
+            return DBLicenseActivationResult(
+                device_ip=device_ip,
+                sys_id=sys_id,
+                success=True,
+                status=DBLicenseActivationStatus.ACTIVATED,
+                message=msg,
+                activation_key=activation_key,
+                license_path=None if remove_downloaded_license else lic_path,
+            )
+
+        active_logger.log(f"Failed to activate {device_ip}: {msg}")
+        return DBLicenseActivationResult(
+            device_ip=device_ip,
+            sys_id=sys_id,
+            success=False,
+            status=DBLicenseActivationStatus.FAILED,
+            message=msg,
+            activation_key=activation_key,
+            license_path=None if remove_downloaded_license else lic_path,
+        )
+
+    except Exception as e:
+        active_logger.log(f"Error processing {device_ip}: {e}")
+        return DBLicenseActivationResult(
+            device_ip=device_ip,
+            sys_id=sys_id,
+            success=False,
+            status=DBLicenseActivationStatus.FAILED,
+            message=f"Unexpected activation error: {e}",
+        )
 
 
 def db_csv_merge_user_parameters_with_release(_user_csv_path: str, _release_path: str) -> str | None:
