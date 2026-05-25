@@ -51,39 +51,83 @@ START_DEVICE_ID = 18  # Starting ID for iterating over static IP, hostname index
 
 USE_CMD_LINE_ESPTOOL = False # Set to true if you encounter connection issues with the serial port. This maybe more stable.
 
-def main():
-    global MY_SECRET_TOKEN, ESP_SERIAL_PORT_FLASH_BAUD_RATE, PATH_SETTINGS_CSV, DLSE_RELEASE_PATH, LOG_DIR, START_DEVICE_ID, USE_CMD_LINE_ESPTOOL
-    # Parse command line arguments. These will overwrite the config above if set.
+
+def mask_token_for_log(token: str | None) -> str:
+    """
+    Mask the DroneBridge activation token before logging it.
+
+    :param token: Token string from config, environment, or command line.
+    :return: Masked token with limited correlation value, or ``<missing>`` when empty.
+    """
+    if not token:
+        return "<missing>"
+    if len(token) <= 8:
+        return "*" * len(token)
+    return f"{token[:4]}...{token[-4:]}"
+
+
+def parse_args() -> argparse.Namespace:
+    """
+    Parse command-line arguments for the serial DLSE batch installer.
+
+    :return: Parsed argparse namespace.
+    """
     parser = argparse.ArgumentParser(description='Install DroneBridge DLSE on ESP32.')
     parser.add_argument('--release-folder', required=False, type=str,
                         help='Folder path to the root directory of the release e.g. /DroneBridge_ESP32DLSE_BETA3 . Download & extract them from https://drone-bridge.com/dlse/')
     parser.add_argument('--settings-file', required=False, type=str,
                         help='.csv file containing all the settings you want the ESP32 to be configured to. You get it from the DLSE web interface, that way you are flashing a working config to all boards')
     parser.add_argument('--token', required=False, type=str,
-                        help='Secret token to authenticate you with the DroneBridge licensing server')
+                        help='Secret token to authenticate you with the DroneBridge licensing server. Overrides DRONEBRIDGE_SECRET_TOKEN.')
     parser.add_argument('--start-index', required=False, type=int,
                         help='Starting ID for iterating over static IP, hostname index and ap_name with every flashing operation. First ESP32 will get static IP X.X.X.<start_index>, the second ESP32 will get X.X.X.<start_index + 1>')
     parser.add_argument('--baud', required=False, type=int,
                         help="Baud rate used for flashing ESP32. Lower to 115200 if flashing fails")
-    args = parser.parse_args()
+    return parser.parse_args()
 
+
+def apply_args(args: argparse.Namespace) -> None:
+    """
+    Apply command-line and environment overrides to module-level installer settings.
+
+    ``DRONEBRIDGE_SECRET_TOKEN`` overrides the configured default token, and
+    ``--token`` overrides both for one-off runs.
+
+    :param args: Parsed command-line arguments.
+    :return: None. Updates module-level configuration.
+    """
+    global MY_SECRET_TOKEN, ESP_SERIAL_PORT_FLASH_BAUD_RATE, PATH_SETTINGS_CSV, DLSE_RELEASE_PATH, LOG_DIR, START_DEVICE_ID, USE_CMD_LINE_ESPTOOL
+
+    env_token = os.environ.get("DRONEBRIDGE_SECRET_TOKEN")
+    if env_token:
+        MY_SECRET_TOKEN = env_token
     if args.token:
         MY_SECRET_TOKEN = args.token
-    if args.release_folder:
+    if args.release_folder is not None:
         DLSE_RELEASE_PATH = args.release_folder
-    if args.settings_file:
+    if args.settings_file is not None:
         PATH_SETTINGS_CSV = args.settings_file
-    if args.start_index:
+    if args.start_index is not None:
         START_DEVICE_ID = args.start_index
-    if args.baud:
+    if args.baud is not None:
         ESP_SERIAL_PORT_FLASH_BAUD_RATE = args.baud
+
+
+def main():
+    """
+    Run the serial batch flashing, configuration, and license activation workflow.
+
+    The script applies configuration from defaults, ``DRONEBRIDGE_SECRET_TOKEN``,
+    and command-line arguments before starting serial-port monitoring.
+    """
+    apply_args(parse_args())
 
     # Initialize the singleton logger
     logger = DBLogger()
     logger.create_log_file("logs", log_file_prefix="dlse_flashing_log")
 
     # Show the user what kind of settings and release config he chose
-    logger.log(f"Using Token: {MY_SECRET_TOKEN[:4]}...{MY_SECRET_TOKEN[-4:]}")
+    logger.log(f"Using Token: {mask_token_for_log(MY_SECRET_TOKEN)}")
     logger.log(f"Using settings file: {PATH_SETTINGS_CSV}")
     if not os.path.exists(PATH_SETTINGS_CSV):
         logger.log(f"  ❌ Could not find {PATH_SETTINGS_CSV}")
