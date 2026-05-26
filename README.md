@@ -33,16 +33,7 @@ This suite provides tools and scripts to manage, configure, and license DroneBri
 
 ## Installation
 
-1.  Clone the repository:
-    ```bash
-    git clone --recursive https://github.com/DroneBridge/DLSECommercialSupportSuite.git
-    cd DLSECommercialSupportSuite
-    ```
 
-2.  Install the package and dependencies:
-    ```bash
-    pip install .
-    ```
 
 ## Updating This Repository
 
@@ -77,29 +68,6 @@ If the pull or stash reapply reports conflicts, run `git status`, resolve the co
 
 The suite includes several example scripts demonstrating different functionalities. Before running any script, open it and check for configuration variables (like `MY_SECRET_TOKEN`, `ESP_SERIAL_PORT`, or IP addresses) that need to be updated for your environment.
 
-## PySide6 User Interface
-
-The first UI workflow supports over-the-air DLSE license activation. It discovers ESP32s with MAVLink broadcast and/or HTTP scanning, displays detected devices in a filterable table, shows REST details for the selected ESP32, checks the DroneBridge license server every 5 seconds, and activates licenses only after an explicit confirmation.
-
-Install the package with UI dependencies from the repository root:
-
-```bash
-python -m pip install -e .
-```
-
-Run the UI:
-
-```bash
-python -m ui
-```
-
-License activation requires a DroneBridge license server token. The UI preloads the token from `DRONEBRIDGE_SECRET_TOKEN` when the environment variable is set, or you can enter a token for the current session. The UI does not persist the token. Regular activated licenses use the existing default validity behavior, and evaluation licenses always request a fixed 60-day validity.
-
-Activated licenses are cached in `received_licenses/` for offline recovery and serial batch flashing. Evaluation licenses are downloaded to a temporary location for immediate validation/upload only and are removed after use, so they do not get mixed into the offline activated-license cache.
-
-The license server base URL is configured in `DroneBridgeCommercialSupportSuite.py` with `DLSE_LICENSE_SERVER_BASE_URL`. For local testing, point that constant or the relevant function argument to your local server base URL, for example `http://127.0.0.1:8000`; the suite appends `/api/license/generate` internally.
-
-Before activating devices, make sure Skybrush Live is stopped, the ESP32s are reachable on the selected subnet, the configured UDP broadcast ports match the ESP32 settings, and `received_licenses/` is writable. HTTP scanning defaults to 20 concurrent probes with a 1 second per-host timeout to avoid flooding the network.
 
 ## Automated DLSE Batch Installation
 <img alt="Gemini_Generated_Image_kvejvukvejvukvej" src="https://github.com/user-attachments/assets/a069d8a4-fb42-4b4c-b2d6-70a67f0ac5ed" />
@@ -250,6 +218,8 @@ To request 60-day evaluation licenses only, add `-e`:
 python batch_ota_license_activation.py --token <YOUR_SECRET_TOKEN> -e --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
 ```
 
+**After activating the ESP32s you might need to reboot them to re-activate the MAVLink processing up to DLSE BETA6 releases.** Do it manually or use the Batch Over-The-Air Reboot Script shown further down below.
+
 ### Parameters
 *   `--token`: Your secret activation token received from `drone-bridge.com/dlse` user dashboard
 *   `-e`, `--evaluation`: Request 60-day evaluation licenses instead of activated licenses. Evaluation licenses are temporary and are not stored in `received_licenses/`.
@@ -327,6 +297,20 @@ python batch_ota_reboot.py --force-rest --subnetmask "192.168.1.0/24" --http-tim
 # OpenAPI Description
 
 Find the DroneBridge DLSE OpenAPI description here: `api_definiton/openapi_definition.yaml`
+
+
+# Installation for Development Setups
+
+1.  Clone the repository:
+    ```bash
+    git clone --recursive https://github.com/DroneBridge/DLSECommercialSupportSuite.git
+    cd DLSECommercialSupportSuite
+    ```
+
+2.  Install the package and dependencies:
+    ```bash
+    pip install .
+    ```
 
 # Images
 
