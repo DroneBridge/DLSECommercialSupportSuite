@@ -50,6 +50,7 @@ from urllib.parse import urljoin
 from enum import Enum
 from tqdm import tqdm
 from pathlib import Path
+from dlse_cli_utils import resolve_resource_path
 from nvs_partition_tool.nvs_parser import NVS_Partition
 
 # Parameters for the request session using the web/REST:API of DLSE
@@ -385,9 +386,18 @@ def db_dlse_validate_license(license_file: str, match_activation_key=None) -> tu
     Supply match_activation_key as base64 encoded activation key to check if the license is valid for that specific activation key
     """
     def load_public_key(public_key_file="resources/pubkey_DLSE.pem"):
-        """Loads a public key from a file."""
+        """
+        Load the public key from the source checkout or installed package resources.
+
+        :param public_key_file: Source checkout or package-relative public key path.
+        :return: Loaded public key object, or ``None`` when the key cannot be found.
+        """
         try:
-            with open(public_key_file, "rb") as key_file:
+            resolved_public_key_file = resolve_resource_path(public_key_file)
+            if resolved_public_key_file is None:
+                print(f"❌ Public key not found at {public_key_file}")
+                return None
+            with open(resolved_public_key_file, "rb") as key_file:
                 _public_key = serialization.load_pem_public_key(key_file.read())
         except FileNotFoundError:
             print(f"❌ Public key not found at {public_key_file}")

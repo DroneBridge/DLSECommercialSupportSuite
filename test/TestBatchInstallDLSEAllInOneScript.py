@@ -107,6 +107,13 @@ class TestBatchInstallDLSEAllInOneScript(unittest.TestCase):
         self.assertIsNotNone(path)
         self.assertTrue(path.exists())
 
+    def test_resolve_resource_path_finds_bundled_public_key(self):
+        """The installed CLI can resolve the bundled license validation public key."""
+        path = resolve_resource_path("resources/pubkey_DLSE.pem")
+
+        self.assertIsNotNone(path)
+        self.assertTrue(path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

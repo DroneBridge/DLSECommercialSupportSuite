@@ -217,26 +217,27 @@ Status Code: 200
 ## Batch Over-The-Air License Activation for DLSE Drones
 <img alt="Gemini_Generated_Image_scabxascabxascab" src="https://github.com/user-attachments/assets/6152d740-2bde-496f-b818-a8bf9077b872" />
 Activates all ESP32s on the subnet by requesting a license from the license server and installing it via a WiFi connection. Requires Skybrush Live to be turned off.    
-Device discovery first uses MAVLink UDP broadcast. If no devices respond, the script falls back to an HTTP scan of the same `--subnetmask` using `GET /api/system/info` with 20 concurrent probes and a 1 second per-host timeout.
+For the most robust discovery behavior, run the script with `--force-rest`. This skips MAVLink discovery and uses an HTTP scan of the selected `--subnetmask` with `GET /api/system/info`, 20 concurrent probes, and a 1 second per-host timeout. If `--force-rest` is omitted, discovery first uses MAVLink UDP broadcast and falls back to the same HTTP scan only when no devices respond.
 
 > [!CAUTION]
 > Requires Skybrush Live to be turned off.
 > Requires TX & RX GPIO pins to be configured and TRAIL mode being not expired in order to detect the ESP32
 
 ```bash
-dlse-activate --token <YOUR_SECRET_TOKEN> --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
+dlse-activate --token <YOUR_SECRET_TOKEN> --force-rest --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
 ```
 
 To request 60-day evaluation licenses only, add `-e`:
 
 ```bash
-dlse-activate --token <YOUR_SECRET_TOKEN> -e --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
+dlse-activate --token <YOUR_SECRET_TOKEN> --force-rest -e --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
 ```
 
 **After activating the ESP32s you might need to reboot them to re-activate the MAVLink processing up to DLSE BETA6 releases.** Do it manually or use the Batch Over-The-Air Reboot Script shown further down below.
 
 ### Parameters
 *   `--token`: Your secret activation token received from `drone-bridge.com/dlse` user dashboard
+*   `--force-rest`: Skip MAVLink discovery and scan the selected IP range with the ESP32 REST API. Recommended for the most robust discovery behavior.
 *   `-e`, `--evaluation`: Request 60-day evaluation licenses instead of activated licenses. Evaluation licenses are temporary and are not stored in `received_licenses/`.
 *   `--subnetmask`: IP address range to scan for devices to activate
 *   `--esp32localbrcstport`: As configured in the web interface of the ESP32 (open on your ESP32) (udp_local_port)

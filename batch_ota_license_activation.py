@@ -49,6 +49,7 @@ LICENSE_TYPE = DBLicenseType.ACTIVATED
 LICENSE_VALIDITY_DAYS = 0
 HTTP_FALLBACK_TIMEOUT = 1.0
 HTTP_FALLBACK_MAX_WORKERS = 20
+FORCE_REST_DISCOVERY = False
 
 
 def process_dlse_device(device: Dict[str, Any], session: requests.Session,
@@ -84,6 +85,14 @@ def discover_dlse_devices(logger: DBLogger) -> list[dict[str, Any]]:
     :param logger: DBLogger instance for script output.
     :return: Discovered device dictionaries suitable for ``db_api_activate_dlse_device``.
     """
+    if FORCE_REST_DISCOVERY:
+        logger.log("Forced REST discovery selected. Skipping MAVLink discovery.")
+        return db_scan_for_esp32_devices_by_ip_range(
+            subnet_mask=SUBNET_MASK,
+            timeout=HTTP_FALLBACK_TIMEOUT,
+            max_workers=HTTP_FALLBACK_MAX_WORKERS,
+        )
+
     devices = db_scan_for_esp32_devices(
         subnet_mask=SUBNET_MASK,
         timeout=2,
@@ -119,6 +128,8 @@ def parse_args() -> argparse.Namespace:
                         help="Local broadcast receive port. Default: 14550")
     parser.add_argument("-e", "--evaluation", action="store_true",
                         help="Request 60-day evaluation licenses instead of activated licenses.")
+    parser.add_argument("--force-rest", action="store_true",
+                        help="Skip MAVLink discovery and use HTTP subnet scanning directly.")
     return parser.parse_args()
 
 
@@ -130,7 +141,7 @@ def apply_args(args: argparse.Namespace) -> None:
     :return: None. Updates module-level configuration.
     """
     global MY_SECRET_TOKEN, SUBNET_MASK, ESP32_LOCAL_BROADCAST_PORT, ESP32_REMOTE_BROADCAST_PORT
-    global LICENSE_TYPE, LICENSE_VALIDITY_DAYS
+    global LICENSE_TYPE, LICENSE_VALIDITY_DAYS, FORCE_REST_DISCOVERY
 
     env_token = os.environ.get("DRONEBRIDGE_SECRET_TOKEN")
     if env_token:
@@ -149,6 +160,7 @@ def apply_args(args: argparse.Namespace) -> None:
     else:
         LICENSE_TYPE = DBLicenseType.ACTIVATED
         LICENSE_VALIDITY_DAYS = 0
+    FORCE_REST_DISCOVERY = bool(getattr(args, "force_rest", False))
 
 
 def main() -> None:
