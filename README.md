@@ -38,11 +38,16 @@ This suite provides tools and scripts to manage, configure, and license DroneBri
 Install the command-line tools from the latest GitHub release.
 
 GitHub Releases:
-https://github.com/DroneBridge/DLSECommercialSupportSuite/releases
+[**Check the Github Releases**](https://github.com/DroneBridge/DLSECommercialSupportSuite/releases)
 
 ```bash
 python -m pip install pipx
 python -m pipx ensurepath
+```
+
+Open a new terminal and install.
+
+```bash
 pipx install https://github.com/DroneBridge/DLSECommercialSupportSuite/releases/download/v1.0.0/dlsecommercialsupportsuite-1.0.0-py3-none-any.whl
 ```
 
