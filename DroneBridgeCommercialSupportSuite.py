@@ -21,6 +21,7 @@
 # SOFTWARE.
 import base64
 import csv
+import importlib.util
 import os
 import ipaddress
 import struct
@@ -849,16 +850,16 @@ def db_api_request_license_file(_activation_key: str, _token: str, _output_path=
 
 def db_parameters_generate_binary(_path_to_settings_csv: str, partition_size="0x6000") -> str | None:
     """
-    Generates a NVS binary partition from the settings CSV file using the esp-idf-nvs-partition-gen tool.
-    Returns the path to the generated .bin file or None if failed.
+    Generate a NVS binary partition from a settings CSV file.
+
+    :param _path_to_settings_csv: Path to the input settings CSV file.
+    :param partition_size: NVS partition size passed to the generator.
+    :return: Path to the generated ``.bin`` file, or ``None`` when the input
+        file or generator tool is unavailable or generation fails.
     """
     logger = DBLogger()
     script_dir = os.path.dirname(os.path.abspath(__file__))
     nvs_tool_path = os.path.join(script_dir, "esp-idf-nvs-partition-gen", "esp_idf_nvs_partition_gen", "nvs_partition_gen.py")
-
-    if not os.path.exists(nvs_tool_path):
-        logger.log(f"❌ Error: NVS partition generator tool not found at '{nvs_tool_path}'")
-        return None
 
     if not os.path.exists(_path_to_settings_csv):
         logger.log(f"❌ Error: Input CSV file '{_path_to_settings_csv}' not found")
@@ -866,14 +867,28 @@ def db_parameters_generate_binary(_path_to_settings_csv: str, partition_size="0x
 
     output_bin = os.path.splitext(_path_to_settings_csv)[0] + ".bin"
 
-    cmd = [
-        sys.executable,
-        nvs_tool_path,
-        "generate",
-        _path_to_settings_csv,
-        output_bin,
-        partition_size
-    ]
+    if os.path.exists(nvs_tool_path):
+        cmd = [
+            sys.executable,
+            nvs_tool_path,
+            "generate",
+            _path_to_settings_csv,
+            output_bin,
+            partition_size
+        ]
+    elif importlib.util.find_spec("esp_idf_nvs_partition_gen") is not None:
+        cmd = [
+            sys.executable,
+            "-m",
+            "esp_idf_nvs_partition_gen",
+            "generate",
+            _path_to_settings_csv,
+            output_bin,
+            partition_size
+        ]
+    else:
+        logger.log(f"❌ Error: NVS partition generator tool not found at '{nvs_tool_path}' or as installed module")
+        return None
 
     logger.log(f"Generating binary from '{_path_to_settings_csv}'...")
     try:

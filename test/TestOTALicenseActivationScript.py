@@ -53,6 +53,21 @@ class TestOTALicenseActivationScript(unittest.TestCase):
         self.assertEqual(DBLicenseType.ACTIVATED, script.LICENSE_TYPE)
         self.assertEqual(0, script.LICENSE_VALIDITY_DAYS)
 
+    @patch.dict("batch_ota_license_activation.os.environ", {"DRONEBRIDGE_SECRET_TOKEN": "env-token"}, clear=True)
+    def test_apply_args_cli_token_overrides_environment_token(self):
+        """The explicit --token argument takes precedence over the environment."""
+        args = argparse.Namespace(
+            token="cli-token",
+            subnetmask=None,
+            esp32localbrcstport=None,
+            esp32remotebrcstport=None,
+            evaluation=False,
+        )
+
+        script.apply_args(args)
+
+        self.assertEqual("cli-token", script.MY_SECRET_TOKEN)
+
     @patch.dict("batch_ota_license_activation.os.environ", {}, clear=True)
     def test_apply_args_sets_evaluation_license_mode(self):
         """With -e, the script requests fixed 60-day evaluation licenses."""
@@ -122,6 +137,18 @@ class TestOTALicenseActivationScript(unittest.TestCase):
         logger.log.assert_called_once_with(
             "MAVLink discovery found no ESP32 devices. Falling back to HTTP subnet scan."
         )
+
+    @patch.dict("batch_ota_license_activation.os.environ", {}, clear=True)
+    @patch("batch_ota_license_activation.db_scan_for_esp32_devices")
+    def test_main_rejects_placeholder_token_before_discovery(self, mavlink_scan):
+        """Placeholder activation tokens stop the CLI before network scanning."""
+        script.MY_SECRET_TOKEN = "<Add Token here>"
+        with patch("sys.argv", ["batch_ota_license_activation.py"]):
+            with self.assertRaises(SystemExit) as exit_context:
+                script.main()
+
+        self.assertEqual(2, exit_context.exception.code)
+        mavlink_scan.assert_not_called()
 
 
 if __name__ == "__main__":

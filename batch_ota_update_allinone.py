@@ -37,10 +37,14 @@ ESP32_LOCAL_BROADCAST_PORT = 14555  # As configured in the web interface of the 
 ESP32_REMOTE_BROADCAST_PORT = 14550 # As configured in the web interface of the ESP32 (open on your GCS)
 LOG_DIR = "logs"
 
-def main():
-    global DLSE_RELEASE_PATH, LOG_DIR, TARGET_VERSION, SUBNET_MASK, ESP32_LOCAL_BROADCAST_PORT, ESP32_REMOTE_BROADCAST_PORT
-    # Parse command line arguments. These will overwrite the config above if set.
-    parser = argparse.ArgumentParser(description='Install DroneBridge DLSE on ESP32.')
+
+def parse_args() -> argparse.Namespace:
+    """
+    Parse command-line arguments for the OTA firmware update script.
+
+    :return: Parsed argparse namespace with release, discovery, and targeting options.
+    """
+    parser = argparse.ArgumentParser(description='Update DroneBridge DLSE on ESP32 devices over the air.')
     parser.add_argument('--release-folder', required=False, type=str,
                         help='Folder path to the root directory of the release e.g. /DroneBridge_ESP32DLSE_BETA3 . Download & extract them from https://drone-bridge.com/dlse/')
     parser.add_argument('--subnetmask', required=False, type=str,
@@ -55,7 +59,17 @@ def main():
                              'Example: 1.0.0-beta.3 for v1.0.0 BETA3 release '
                              'Set to 0.0.0-dev.1 in case you want to target DLSE Beta4 and earlier. These versions are all identifying with 0.0.0-dev.1. '
                              'If parameter is not supplied, all detected devices will be upgraded.')
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def apply_args(args: argparse.Namespace) -> None:
+    """
+    Apply command-line overrides to module-level OTA update settings.
+
+    :param args: Parsed command-line arguments.
+    :return: None. Updates module-level configuration used by ``main``.
+    """
+    global DLSE_RELEASE_PATH, LOG_DIR, TARGET_VERSION, SUBNET_MASK, ESP32_LOCAL_BROADCAST_PORT, ESP32_REMOTE_BROADCAST_PORT
 
     if args.release_folder:
         DLSE_RELEASE_PATH = args.release_folder
@@ -67,6 +81,16 @@ def main():
         ESP32_LOCAL_BROADCAST_PORT = args.esp32localbrcstport
     if args.esp32remotebrcstport:
         ESP32_REMOTE_BROADCAST_PORT = args.esp32remotebrcstport
+
+
+def main():
+    """
+    Run the OTA firmware update workflow for detected DLSE ESP32 devices.
+
+    Release files are validated before network discovery starts. The operator
+    must confirm the selected devices before any firmware upload is attempted.
+    """
+    apply_args(parse_args())
 
     # Initialize the singleton logger
     logger = DBLogger()
@@ -170,14 +194,30 @@ def main():
         logger.log("\n✅ Successful devices:\n" + _format_device_list_for_print(successful_devices))
 
 def _format_device_list_for_print(devices: list) -> str:
+    """
+    Format detected device dictionaries for the final OTA update summary.
+
+    :param devices: Device dictionaries collected during the update workflow.
+    :return: Human-readable list or ``(none)`` placeholder.
+    """
     if not devices:
         return "  (none)"
     return "\n".join(f"  - {item}" for item in devices)
 
 def beep_success():
+    """
+    Play the best-effort success notification sound.
+
+    :return: None. Missing audio support does not fail the workflow.
+    """
     play_sound("resources/new-notification-011-364050.wav")
 
 def beep_failure():
+    """
+    Play the best-effort failure notification sound.
+
+    :return: None. Missing audio support does not fail the workflow.
+    """
     play_sound("resources/system-notification-04-206493.wav")
 
 if __name__ == "__main__":

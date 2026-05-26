@@ -33,40 +33,68 @@ This suite provides tools and scripts to manage, configure, and license DroneBri
 
 ## Installation
 
+### Recommended Installation for Script Users
 
-
-## Updating This Repository
-
-Use the update script for your terminal to fetch the newest code from the configured GitHub remote default branch, currently `origin/main`. The scripts stash tracked local changes, pull with `--ff-only`, update submodules, and then reapply the stash. Untracked local files such as logs, received licenses, firmware folders, and local parameter exports are not stashed or deleted.
-
-PowerShell:
-
-```powershell
-.\update_repository.ps1
-```
-
-Linux/macOS terminal:
+Install the command-line tools with `pipx` so the scripts are available from any terminal without cloning this repository:
 
 ```bash
-chmod +x update_repository.sh
-./update_repository.sh
+python -m pip install pipx
+python -m pipx ensurepath
+pipx install DLSECommercialSupportSuite
 ```
 
-To update from `origin/master` explicitly:
-
-```powershell
-.\update_repository.ps1 -Branch master
-```
+After installation, open a new terminal and run:
 
 ```bash
-./update_repository.sh --branch master
+dlse-activate --help
+dlse-reboot --help
+dlse-update --help
+dlse-install --help
+```
+
+If you do not use `pipx`, install with Python directly:
+
+```bash
+python -m pip install DLSECommercialSupportSuite
+```
+
+There is no UI for now - This is for later releases: The graphical UI is not part of the default script-focused install. To install optional UI dependencies:
+
+```bash
+python -m pip install "DLSECommercialSupportSuite[ui]"
+```
+
+### Operational Folder
+
+Run the installed commands from the folder where you want operational files to live. Relative paths for firmware release folders, settings CSV files, `logs/`, and `received_licenses/` are resolved from your current terminal folder. Firmware release folders are external downloads and are not bundled into the Python package.
+
+Normal users should use the installed commands:
+
+```bash
+dlse-activate --token <YOUR_SECRET_TOKEN> --subnetmask 192.168.1.0/24
+dlse-activate --token <YOUR_SECRET_TOKEN> -e
+dlse-reboot --subnetmask 192.168.1.0/24
+dlse-reboot --force-rest
+dlse-update --release-folder DroneBridge_ESP32DLSE_BETA5 --subnetmask 192.168.1.0/24
+dlse-install --token <YOUR_SECRET_TOKEN> --release-folder DroneBridge_ESP32DLSE_BETA5 --settings-file my_parameters/dlse_my_params.csv --start-index 55
 ```
 
 If the pull or stash reapply reports conflicts, run `git status`, resolve the conflicts, and keep the generated stash until you have confirmed your local changes are restored.
 
 ## Usage
 
-The suite includes several example scripts demonstrating different functionalities. Before running any script, open it and check for configuration variables (like `MY_SECRET_TOKEN`, `ESP_SERIAL_PORT`, or IP addresses) that need to be updated for your environment.
+The suite includes installable commands and source-checkout scripts. For normal operation, use the `dlse-*` commands documented below. If you cloned the repository for development, you can still run the Python scripts directly from the repository root.
+
+Source checkout examples:
+
+```bash
+python batch_ota_license_activation.py --token <YOUR_SECRET_TOKEN>
+python batch_ota_reboot.py
+python batch_ota_update_allinone.py --release-folder DroneBridge_ESP32DLSE_BETA5
+python batch_install_dlse_allinone.py --token <YOUR_SECRET_TOKEN> --release-folder DroneBridge_ESP32DLSE_BETA5 --settings-file my_parameters/dlse_my_params.csv --start-index 55
+```
+
+Before running hardware workflows, stop Skybrush Live when using MAVLink discovery, reboot, or OTA update paths. Serial flashing also requires OS access to the ESP32 serial port.
 
 
 ## Automated DLSE Batch Installation
@@ -107,7 +135,7 @@ Follow the setup commands described above to install the toolchain on your machi
 
 From this point on the process is fully automated. Inside the `DLSECommercialSupportSuite` folder, run:
 ```bash
-python batch_install_dlse_allinone.py \
+dlse-install \
   --token <YOUR_SECRET_TOKEN> \
   --release-folder "DroneBridge_ESP32DLSE_BETA3" \
   --settings-file my_parameters/dlse_my_params.csv \
@@ -143,11 +171,11 @@ Update the firmware of your drone swarm over the air.
 > Requires TX & RX GPIO pins to be configured and TRAIL mode being not expired in order to detect the ESP32
 
 ```bash
-python batch_ota_update_allinone.py --release_folder "DroneBridge_ESP32DLSE_BETA3"  --subnetmask "192.168.1.0/24 --esp32localbrcstport 14555 --esp32remotebrcstport 14550"
+dlse-update --release-folder "DroneBridge_ESP32DLSE_BETA3" --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
 ```
 Or in case you want to target only ESP32s running a specific target version:
 ```bash
-python batch_ota_update_allinone.py --release_folder "DroneBridge_ESP32DLSE_BETA3"  --subnetmask "192.168.1.0/24" --target-version "1.0.0-beta.3 --esp32localbrcstport 14555 --esp32remotebrcstport 14550"
+dlse-update --release-folder "DroneBridge_ESP32DLSE_BETA3" --subnetmask "192.168.1.0/24" --target-version "1.0.0-beta.3" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
 ```
 If a parameter is not supplied, all detected devices will be upgraded.
 
@@ -155,7 +183,7 @@ If a parameter is not supplied, all detected devices will be upgraded.
 
 | Parameter | Description |
 |---|---|
-| `--release_folder` | Path to the root directory of the release, e.g. `DroneBridge_ESP32DLSE_BETA3`. |
+| `--release-folder` | Path to the root directory of the release, e.g. `DroneBridge_ESP32DLSE_BETA3`. |
 | `--subnetmask` | IP address range to scan for devices. |
 | `--target-version` | Only upgrade ESP32s running this specific DLSE version — all other devices are skipped. Use `"0.0.0-dev.1"` to target DLSE Beta4 and earlier, as all those versions identify with that version string. |
 | `--esp32localbrcstport` | As configured in the web interface of the ESP32 (open on your ESP32) (udp_local_port) - Default: 14555 |
@@ -209,13 +237,13 @@ Device discovery first uses MAVLink UDP broadcast. If no devices respond, the sc
 > Requires TX & RX GPIO pins to be configured and TRAIL mode being not expired in order to detect the ESP32
 
 ```bash
-python batch_ota_license_activation.py --token <YOUR_SECRET_TOKEN> --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
+dlse-activate --token <YOUR_SECRET_TOKEN> --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
 ```
 
 To request 60-day evaluation licenses only, add `-e`:
 
 ```bash
-python batch_ota_license_activation.py --token <YOUR_SECRET_TOKEN> -e --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
+dlse-activate --token <YOUR_SECRET_TOKEN> -e --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
 ```
 
 **After activating the ESP32s you might need to reboot them to re-activate the MAVLink processing up to DLSE BETA6 releases.** Do it manually or use the Batch Over-The-Air Reboot Script shown further down below.
@@ -261,13 +289,13 @@ Reboot all detected ESP32 DLSE devices in one confirmed operation. The script fi
 > The script asks for confirmation before sending reboot commands. Test with a small batch before rebooting a full fleet.
 
 ```bash
-python batch_ota_reboot.py --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
+dlse-reboot --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
 ```
 
 To force the slower but more reliable REST path for both discovery and reboot:
 
 ```bash
-python batch_ota_reboot.py --force-rest --subnetmask "192.168.1.0/24" --http-timeout 1.0 --http-workers 20
+dlse-reboot --force-rest --subnetmask "192.168.1.0/24" --http-timeout 1.0 --http-workers 20
 ```
 
 ### Parameters
@@ -280,10 +308,10 @@ python batch_ota_reboot.py --force-rest --subnetmask "192.168.1.0/24" --http-tim
 
 ## Key Scripts
 
-*   **`batch_install_dlse_allinone.py`**:  Flashes board over a serial link. Batch installation script that takes care of it all. Applying settings, flashing & activation. It can pull license from the ESP32 prior to flashing in case the license server is not available.
-*   **`batch_ota_license_activation.py`**: Installs DLSE licenses over the air (OTA) for all detected devices on the specified subnet.
-*   **`batch_ota_reboot.py`**: Reboots all detected ESP32 DLSE devices using MAVLink broadcast first, with an HTTP settings-endpoint fallback or forced REST mode.
-*   **`batch_ota_update_allinone.py`**: Updates firmware over the air for all detected devices on the specified subnet and with the specified firmware version.
+*   **`dlse-install`** / **`batch_install_dlse_allinone.py`**:  Flashes board over a serial link. Batch installation script that takes care of it all. Applying settings, flashing & activation. It can pull license from the ESP32 prior to flashing in case the license server is not available.
+*   **`dlse-activate`** / **`batch_ota_license_activation.py`**: Installs DLSE licenses over the air (OTA) for all detected devices on the specified subnet.
+*   **`dlse-reboot`** / **`batch_ota_reboot.py`**: Reboots all detected ESP32 DLSE devices using MAVLink broadcast first, with an HTTP settings-endpoint fallback or forced REST mode.
+*   **`dlse-update`** / **`batch_ota_update_allinone.py`**: Updates firmware over the air for all detected devices on the specified subnet and with the specified firmware version.
 *   **`DroneBridgeCommercialSupportSuite.py`**: The main library file containing helper functions.
 
 ## Examples on individual functions
@@ -311,6 +339,33 @@ Find the DroneBridge DLSE OpenAPI description here: `api_definiton/openapi_defin
     ```bash
     pip install .
     ```
+
+## Release Build Checklist
+
+Build the wheel and source distribution from the repository root:
+
+```bash
+python -m pip install build
+python -m build
+```
+
+If an existing local `build/` folder shadows the Python `build` module, run the command from the parent folder instead:
+
+```bash
+python -m build DLSECommercialSupportSuite
+```
+
+Smoke-test the wheel in an isolated `pipx` environment before publishing:
+
+```bash
+pipx install dist/DLSECommercialSupportSuite-<version>-py3-none-any.whl
+dlse-activate --help
+dlse-reboot --help
+dlse-update --help
+dlse-install --help
+```
+
+Attach the generated wheel and source archive to GitHub Releases if users should install from release artifacts instead of PyPI.
 
 # Images
 

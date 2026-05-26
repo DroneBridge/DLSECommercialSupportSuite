@@ -28,6 +28,7 @@ from typing import Any, Dict, Set
 
 import requests
 
+from dlse_cli_utils import validate_activation_token
 from DroneBridgeCommercialSupportSuite import (
     DBLogger,
     DBLicenseType,
@@ -156,8 +157,16 @@ def main() -> None:
 
     The script preserves the original batch behavior: every discovered device is
     processed on each scan cycle, with duplicate activation keys skipped.
+    A valid activation token must be supplied before discovery starts.
     """
+    global MY_SECRET_TOKEN
+
     apply_args(parse_args())
+    try:
+        MY_SECRET_TOKEN = validate_activation_token(MY_SECRET_TOKEN)
+    except ValueError as e:
+        print(f"Fatal: {e}")
+        sys.exit(2)
 
     license_storage_dir = Path(DLSE_LICENSE_FOLDER)
     try:

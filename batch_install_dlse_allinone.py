@@ -24,11 +24,12 @@ import csv
 import os
 import platform
 import shutil
+import sys
 import time
-from pathlib import Path
 
 import serial.tools.list_ports
 
+from dlse_cli_utils import resolve_resource_path, validate_activation_token
 from DroneBridgeCommercialSupportSuite import db_get_activation_key, db_api_request_license_file, DBLicenseType, \
     db_embed_license_in_settings_csv, db_parameters_generate_binary, db_flash_binaries, db_csv_update_parameters, \
     db_get_esp32_chip_id, DLSESupportedChips, db_create_address_binary_map, db_get_dlse_lic_via_serial, \
@@ -118,9 +119,17 @@ def main():
     Run the serial batch flashing, configuration, and license activation workflow.
 
     The script applies configuration from defaults, ``DRONEBRIDGE_SECRET_TOKEN``,
-    and command-line arguments before starting serial-port monitoring.
+    and command-line arguments before starting serial-port monitoring. A valid
+    activation token must be supplied before release files or serial ports are used.
     """
+    global MY_SECRET_TOKEN
+
     apply_args(parse_args())
+    try:
+        MY_SECRET_TOKEN = validate_activation_token(MY_SECRET_TOKEN)
+    except ValueError as e:
+        print(f"Fatal: {e}")
+        sys.exit(2)
 
     # Initialize the singleton logger
     logger = DBLogger()
@@ -266,22 +275,42 @@ def main():
                 beep_failure()
 
 def play_sound(file):
+    """
+    Play a notification sound when the bundled audio file is available.
+
+    :param file: Source checkout or package-relative path to a wave file.
+    :return: None. Missing files and playback errors are ignored by the caller.
+    """
     system = platform.system()
-    path = Path(file)
-    if not path.exists():
+    path = resolve_resource_path(file)
+    if path is None:
         return
-    if system == "Windows":
-        import winsound
-        winsound.PlaySound(str(path), winsound.SND_FILENAME)
-    elif system == "Darwin":
-        os.system(f"afplay '{path}'")
-    else:
-        os.system(f"aplay '{path}' >/dev/null 2>&1")
+    try:
+        if system == "Windows":
+            import winsound
+            winsound.PlaySound(str(path), winsound.SND_FILENAME)
+        elif system == "Darwin":
+            os.system(f"afplay '{path}'")
+        else:
+            os.system(f"aplay '{path}' >/dev/null 2>&1")
+    except Exception:
+        return
 
 def beep_success():
+    """
+    Play the best-effort success notification sound.
+
+    :return: None. Missing audio support does not fail the workflow.
+    """
     play_sound("resources/new-notification-011-364050.wav")
 
+
 def beep_failure():
+    """
+    Play the best-effort failure notification sound.
+
+    :return: None. Missing audio support does not fail the workflow.
+    """
     play_sound("resources/system-notification-04-206493.wav")
 
 if __name__ == "__main__":

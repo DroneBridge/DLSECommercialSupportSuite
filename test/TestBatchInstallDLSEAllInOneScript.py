@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 import batch_install_dlse_allinone as script
+from dlse_cli_utils import resolve_resource_path
 
 
 class TestBatchInstallDLSEAllInOneScript(unittest.TestCase):
@@ -86,6 +87,25 @@ class TestBatchInstallDLSEAllInOneScript(unittest.TestCase):
         self.assertEqual("<missing>", script.mask_token_for_log(""))
         self.assertEqual("***", script.mask_token_for_log("abc"))
         self.assertEqual("abcd...wxyz", script.mask_token_for_log("abcd1234wxyz"))
+
+    @patch.dict("batch_install_dlse_allinone.os.environ", {}, clear=True)
+    @patch("batch_install_dlse_allinone.db_check_release_binaries_present")
+    def test_main_rejects_placeholder_token_before_release_validation(self, check_release):
+        """Placeholder activation tokens stop the CLI before release or serial checks."""
+        script.MY_SECRET_TOKEN = "<ENTER YOUR TOKEN HERE - GET IT FROM DRONE-BRIDGE.COM WEBSITE>"
+        with patch("sys.argv", ["batch_install_dlse_allinone.py"]):
+            with self.assertRaises(SystemExit) as exit_context:
+                script.main()
+
+        self.assertEqual(2, exit_context.exception.code)
+        check_release.assert_not_called()
+
+    def test_resolve_resource_path_finds_bundled_notification_sound(self):
+        """Bundled notification sounds can be resolved without playing audio."""
+        path = resolve_resource_path("resources/new-notification-011-364050.wav")
+
+        self.assertIsNotNone(path)
+        self.assertTrue(path.exists())
 
 
 if __name__ == "__main__":
