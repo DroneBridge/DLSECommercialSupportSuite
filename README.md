@@ -33,35 +33,28 @@ This suite provides tools and scripts to manage, configure, and license DroneBri
 
 ## Installation
 
-### Recommended Installation for Script Users
+### Recommended Installation
 
-Install the command-line tools with `pipx` so the scripts are available from any terminal without cloning this repository:
+Install the command-line tools from the latest GitHub release.
+
+GitHub Releases:
+https://github.com/DroneBridge/DLSECommercialSupportSuite/releases
 
 ```bash
 python -m pip install pipx
 python -m pipx ensurepath
-pipx install DLSECommercialSupportSuite
+pipx install https://github.com/DroneBridge/DLSECommercialSupportSuite/releases/download/v1.0.0/dlsecommercialsupportsuite-1.0.0-py3-none-any.whl
 ```
 
-After installation, open a new terminal and run:
+For newer releases, replace `v1.0.0` and the wheel filename with the version shown on the GitHub Releases page.
+
+Open a new terminal and verify the commands are available:
 
 ```bash
 dlse-activate --help
 dlse-reboot --help
 dlse-update --help
 dlse-install --help
-```
-
-If you do not use `pipx`, install with Python directly:
-
-```bash
-python -m pip install DLSECommercialSupportSuite
-```
-
-There is no UI for now - This is for later releases: The graphical UI is not part of the default script-focused install. To install optional UI dependencies:
-
-```bash
-python -m pip install "DLSECommercialSupportSuite[ui]"
 ```
 
 ### Operational Folder
@@ -79,20 +72,9 @@ dlse-update --release-folder DroneBridge_ESP32DLSE_BETA5 --subnetmask 192.168.1.
 dlse-install --token <YOUR_SECRET_TOKEN> --release-folder DroneBridge_ESP32DLSE_BETA5 --settings-file my_parameters/dlse_my_params.csv --start-index 55
 ```
 
-If the pull or stash reapply reports conflicts, run `git status`, resolve the conflicts, and keep the generated stash until you have confirmed your local changes are restored.
-
 ## Usage
 
-The suite includes installable commands and source-checkout scripts. For normal operation, use the `dlse-*` commands documented below. If you cloned the repository for development, you can still run the Python scripts directly from the repository root.
-
-Source checkout examples:
-
-```bash
-python batch_ota_license_activation.py --token <YOUR_SECRET_TOKEN>
-python batch_ota_reboot.py
-python batch_ota_update_allinone.py --release-folder DroneBridge_ESP32DLSE_BETA5
-python batch_install_dlse_allinone.py --token <YOUR_SECRET_TOKEN> --release-folder DroneBridge_ESP32DLSE_BETA5 --settings-file my_parameters/dlse_my_params.csv --start-index 55
-```
+The suite includes installable `dlse-*` commands for normal operation.
 
 Before running hardware workflows, stop Skybrush Live when using MAVLink discovery, reboot, or OTA update paths. Serial flashing also requires OS access to the ESP32 serial port.
 
@@ -338,6 +320,14 @@ Find the DroneBridge DLSE OpenAPI description here: `api_definiton/openapi_defin
 2.  Install the package and dependencies:
     ```bash
     pip install .
+    ```
+
+3.  Run scripts directly from the source checkout when developing or debugging:
+    ```bash
+    python batch_ota_license_activation.py --token <YOUR_SECRET_TOKEN>
+    python batch_ota_reboot.py
+    python batch_ota_update_allinone.py --release-folder DroneBridge_ESP32DLSE_BETA5
+    python batch_install_dlse_allinone.py --token <YOUR_SECRET_TOKEN> --release-folder DroneBridge_ESP32DLSE_BETA5 --settings-file my_parameters/dlse_my_params.csv --start-index 55
     ```
 
 ## Release Build Checklist
