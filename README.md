@@ -120,7 +120,7 @@ Follow the setup commands described above to install the toolchain on your machi
 
 ### Step 4 — Run the batch installation script
 
-From this point on the process is fully automated. Inside the `DLSECommercialSupportSuite` folder, run:
+From this point on the process is fully automated. Run the following command to install on all ESP32 serial devices connected to your computer:
 ```bash
 dlse-install \
   --token <YOUR_SECRET_TOKEN> \

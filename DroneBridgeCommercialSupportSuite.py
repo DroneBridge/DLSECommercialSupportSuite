@@ -1408,11 +1408,14 @@ def db_api_create_request_session(retries: int = MAX_RETRIES,
 
 
 def db_api_get_activation_key(session: requests.Session,
-                                  device_ip: str,
-                                  token: str) -> Optional[str]:
+                                  device_ip: str) -> Optional[str]:
     """
-    Fetch activation key from REST API with exponential backoff.
-    Returns None if permanently failed or key unavailable.
+    Fetch activation key from the ESP32 REST API with exponential backoff.
+
+    :param session: Request session used for the ESP32 REST call.
+    :param device_ip: ESP32 IP address without protocol.
+    :return: Activation key, or ``None`` if the request permanently fails or
+        the key is unavailable.
     """
     info_endpoint = "/api/system/info"
     endpoint = f"http://{device_ip}{info_endpoint}"
@@ -1421,7 +1424,7 @@ def db_api_get_activation_key(session: requests.Session,
         try:
             response = session.get(
                 endpoint,
-                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                headers={"Accept": "application/json"},
                 timeout=REQUEST_TIMEOUT
             )
             response.raise_for_status()
@@ -1734,7 +1737,7 @@ def db_api_activate_dlse_device(device: Dict[str, Any], session: requests.Sessio
     ips_seen = successful_ips if successful_ips is not None else set()
 
     try:
-        activation_key = db_api_get_activation_key(session, device_ip, token)
+        activation_key = db_api_get_activation_key(session, device_ip)
         masked_key = db_mask_sensitive_value(activation_key)
         if not activation_key:
             active_logger.log(f"Failed to get activation key for {device_ip}")
