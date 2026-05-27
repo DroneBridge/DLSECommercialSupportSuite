@@ -32,6 +32,8 @@ import socket
 import select
 import time
 import re
+import shutil
+import zipfile
 import esptool
 import requests
 
@@ -60,8 +62,10 @@ REQUEST_TIMEOUT = 5
 
 DLSE_LICENSE_SERVER_BASE_URL = "https://drone-bridge.com"
 DLSE_LICENSE_GENERATE_PATH = "/api/license/generate"
+DLSE_RELEASES_PATH = "/api/dlse/releases"
 
 DLSE_LICENSE_FOLDER = "received_licenses/" # Location of all received license files (excluding the EVALUATION licenses). Stored locally here.
+DLSE_RELEASES_FOLDER = "dlse_releases"
 
 DLSE_SETTINGS_PARTITION_ADDRESS = 0x9000 # Do not change
 DLSE_SETTINGS_PARTITION_SIZE = 0x6000 # Do not change
@@ -130,6 +134,24 @@ class DBLicenseActivationResult:
     license_path: str | None = None
     sys_id: int | None = None
 
+
+@dataclass
+class DBDLSERelease:
+    """DLSE firmware release metadata returned by the DroneBridge license server."""
+    release_date: str
+    name: str
+    download_link: str
+
+    @property
+    def safe_folder_name(self) -> str:
+        """
+        Build a filesystem-safe folder name for caching this release.
+
+        :return: Path-safe folder name containing the release date and name.
+        """
+        label = f"{self.release_date}_{self.name}".strip("_")
+        return re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("._") or "dlse_release"
+
 class DLSESupportedChips(Enum):
     ESP32C3 = 5
     ESP32C5 = 23
@@ -193,6 +215,20 @@ def db_build_dlse_license_generate_url(base_url: str = DLSE_LICENSE_SERVER_BASE_
     return urljoin(f"{clean_base_url.rstrip('/')}/", DLSE_LICENSE_GENERATE_PATH.lstrip("/"))
 
 
+def db_build_dlse_releases_url(base_url: str = DLSE_LICENSE_SERVER_BASE_URL) -> str:
+    """
+    Build the DLSE releases endpoint from a configurable license server base URL.
+
+    :param base_url: License server base URL such as ``https://drone-bridge.com``.
+        Passing the full ``/api/dlse/releases`` endpoint is also accepted.
+    :return: Full URL for the DLSE releases API endpoint.
+    """
+    clean_base_url = (base_url or DLSE_LICENSE_SERVER_BASE_URL).strip()
+    if clean_base_url.rstrip("/").endswith(DLSE_RELEASES_PATH):
+        return clean_base_url.rstrip("/")
+    return urljoin(f"{clean_base_url.rstrip('/')}/", DLSE_RELEASES_PATH.lstrip("/"))
+
+
 def db_is_dlse_lic_server_available(lic_server_address: str = DLSE_LICENSE_SERVER_BASE_URL) -> bool:
     """
     Check whether the configured DLSE license server is reachable.
@@ -216,6 +252,321 @@ def db_is_dlse_lic_server_available(lic_server_address: str = DLSE_LICENSE_SERVE
     except requests.RequestException as e:
         logger.log(f"❌ License server not available: {e}")
         return False
+
+def db_api_get_dlse_releases(token: str, base_url: str = DLSE_LICENSE_SERVER_BASE_URL) -> list[DBDLSERelease] | None:
+    """
+    Fetch the DLSE firmware releases available to the authenticated user.
+
+    :param token: Bearer token for the DroneBridge license server.
+    :param base_url: License server base URL. A full ``/api/dlse/releases`` URL
+        is accepted for tests or custom deployments.
+    :return: List of release metadata objects, or ``None`` if authentication,
+        request, response validation, or JSON parsing fails.
+    """
+    logger = DBLogger()
+    if not token or not token.strip():
+        logger.log("Missing DroneBridge activation token for release listing.")
+        return None
+
+    releases_url = db_build_dlse_releases_url(base_url)
+    headers = {
+        "Authorization": f"Bearer {token.strip()}",
+        "Accept": "application/json",
+    }
+    max_attempts = 3
+    connect_timeout_s = 5
+    read_timeout_s = 30
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            logger.log(f"Requesting available DLSE releases from {releases_url}... (attempt {attempt}/{max_attempts})")
+            response = requests.get(
+                releases_url,
+                headers=headers,
+                timeout=(connect_timeout_s, read_timeout_s),
+            )
+            status = response.status_code
+
+            if status == 200:
+                try:
+                    payload = response.json()
+                except ValueError as e:
+                    logger.log(f"Release listing returned malformed JSON: {e}")
+                    return None
+
+                if not isinstance(payload, dict) or payload.get("ok") is not True:
+                    logger.log("Release listing request was rejected by the server.")
+                    return None
+
+                raw_releases = payload.get("releases")
+                if not isinstance(raw_releases, list):
+                    logger.log("Release listing response is missing the releases list.")
+                    return None
+
+                releases: list[DBDLSERelease] = []
+                for idx, raw_release in enumerate(raw_releases, start=1):
+                    if not isinstance(raw_release, dict):
+                        logger.log(f"Release entry {idx} is malformed.")
+                        return None
+                    release_date = raw_release.get("release_date")
+                    name = raw_release.get("name")
+                    download_link = raw_release.get("download_link")
+                    if not all(isinstance(value, str) and value.strip() for value in (release_date, name, download_link)):
+                        logger.log(f"Release entry {idx} is missing release_date, name, or download_link.")
+                        return None
+                    releases.append(DBDLSERelease(
+                        release_date=release_date.strip(),
+                        name=name.strip(),
+                        download_link=download_link.strip(),
+                    ))
+
+                logger.log(f"Found {len(releases)} DLSE release(s) available for this account.")
+                return releases
+
+            try:
+                resp_text = response.text
+                if resp_text and len(resp_text) > 2000:
+                    resp_text = resp_text[:2000] + "...<truncated>"
+            except Exception:
+                resp_text = "<unavailable>"
+
+            logger.log(f"Failed to list DLSE releases. Status Code: {status}")
+            logger.log(f"Response: {resp_text}")
+            if status not in (429, 500, 502, 503, 504):
+                return None
+
+        except (requests.Timeout, requests.ConnectionError, requests.RequestException) as e:
+            logger.log(f"Request error while listing DLSE releases: {e}")
+        except Exception as e:
+            logger.log(f"Error while listing DLSE releases: {e}")
+
+        if attempt < max_attempts:
+            time.sleep(1.0 * attempt)
+
+    return None
+
+
+def db_list_offline_dlse_releases(releases_dir: str | Path = DLSE_RELEASES_FOLDER) -> list[str]:
+    """
+    List locally cached DLSE release folders that contain the required binaries.
+
+    :param releases_dir: Directory containing extracted DLSE release folders.
+    :return: Valid release root folder paths. Invalid or incomplete folders are skipped.
+    """
+    logger = DBLogger()
+    releases_path = Path(releases_dir)
+    if not releases_path.exists():
+        logger.log(f"DLSE releases folder '{releases_path}' does not exist yet.")
+        return []
+    if not releases_path.is_dir():
+        logger.log(f"DLSE releases path '{releases_path}' is not a folder.")
+        return []
+
+    offline_releases: list[str] = []
+    for candidate in sorted(releases_path.iterdir()):
+        if not candidate.is_dir():
+            continue
+        release_root = db_find_extracted_dlse_release_root(candidate)
+        if release_root is not None:
+            offline_releases.append(str(release_root))
+    return offline_releases
+
+
+def db_has_release_binaries_quiet(release_path: str | Path) -> bool:
+    """
+    Check whether a folder looks like a valid DLSE release root without logging.
+
+    This is used while probing extracted archive layouts where invalid candidate
+    folders are expected and should not produce operator-facing error messages.
+
+    :param release_path: Candidate DLSE release root folder.
+    :return: ``True`` when the required settings file and chip flash argument
+        files are present, otherwise ``False``.
+    """
+    release_root = Path(release_path)
+    if not release_root.exists() or not release_root.is_dir():
+        return False
+    if not (release_root / "db_show_params.csv").exists():
+        return False
+
+    for chip in DLSESupportedChips:
+        bin_folder = db_get_bin_folder(chip.value)
+        if bin_folder == 0:
+            continue
+        if not (release_root / bin_folder / "flash_args.txt").exists():
+            return False
+    return True
+
+
+def db_find_extracted_dlse_release_root(extract_dir: str | Path) -> Path | None:
+    """
+    Find the valid DLSE release root in an extracted archive directory.
+
+    :param extract_dir: Directory where a release zip was extracted.
+    :return: Path to the release root folder, or ``None`` when required binaries
+        are missing.
+    """
+    extract_path = Path(extract_dir)
+    if db_has_release_binaries_quiet(extract_path):
+        return extract_path
+
+    child_dirs = [child for child in extract_path.iterdir() if child.is_dir()]
+    if len(child_dirs) == 1 and db_has_release_binaries_quiet(child_dirs[0]):
+        return child_dirs[0]
+
+    for child in child_dirs:
+        if db_has_release_binaries_quiet(child):
+            return child
+    return None
+
+
+def db_download_and_extract_dlse_release(
+        release: DBDLSERelease | str,
+        token: str,
+        output_dir: str | Path = DLSE_RELEASES_FOLDER,
+        base_url: str = DLSE_LICENSE_SERVER_BASE_URL) -> str | None:
+    """
+    Download a DLSE release zip, extract it into the local release cache, and delete the zip.
+
+    Existing extracted files in the target release folder are overwritten by
+    deleting and recreating that folder before extraction. The downloaded zip is
+    removed only after a successful extraction and binary validation.
+
+    :param release: Release metadata returned by ``db_api_get_dlse_releases`` or
+        a direct download link.
+    :param token: Bearer token for the DroneBridge license server.
+    :param output_dir: Parent directory used for cached release folders.
+    :param base_url: License server base URL used to resolve relative downloads.
+    :return: Path to the extracted release root folder, or ``None`` on download,
+        extraction, validation, or filesystem failure.
+    """
+    logger = DBLogger()
+    if not token or not token.strip():
+        logger.log("Missing DroneBridge activation token for release download.")
+        return None
+
+    if isinstance(release, DBDLSERelease):
+        download_link = release.download_link
+        folder_name = release.safe_folder_name
+    else:
+        download_link = str(release or "").strip()
+        archive_stem = Path(download_link.split("?", 1)[0]).stem
+        folder_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", archive_stem).strip("._") or "dlse_release"
+
+    if not download_link:
+        logger.log("Missing DLSE release download link.")
+        return None
+
+    download_url = urljoin(f"{base_url.rstrip('/')}/", download_link)
+    output_path = Path(output_dir)
+    extract_path = output_path / folder_name
+    zip_path = output_path / f"{folder_name}.zip"
+    headers = {"Authorization": f"Bearer {token.strip()}"}
+    max_attempts = 3
+    connect_timeout_s = 5
+    read_timeout_s = 120
+
+    try:
+        output_path.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.log(f"Could not create release output folder '{output_path}': {e}")
+        return None
+
+    for attempt in range(1, max_attempts + 1):
+        bytes_written = 0
+        try:
+            logger.log(f"Downloading DLSE release from {download_url}... (attempt {attempt}/{max_attempts})")
+            response = requests.get(
+                download_url,
+                headers=headers,
+                stream=True,
+                timeout=(connect_timeout_s, read_timeout_s),
+            )
+            status = response.status_code
+            if status == 200:
+                with open(zip_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        bytes_written += len(chunk)
+                response.close()
+
+                if bytes_written <= 0:
+                    logger.log("Release download returned 200 but contained no data.")
+                    try:
+                        zip_path.unlink()
+                    except OSError:
+                        pass
+                else:
+                    break
+            else:
+                try:
+                    resp_text = response.text
+                    if resp_text and len(resp_text) > 2000:
+                        resp_text = resp_text[:2000] + "...<truncated>"
+                except Exception:
+                    resp_text = "<unavailable>"
+                finally:
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
+
+                logger.log(f"Failed to download DLSE release. Status Code: {status}")
+                logger.log(f"Response: {resp_text}")
+                if status not in (429, 500, 502, 503, 504):
+                    return None
+
+        except (requests.Timeout, requests.ConnectionError, requests.RequestException) as e:
+            logger.log(f"Request error while downloading DLSE release: {e}")
+        except OSError as e:
+            logger.log(f"File error while saving DLSE release: {e}")
+            return None
+        except Exception as e:
+            logger.log(f"Error while downloading DLSE release: {e}")
+
+        if attempt < max_attempts:
+            time.sleep(1.0 * attempt)
+    else:
+        return None
+
+    try:
+        if not zipfile.is_zipfile(zip_path):
+            logger.log(f"Downloaded release file is not a valid zip archive: {zip_path}")
+            return None
+
+        if extract_path.exists():
+            if not extract_path.is_dir():
+                logger.log(f"Extraction target exists but is not a folder: {extract_path}")
+                return None
+            shutil.rmtree(extract_path)
+        extract_path.mkdir(parents=True, exist_ok=True)
+
+        with zipfile.ZipFile(zip_path, "r") as archive:
+            resolved_extract_path = extract_path.resolve()
+            for member in archive.infolist():
+                member_target = (extract_path / member.filename).resolve()
+                try:
+                    member_target.relative_to(resolved_extract_path)
+                except ValueError:
+                    logger.log(f"Refusing to extract unsafe zip member: {member.filename}")
+                    return None
+            archive.extractall(extract_path)
+
+        release_root = db_find_extracted_dlse_release_root(extract_path)
+        if release_root is None:
+            logger.log(f"Extracted release does not contain the required DLSE binaries: {extract_path}")
+            return None
+
+        zip_path.unlink()
+        logger.log(f"DLSE release extracted to '{release_root}'")
+        return str(release_root)
+
+    except (OSError, zipfile.BadZipFile) as e:
+        logger.log(f"Error while extracting DLSE release: {e}")
+        return None
+
 
 def db_get_bin_folder(_chip_id: int):
     logger = DBLogger()
@@ -241,7 +592,6 @@ def db_check_release_binaries_present(_dlse_release_path: str) -> bool:
     :return: True if all required binaries are present, False otherwise
     """
     logger = DBLogger()
-
     if not os.path.exists(_dlse_release_path):
         logger.log(f"❌ Release path '{_dlse_release_path}' does not exist.")
         return False

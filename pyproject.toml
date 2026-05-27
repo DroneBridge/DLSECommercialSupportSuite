@@ -43,6 +43,7 @@ py-modules = [
   "batch_ota_update_allinone",
   "batch_install_dlse_allinone",
   "dlse_cli_utils",
+  "dlse_release_cli_utils",
 ]
 packages = [
   "resources",

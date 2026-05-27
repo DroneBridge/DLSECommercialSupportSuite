@@ -116,6 +116,13 @@ Follow the setup commands described above to install the toolchain on your machi
 
 [Download the latest DLSE release binaries](https://drone-bridge.com/dlse/) and extract them into the `DLSECommercialSupportSuite` folder.
 
+The support library can also list the DLSE releases available to your account via
+the DroneBridge license server and download a selected release zip into the local
+`dlse_releases/` cache. Extracted releases in that folder are operational data
+and are ignored by git. The batch scripts still accept `--release-folder`, so you
+can continue to point them at any manually downloaded and extracted release root
+folder.
+
 ---
 
 ### Step 4 — Run the batch installation script
@@ -146,8 +153,8 @@ dlse-install \
 |---|---|
 | `--token` | Your secret token from [drone-bridge.com](https://drone-bridge.com). You can also set `DRONEBRIDGE_SECRET_TOKEN`; `--token` overrides the environment variable. |
 | `-e`, `--evaluation` | Request 60-day evaluation licenses instead of regular activated licenses. Evaluation licenses require license server access and are not cached in `received_licenses/`. |
-| `--release-folder` | Path to the folder containing the DLSE firmware binaries you downloaded in Step 3. |
-| `--settings-file` | Path to the settings file you exported from the ESP32 web interface in Step 1. |
+| `--release-folder` | Path to the folder containing the DLSE firmware binaries you downloaded in Step 3. If omitted, the script asks you to choose a cached release from `dlse_releases/`, download an available online release, or enter a manual folder path. |
+| `--settings-file` | Path to the settings file you exported from the ESP32 web interface in Step 1. If omitted while using the release selector, the script uses `db_show_params.csv` from the selected release. |
 | `--start-index` | A numeric postfix appended to `ssid_ap`, `wifi_hostname`, and `ip_sta` for each flashed unit. For example, with `--start-index 33`, the access point SSID becomes `<YOUR_SSID>33` and the static IP of the ESP32 will be `192.168.50.33` if your config has set `192.168.50.1` as static IP. |
 
 #### What the script does
@@ -183,7 +190,8 @@ If a parameter is not supplied, all detected devices will be upgraded.
 
 | Parameter | Description |
 |---|---|
-| `--release-folder` | Path to the root directory of the release, e.g. `DroneBridge_ESP32DLSE_BETA3`. |
+| `--release-folder` | Path to the root directory of the release, e.g. `DroneBridge_ESP32DLSE_BETA3`. If omitted, the script asks you to choose a cached release from `dlse_releases/`, download an available online release, or enter a manual folder path. |
+| `--token` | Optional token used only for listing and downloading releases when `--release-folder` is omitted. You can also set `DRONEBRIDGE_SECRET_TOKEN`; `--token` overrides the environment variable. |
 | `--subnetmask` | IP address range to scan for devices. |
 | `--target-version` | Only upgrade ESP32s running this specific DLSE version — all other devices are skipped. Use `"0.0.0-dev.1"` to target DLSE Beta4 and earlier, as all those versions identify with that version string. |
 | `--esp32localbrcstport` | As configured in the web interface of the ESP32 (open on your ESP32) (udp_local_port) - Default: 14555 |

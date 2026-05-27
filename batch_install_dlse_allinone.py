@@ -30,6 +30,7 @@ import time
 import serial.tools.list_ports
 
 from dlse_cli_utils import resolve_resource_path, validate_activation_token
+from dlse_release_cli_utils import default_settings_file_for_release, select_and_validate_dlse_release_folder
 from DroneBridgeCommercialSupportSuite import db_get_activation_key, db_api_request_license_file, DBLicenseType, \
     db_embed_license_in_settings_csv, db_parameters_generate_binary, db_flash_binaries, db_csv_update_parameters, \
     db_get_esp32_chip_id, DLSESupportedChips, db_create_address_binary_map, db_get_dlse_lic_via_serial, \
@@ -202,9 +203,10 @@ def main():
     and command-line arguments before starting serial-port monitoring. A valid
     activation token must be supplied before release files or serial ports are used.
     """
-    global MY_SECRET_TOKEN
+    global MY_SECRET_TOKEN, DLSE_RELEASE_PATH, PATH_SETTINGS_CSV, START_DEVICE_ID
 
-    apply_args(parse_args())
+    args = parse_args()
+    apply_args(args)
     try:
         MY_SECRET_TOKEN = validate_activation_token(MY_SECRET_TOKEN)
     except ValueError as e:
@@ -221,6 +223,13 @@ def main():
         logger.log("License mode: EVALUATION, validity: 60 days. Evaluation licenses require license server access and are temporary.")
     else:
         logger.log("License mode: ACTIVATED, validity: permanent. Activated licenses can use offline recovery if needed.")
+    selected_release_path = select_and_validate_dlse_release_folder(args.release_folder, MY_SECRET_TOKEN, logger)
+    if selected_release_path is None:
+        beep_failure()
+        return
+    DLSE_RELEASE_PATH = selected_release_path
+    if args.settings_file is None:
+        PATH_SETTINGS_CSV = default_settings_file_for_release(DLSE_RELEASE_PATH)
     logger.log(f"Using settings file: {PATH_SETTINGS_CSV}")
     if not os.path.exists(PATH_SETTINGS_CSV):
         logger.log(f"  ❌ Could not find {PATH_SETTINGS_CSV}")
@@ -279,7 +288,7 @@ def main():
                     beep_failure()
                     continue
 
-                # Adapt your settings file to your needs like changing the ip_sta, wifi_hostname & ap_ssid
+                # Adapt your settings file to your needs (make changes to `merged_csv_path`) like changing the ip_sta, wifi_hostname & ap_ssid
                 # --------------
                 if not db_csv_update_parameters(merged_csv_path, START_DEVICE_ID):
                     logger.log("❌ Something went wrong with updating the IP and hostname configuration in the settings file.")
