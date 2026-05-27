@@ -129,11 +129,23 @@ dlse-install \
   --start-index 55
 ```
 
+To request 60-day evaluation licenses instead of regular activated licenses, add `-e`:
+
+```bash
+dlse-install \
+  --token <YOUR_SECRET_TOKEN> \
+  -e \
+  --release-folder "DroneBridge_ESP32DLSE_BETA3" \
+  --settings-file my_parameters/dlse_my_params.csv \
+  --start-index 55
+```
+
 #### Parameters
 
 | Parameter | Description |
 |---|---|
 | `--token` | Your secret token from [drone-bridge.com](https://drone-bridge.com). You can also set `DRONEBRIDGE_SECRET_TOKEN`; `--token` overrides the environment variable. |
+| `-e`, `--evaluation` | Request 60-day evaluation licenses instead of regular activated licenses. Evaluation licenses require license server access and are not cached in `received_licenses/`. |
 | `--release-folder` | Path to the folder containing the DLSE firmware binaries you downloaded in Step 3. |
 | `--settings-file` | Path to the settings file you exported from the ESP32 web interface in Step 1. |
 | `--start-index` | A numeric postfix appended to `ssid_ap`, `wifi_hostname`, and `ip_sta` for each flashed unit. For example, with `--start-index 33`, the access point SSID becomes `<YOUR_SSID>33` and the static IP of the ESP32 will be `192.168.50.33` if your config has set `192.168.50.1` as static IP. |
@@ -143,6 +155,7 @@ dlse-install \
 - Automatically requests a license from the DroneBridge license server and registers it with your account.
 - Flashes the DLSE firmware together with your exported settings and the generated license.
 - Falls back to **offline activation** if a local license file for the ESP32 is already present in `/received_licenses`, or if the device has previously been activated (the existing license is pulled and re-applied before the new firmware is written).
+- In evaluation mode, temporary 60-day licenses require the license server and are not stored in `/received_licenses`.
 - Logs all actions to `/logs`.
 
 > [!NOTE]
