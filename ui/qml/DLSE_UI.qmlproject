@@ -1,0 +1,21 @@
+/* Fleet Manager QML project derived from the Figma to Qt export. */
+
+import QmlProject
+
+Project {
+    qt6Project: true
+    importPaths: [ "." ]
+    mainFile: "App.qml"
+
+    QmlFiles {
+        directory: "."
+    }
+
+    ImageFiles {
+        directory: "assets"
+    }
+
+    ModuleFiles {
+        files: [ "DesignTokens/DesignTokens.qmlproject" ]
+    }
+}

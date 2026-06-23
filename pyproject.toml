@@ -56,3 +56,17 @@ esp_idf_nvs_partition_gen = "esp-idf-nvs-partition-gen/esp_idf_nvs_partition_gen
 
 [tool.setuptools.package-data]
 resources = ["*.wav", "*.pem"]
+
+[tool.setuptools.packages.find]
+include = ["ui*"]
+
+[tool.setuptools.package-data]
+ui = [
+  "resources/**/*",
+  "design_guide/*",
+  "qml/**/*",
+  "Start.png",
+  "MainScreen.png",
+  "requirements.md",
+  "progress.md",
+]

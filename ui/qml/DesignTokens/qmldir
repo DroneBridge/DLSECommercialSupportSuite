@@ -1,0 +1,5 @@
+module DesignTokens
+
+Collection_1Theme 1.0 Collection_1Theme.qml
+Collection_1Numbers 1.0 Collection_1Numbers.qml
+singleton Collection_1 1.0 Collection_1.qml

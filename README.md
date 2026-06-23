@@ -62,10 +62,45 @@ dlse-update --help
 dlse-install --help
 ```
 
+## PySide6 Fleet Manager
+
+The desktop Fleet Manager supports direct standalone management of DLSE ESP32 fleets. It provides MAVLink and HTTP discovery, rolling REST hydration, table and matrix views, complete device inspection, settings templates, OTA license activation, REST or MAVLink reboot, and local-binary OTA firmware updates. Serial flashing is intentionally not exposed in this UI.
+
+The interface is implemented with Qt Quick/QML from the exported Figma design in `ui/qml`. Python does not construct widgets or dialogs; it exposes typed inventory models and a `FleetController` to QML while the existing support library and background workers perform network operations. The application targets desktop displays, opens at 1298×804, and has a minimum window size of 1180×720.
+
+Install the package with UI dependencies from the repository root.
+
+### UI Description
+
+The application starts on the connection-mode screen. Choose **Direct Standalone** to open Fleet Manager. Skybrush, UniFi, and Network Manager are displayed only as future integration points.
+
+Scan settings persist across sessions and include the IPv4 subnet, MAVLink ports, discovery methods, discovery interval, HTTP timeout, and bounded concurrency. MAVLink and HTTP discovery run concurrently, and each discovery pass merges devices into the retained session fleet rather than replacing it. The default discovery interval is five seconds and HTTP concurrency is 20.
+
+The same dialog has an independent **System Stats Polling** section for `GET /api/system/stats`. Background polling is enabled by default with a two-second target interval, one-second per-request timeout, 20 concurrent requests, and an offline threshold of three consecutive failures. The supported ranges are 1–3600 seconds, 0.1–30 seconds, 1–64 workers, and 1–20 failures. Polling uses no automatic retries. A successful response updates cached statistics and marks the device online.
+
+Disabling stats polling cancels queued requests, ignores late results from that polling generation, and preserves cached statistics and the last known online/offline status. Re-enabling it starts a round immediately. Device discovery continues independently.
+
+For large fleets, two seconds is a target rather than a guaranteed per-device interval. Polling rounds never overlap, and only the configured number of HTTP requests are active at once (default 20, maximum 64). If a round takes longer than two seconds, the next round waits for it to finish. For example, 2,000 devices at 100 ms average response time require roughly 10 seconds per round with 20 concurrent requests; unreachable devices can extend this further up to the configured timeout.
+
+The footer reports discovery and stats polling separately. Discovery shows `STOPPED`, `WAITING`, `SCANNING`, or `ERROR`; stats polling shows `DISABLED`, `WAITING`, `POLLING`, or `ERROR`. Ordinary per-device request failures affect device health but do not set the global stats polling indicator to `ERROR`.
+
+The fleet table starts with Hostname, IP, Activation Status, DLSE Firmware, Build Version, MAVLink Sys ID, Wi-Fi SSID, Wi-Fi Channel, and RSSI. Use **Configure Columns** to show or hide additional fields, move visible columns into a custom order, and reset custom widths. Drag a column header's right edge to resize that column; double-click the resize handle to restore its default width. Visible column order and custom widths are persisted across sessions.
+
+The matrix view uses compact inspection cards optimized for high-density fleets. Each card centers the hostname, last two IP octets, RSSI, MAVLink system ID, and online/activation status; selection remains controlled from the table view.
+
+The right-side ESP32 configuration panel can be resized by dragging its left edge. Double-click the resize handle to restore the default width. The chosen panel width is persisted across sessions.
+
+Settings values in the right-side panel, including Wi-Fi password fields, are shown as readable text so operators can verify device configuration before applying changes. License-server tokens are still session-only and are not persisted.
+
+License activation requires a DroneBridge license server token. The UI preloads the token from `DRONEBRIDGE_SECRET_TOKEN`, or accepts it for the current session. Tokens are never persisted. Regular activated licenses use the existing permanent-license behavior, and evaluation licenses request a fixed 60-day validity. License-server availability is checked every ten seconds.
+
+
 ### Operational Folder
 
 Run the installed commands from the folder where you want operational files to live. Relative paths for firmware release folders, settings CSV files, `logs/`, and `received_licenses/` are resolved from your current terminal folder. Firmware release folders are external downloads and are not bundled into the Python package.
 
+
+## Usage
 Normal users should use the installed commands:
 
 ```bash
@@ -77,12 +112,19 @@ dlse-update --release-folder DroneBridge_ESP32DLSE_BETA5 --subnetmask 192.168.1.
 dlse-install --token <YOUR_SECRET_TOKEN> --release-folder DroneBridge_ESP32DLSE_BETA5 --settings-file my_parameters/dlse_my_params.csv --start-index 55
 ```
 
-## Usage
-
 The suite includes installable `dlse-*` commands for normal operation.
 
 Before running hardware workflows, stop Skybrush Live when using MAVLink discovery, reboot, or OTA update paths. Serial flashing also requires OS access to the ESP32 serial port.
 
+Configuration export uses the existing NVS-compatible `key,type,encoding,value` CSV format. For multi-device template application, static IP, subnet mask, gateway, hostname, and manual MAVLink system ID are excluded by default; the confirmation dialog allows changing the exclusion set.
+
+Activation keys are intentionally shown in full in the fleet table and inspector. Tokens, activation keys, and license payloads remain masked in diagnostic output and are never persisted by the UI.
+
+OTA updates accept a DroneBridge account release, a validated local release folder, or explicit `www.bin` and application binary paths. Account releases use a session-only license server token from the dialog or `DRONEBRIDGE_SECRET_TOKEN`, are downloaded into the local `dlse_releases/` cache, and are validated before any device upload starts. The UI uploads the web image first, waits two seconds, then uploads the application image that reboots the device. Queued updates can be cancelled, but active uploads are allowed to finish to avoid intentionally interrupting a transfer.
+
+Before network operations, make sure the ESP32s are reachable, configured UDP ports match, and Skybrush Live is stopped when MAVLink ports are required. Test activation, settings, reboot, and OTA operations on a small hardware batch before using them on a production fleet. Hardware workflows were not exercised by the automated test suite.
+
+The Web Interface inspector uses Qt WebEngine Quick and is instantiated only after an online device is selected and the tab is opened. Linux deployments must provide the normal Qt runtime system libraries and at least one usable system font. All application icons and design assets are bundled; the UI performs no runtime asset downloads.
 
 ## Automated DLSE Batch Installation
 <img alt="Gemini_Generated_Image_kvejvukvejvukvej" src="https://github.com/user-attachments/assets/a069d8a4-fb42-4b4c-b2d6-70a67f0ac5ed" />

@@ -1,0 +1,110 @@
+import QtQuick
+import DesignTokens as Tokens
+import QtQuick.Shapes
+
+Rectangle {
+    enum Eigenschaft_1 { Eigenschaft_1_Standard, Eigenschaft_1_Variante2, Eigenschaft_1_Variante3}
+
+    id: imageButton
+
+    property alias text_LabelText: text_Label.text
+    property alias text_LabelWidth: text_Label.width
+
+    property int eigenschaft_2: ImageButton.Eigenschaft_1.Eigenschaft_1_Standard
+
+    height: 29
+    width: 178.79
+
+    border.color: "#2e3a47"
+    border.width: 1
+    clip: true
+    color: "#1ae2d5c8"
+    radius: Tokens.Collection_1.numbers.radius
+
+    states: [
+        State {
+            name: "Eigenschaft 1=Standard"
+            when: imageButton.eigenschaft_2 === ImageButton.Eigenschaft_1.Eigenschaft_1_Standard
+    
+            PropertyChanges {
+                color: "#1ae2d5c8"
+                target: imageButton
+            }
+            PropertyChanges {
+                border.color: "#2e3a47"
+                target: imageButton
+            }
+        },
+        State {
+            name: "Eigenschaft 1=Variante2"
+            when: imageButton.eigenschaft_2 === ImageButton.Eigenschaft_1.Eigenschaft_1_Variante2
+    
+            PropertyChanges {
+                color: "#1ae2d5c8"
+                target: imageButton
+            }
+            PropertyChanges {
+                border.color: "#deceb9"
+                target: imageButton
+            }
+        },
+        State {
+            name: "Eigenschaft 1=Variante3"
+            when: imageButton.eigenschaft_2 === ImageButton.Eigenschaft_1.Eigenschaft_1_Variante3
+    
+            PropertyChanges {
+                color: "#081624"
+                target: imageButton
+            }
+            PropertyChanges {
+                border.color: "#deceb9"
+                target: imageButton
+            }
+        }
+    ]
+
+    Shape {
+        id: _vector
+
+        x: 11
+        y: 9.50
+
+        height: 10
+        width: 20.79
+
+        ShapePath {
+            id: _vector_ShapePath0
+
+            fillColor: "#deceb9"
+            fillRule: ShapePath.WindingFill
+            joinStyle: ShapePath.MiterJoin
+            strokeColor: "#00000000"
+            strokeStyle: ShapePath.SolidLine
+            strokeWidth: 0.03
+
+            PathSvg {
+                id: _vector_ShapePath0_PathSvg0
+
+                path: "M 4.125999907865569 5.873999786376953 C 3.8881665704858763 5.636166453361511 3.769250175977401 5.344833326339722 3.769250175977401 5 C 3.769250175977401 4.655166673660278 3.8881665704858763 4.363832783699036 4.125999907865569 4.125999450683594 C 4.363833245245261 3.8881661176681517 4.655166759082758 3.76925048828125 5.0000000917501835 3.76925048828125 C 5.344833424417609 3.76925048828125 5.636166556785373 3.8881661176681517 5.873999894165065 4.125999450683594 C 6.111833231544757 4.363832783699036 6.230750388992699 4.655166673660278 6.230750388992699 5 C 6.230750388992699 5.344833326339722 6.111833231544757 5.636166453361511 5.873999894165065 5.873999786376953 C 5.636166556785373 6.111833119392395 5.344833424417609 6.230750274658203 5.0000000917501835 6.230750274658203 C 4.655166759082758 6.230750274658203 4.363833245245261 6.111833119392395 4.125999907865569 5.873999786376953 Z M 5.0000000917501835 10 C 3.615333432735543 10 2.4358334988297132 9.512833499908448 1.4615001946652615 8.538500213623047 C 0.4871668905008095 7.564166927337647 0 6.384666633605957 0 5 C 0 3.615333366394043 0.4871668905008095 2.435833835601807 1.4615001946652615 1.4615005493164064 C 2.4358334988297132 0.487167263031006 3.615333432735543 0 5.0000000917501835 0 C 6.027000156372039 0 6.953000005517491 0.2781667709350586 7.778000020656271 0.8345001220703125 C 8.603000035795052 1.3910001277923585 9.205166961784718 2.112833309173584 9.584500297946242 3 L 18.788499795453248 3 L 20.78849983215332 5 L 17.59624971254026 8.15374984741211 L 15.884500413551473 6.865499877929688 L 14.077000685559568 8.192250061035157 L 12.29799979842265 7 L 9.584500297946242 7 C 9.205166961784718 7.874333286285401 8.603000035795052 8.592916917800903 7.778000020656271 9.155750274658203 C 6.953000005517491 9.718583631515504 6.027000156372039 10.000000000000002 5.0000000917501835 10 Z M 5.0000000917501835 9 C 5.9846667434248095 9 6.8247500718286505 8.703833103179932 7.520250076961706 8.111499786376953 C 8.215750082094763 7.519166469573975 8.660917095325695 6.815333366394043 8.855750437161545 6 L 12.615500109424573 6 L 14.046249647397628 6.967250061035156 L 15.903750902185969 5.634500122070313 L 17.525000321584393 6.855750274658203 L 19.380749867356215 5 L 18.38074984900618 4 L 8.855750437161545 4 C 8.660917095325695 3.184666633605957 8.215750082094763 2.4808327674865724 7.520250076961706 1.888499450683594 C 6.8247500718286505 1.2961661338806154 5.9846667434248095 1 5.0000000917501835 1 C 3.900000071565143 1 2.9583334035134303 1.391666650772095 2.1750000399113296 2.1750000000000003 C 1.3916666763092287 2.958333349227906 1.0000000183500366 3.9 1.0000000183500366 5 C 1.0000000183500366 6.1 1.3916666763092287 7.041666650772095 2.1750000399113296 7.825 C 2.9583334035134303 8.608333349227905 3.900000071565143 9 5.0000000917501835 9 Z"
+            }
+        }
+    }
+    Text {
+        id: text_Label
+
+        x: 39.79
+        y: 6
+
+        height: 17
+        width: 129
+
+        color: "#e2d5c8"
+        font.family: "Geist"
+        font.pixelSize: 13
+        font.weight: Font.DemiBold
+        horizontalAlignment: Text.AlignLeft
+        text: "OTA DLSE Activation"
+        textFormat: Text.PlainText
+        verticalAlignment: Text.AlignVCenter
+    }
+}
