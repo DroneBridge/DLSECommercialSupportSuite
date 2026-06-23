@@ -24,11 +24,13 @@ import csv
 import os
 import platform
 import shutil
+import sys
 import time
-from pathlib import Path
 
 import serial.tools.list_ports
 
+from dlse_cli_utils import resolve_resource_path, validate_activation_token
+from dlse_release_cli_utils import default_settings_file_for_release, select_and_validate_dlse_release_folder
 from DroneBridgeCommercialSupportSuite import db_get_activation_key, db_api_request_license_file, DBLicenseType, \
     db_embed_license_in_settings_csv, db_parameters_generate_binary, db_flash_binaries, db_csv_update_parameters, \
     db_get_esp32_chip_id, DLSESupportedChips, db_create_address_binary_map, db_get_dlse_lic_via_serial, \
@@ -48,6 +50,8 @@ PATH_SETTINGS_CSV = "DroneBridge_ESP32DLSE_BETA5/db_show_params.csv"
 DLSE_RELEASE_PATH = "DroneBridge_ESP32DLSE_BETA5"
 LOG_DIR = "logs"
 START_DEVICE_ID = 18  # Starting ID for iterating over static IP, hostname index and ap_name with every flashing operation
+LICENSE_TYPE = DBLicenseType.ACTIVATED
+LICENSE_VALIDITY_DAYS = 0
 
 USE_CMD_LINE_ESPTOOL = False # Set to true if you encounter connection issues with the serial port. This maybe more stable.
 
@@ -83,6 +87,8 @@ def parse_args() -> argparse.Namespace:
                         help='Starting ID for iterating over static IP, hostname index and ap_name with every flashing operation. First ESP32 will get static IP X.X.X.<start_index>, the second ESP32 will get X.X.X.<start_index + 1>')
     parser.add_argument('--baud', required=False, type=int,
                         help="Baud rate used for flashing ESP32. Lower to 115200 if flashing fails")
+    parser.add_argument("-e", "--evaluation", action="store_true",
+                        help="Request 60-day evaluation licenses instead of activated licenses.")
     return parser.parse_args()
 
 
@@ -97,6 +103,7 @@ def apply_args(args: argparse.Namespace) -> None:
     :return: None. Updates module-level configuration.
     """
     global MY_SECRET_TOKEN, ESP_SERIAL_PORT_FLASH_BAUD_RATE, PATH_SETTINGS_CSV, DLSE_RELEASE_PATH, LOG_DIR, START_DEVICE_ID, USE_CMD_LINE_ESPTOOL
+    global LICENSE_TYPE, LICENSE_VALIDITY_DAYS
 
     env_token = os.environ.get("DRONEBRIDGE_SECRET_TOKEN")
     if env_token:
@@ -111,6 +118,81 @@ def apply_args(args: argparse.Namespace) -> None:
         START_DEVICE_ID = args.start_index
     if args.baud is not None:
         ESP_SERIAL_PORT_FLASH_BAUD_RATE = args.baud
+    if args.evaluation:
+        LICENSE_TYPE = DBLicenseType.EVALUATION
+        LICENSE_VALIDITY_DAYS = 60
+    else:
+        LICENSE_TYPE = DBLicenseType.ACTIVATED
+        LICENSE_VALIDITY_DAYS = 0
+
+
+def acquire_license_file(activation_key: str, serial_port: str, logger: DBLogger) -> str | None:
+    """
+    Get a license file for one ESP32 according to the selected license mode.
+
+    Activated mode preserves the existing safety fallback: if the license server
+    is unavailable, use a matching cached license or read the current license
+    from the ESP32 before flashing. Evaluation mode always requires the license
+    server because temporary evaluation licenses cannot be recovered offline.
+
+    :param activation_key: Base64 activation key read from the ESP32.
+    :param serial_port: Serial port used for optional activated-license recovery.
+    :param logger: Logger for operator-facing status messages.
+    :return: License file path, or ``None`` when the device must be skipped.
+    """
+    dlse_lic_server_available = db_is_dlse_lic_server_available()
+
+    if not dlse_lic_server_available:
+        if LICENSE_TYPE == DBLicenseType.EVALUATION:
+            logger.log("❌ License server unavailable. Evaluation licenses cannot be created offline. Skipping device.")
+            return None
+
+        license_file_path = db_get_dlse_lic_from_local_storage(activation_key)
+        if license_file_path is not None:
+            return license_file_path
+
+        logger.log("  No fitting license file found locally. Trying to read the license from the ESP32 via serial...")
+        license_file_path = db_get_dlse_lic_via_serial(
+            serial_port,
+            ESP_SERIAL_PORT_FLASH_BAUD_RATE,
+            _use_cmd_line_tool=USE_CMD_LINE_ESPTOOL,
+        )
+        if license_file_path is None:
+            logger.log(
+                "❌ Something went wrong with reading the license file from the ESP32. ABORTING flashing sequence to prevent loss of potentially activated ESP32"
+            )
+            return None
+
+        os.makedirs(DLSE_LICENSE_FOLDER, exist_ok=True)
+        new_lic_file_path = os.path.join(DLSE_LICENSE_FOLDER, f"{activation_key}.dlselic")
+        shutil.copy2(license_file_path, new_lic_file_path)
+        return new_lic_file_path
+
+    license_file_path = db_api_request_license_file(
+        activation_key,
+        MY_SECRET_TOKEN,
+        _license_type=LICENSE_TYPE,
+        _validity_days=LICENSE_VALIDITY_DAYS,
+    )
+    if license_file_path is None:
+        logger.log("❌ Something went wrong with requesting the license file.")
+    return license_file_path
+
+
+def cleanup_evaluation_license_file(license_file_path: str | None, logger: DBLogger) -> None:
+    """
+    Remove a temporary evaluation license file after it has been embedded.
+
+    :param license_file_path: License file path returned by ``acquire_license_file``.
+    :param logger: Logger for non-fatal cleanup failures.
+    :return: None.
+    """
+    if LICENSE_TYPE != DBLicenseType.EVALUATION or not license_file_path:
+        return
+    try:
+        os.remove(license_file_path)
+    except OSError as e:
+        logger.log(f"Failed to remove temporary evaluation license {license_file_path}: {e}")
 
 
 def main():
@@ -118,9 +200,18 @@ def main():
     Run the serial batch flashing, configuration, and license activation workflow.
 
     The script applies configuration from defaults, ``DRONEBRIDGE_SECRET_TOKEN``,
-    and command-line arguments before starting serial-port monitoring.
+    and command-line arguments before starting serial-port monitoring. A valid
+    activation token must be supplied before release files or serial ports are used.
     """
-    apply_args(parse_args())
+    global MY_SECRET_TOKEN, DLSE_RELEASE_PATH, PATH_SETTINGS_CSV, START_DEVICE_ID
+
+    args = parse_args()
+    apply_args(args)
+    try:
+        MY_SECRET_TOKEN = validate_activation_token(MY_SECRET_TOKEN)
+    except ValueError as e:
+        print(f"Fatal: {e}")
+        sys.exit(2)
 
     # Initialize the singleton logger
     logger = DBLogger()
@@ -128,6 +219,17 @@ def main():
 
     # Show the user what kind of settings and release config he chose
     logger.log(f"Using Token: {mask_token_for_log(MY_SECRET_TOKEN)}")
+    if LICENSE_TYPE == DBLicenseType.EVALUATION:
+        logger.log("License mode: EVALUATION, validity: 60 days. Evaluation licenses require license server access and are temporary.")
+    else:
+        logger.log("License mode: ACTIVATED, validity: permanent. Activated licenses can use offline recovery if needed.")
+    selected_release_path = select_and_validate_dlse_release_folder(args.release_folder, MY_SECRET_TOKEN, logger)
+    if selected_release_path is None:
+        beep_failure()
+        return
+    DLSE_RELEASE_PATH = selected_release_path
+    if args.settings_file is None:
+        PATH_SETTINGS_CSV = default_settings_file_for_release(DLSE_RELEASE_PATH)
     logger.log(f"Using settings file: {PATH_SETTINGS_CSV}")
     if not os.path.exists(PATH_SETTINGS_CSV):
         logger.log(f"  ❌ Could not find {PATH_SETTINGS_CSV}")
@@ -181,42 +283,12 @@ def main():
                 else:
                     logger.log(f"Derived activation key: {activation_key}")
 
-                _dlse_lic_server_available = db_is_dlse_lic_server_available()
+                _license_file_path = acquire_license_file(activation_key, ESP_SERIAL_PORT, logger)
+                if _license_file_path is None:
+                    beep_failure()
+                    continue
 
-                _license_file_path = None
-                if not _dlse_lic_server_available:
-                    # If we already have the license offline in the DLSE_LICENSE_FOLDER we can get it from there.
-                    _license_file_path = db_get_dlse_lic_from_local_storage(activation_key)
-                    if _license_file_path is None:
-                        # Try to read the license file from the esp via the serial port and store it locally for later
-                        logger.log("  No fitting license file found locally. Trying to read the license from the ESP32 via serial...")
-                        _license_file_path = db_get_dlse_lic_via_serial(ESP_SERIAL_PORT, ESP_SERIAL_PORT_FLASH_BAUD_RATE, _use_cmd_line_tool=USE_CMD_LINE_ESPTOOL)
-                        if _license_file_path is None:
-                            logger.log(
-                                "❌ Something went wrong with reading the license file from the ESP32. ABORTING flashing sequence to prevent loss of potentially activated ESP32")
-                            beep_failure()
-                            # We cannot continue flashing the new settings since we would lose the license and the esp32 ends up in trial mode
-                            continue
-                        else:
-                            # Copy the valid license to the local license storage renaming it to the activation key
-                            os.makedirs(DLSE_LICENSE_FOLDER, exist_ok=True)
-                            _new_lic_file_path = os.path.join(DLSE_LICENSE_FOLDER, f"{activation_key}.dlselic")
-                            shutil.copy2(_license_file_path, _new_lic_file_path)
-                            _license_file_path = _new_lic_file_path
-                    else:
-                        pass # Found a valid license file for {activation_key} in the local license storage. Picking that one.
-                else:
-                    # Request a license file for the activation key from the DroneBridge licensing server, if activation key was already used, the license will not cost any license credit
-                    # --------------
-                    # With DBLicenseType.ACTIVATED and validity 0 the license will never expire
-                    _license_file_path = db_api_request_license_file(activation_key, MY_SECRET_TOKEN, _license_type=DBLicenseType.ACTIVATED,
-                                                               _validity_days=0)
-                    if _license_file_path is None:
-                        logger.log("❌ Something went wrong with requesting the license file.")
-                        beep_failure()
-                        continue
-
-                # Adapt your settings file to your needs like changing the ip_sta, wifi_hostname & ap_ssid
+                # Adapt your settings file to your needs (make changes to `merged_csv_path`) like changing the ip_sta, wifi_hostname & ap_ssid
                 # --------------
                 if not db_csv_update_parameters(merged_csv_path, START_DEVICE_ID):
                     logger.log("❌ Something went wrong with updating the IP and hostname configuration in the settings file.")
@@ -232,6 +304,7 @@ def main():
                     logger.log("❌ Something went wrong with integrating the license into the settings file.")
                     beep_failure()
                     continue
+                cleanup_evaluation_license_file(_license_file_path, logger)
 
                 # Create the settings partition binary file that will be flashed to the ESP32
                 # --------------
@@ -266,22 +339,42 @@ def main():
                 beep_failure()
 
 def play_sound(file):
+    """
+    Play a notification sound when the bundled audio file is available.
+
+    :param file: Source checkout or package-relative path to a wave file.
+    :return: None. Missing files and playback errors are ignored by the caller.
+    """
     system = platform.system()
-    path = Path(file)
-    if not path.exists():
+    path = resolve_resource_path(file)
+    if path is None:
         return
-    if system == "Windows":
-        import winsound
-        winsound.PlaySound(str(path), winsound.SND_FILENAME)
-    elif system == "Darwin":
-        os.system(f"afplay '{path}'")
-    else:
-        os.system(f"aplay '{path}' >/dev/null 2>&1")
+    try:
+        if system == "Windows":
+            import winsound
+            winsound.PlaySound(str(path), winsound.SND_FILENAME)
+        elif system == "Darwin":
+            os.system(f"afplay '{path}'")
+        else:
+            os.system(f"aplay '{path}' >/dev/null 2>&1")
+    except Exception:
+        return
 
 def beep_success():
+    """
+    Play the best-effort success notification sound.
+
+    :return: None. Missing audio support does not fail the workflow.
+    """
     play_sound("resources/new-notification-011-364050.wav")
 
+
 def beep_failure():
+    """
+    Play the best-effort failure notification sound.
+
+    :return: None. Missing audio support does not fail the workflow.
+    """
     play_sound("resources/system-notification-04-206493.wav")
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "DLSECommercialSupportSuite"
-version = "0.1.0"
+version = "1.0.0"
 description = "Commercial Support Suite for DroneBridge DLSE"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,12 +19,40 @@ dependencies = [
   "cryptography>=46.0.1",
   "mavsdk>=3.10.2",
   "pymavlink>=2.4.49",
-  # UI dependencies
+]
+
+[project.optional-dependencies]
+ui = [
   "PySide6>=6.8.0",
 ]
+
+[project.scripts]
+dlse-activate = "batch_ota_license_activation:main"
+dlse-reboot = "batch_ota_reboot:main"
+dlse-update = "batch_ota_update_allinone:main"
+dlse-install = "batch_install_dlse_allinone:main"
 
 [project.urls]
 "Homepage" = "https://github.com/DroneBridge/DLSECommercialSupportSuite"
 
 [tool.setuptools]
-py-modules = ["DroneBridgeCommercialSupportSuite"]
+py-modules = [
+  "DroneBridgeCommercialSupportSuite",
+  "batch_ota_license_activation",
+  "batch_ota_reboot",
+  "batch_ota_update_allinone",
+  "batch_install_dlse_allinone",
+  "dlse_cli_utils",
+  "dlse_release_cli_utils",
+]
+packages = [
+  "resources",
+  "nvs_partition_tool",
+  "esp_idf_nvs_partition_gen",
+]
+
+[tool.setuptools.package-dir]
+esp_idf_nvs_partition_gen = "esp-idf-nvs-partition-gen/esp_idf_nvs_partition_gen"
+
+[tool.setuptools.package-data]
+resources = ["*.wav", "*.pem"]

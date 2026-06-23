@@ -23,6 +23,7 @@ import argparse
 import os.path
 import time
 
+from dlse_release_cli_utils import select_and_validate_dlse_release_folder
 from DroneBridgeCommercialSupportSuite import DBLogger, db_scan_for_esp32_devices, db_api_ota_perform_www_update, \
     db_api_ota_perform_app_update_with_progress, db_check_release_binaries_present, db_get_bin_folder, \
     db_api_get_info, is_valid_supported_dlse_chip
@@ -32,17 +33,24 @@ from batch_install_dlse_allinone import play_sound
 TARGET_VERSION = None # Put "0.0.0-dev.1" for targeting BETA4 and earlier. For later releases you can adjust the string
 # Path to the DLSE release root directory -> Download & extract them from https://drone-bridge.com/dlse/
 DLSE_RELEASE_PATH = "DroneBridge_ESP32DLSE_BETA5"
+MY_SECRET_TOKEN = None
 SUBNET_MASK = '192.168.1.0/24' # IP address range to scan for devices. Here it will scan for 192.168.1.0-254
 ESP32_LOCAL_BROADCAST_PORT = 14555  # As configured in the web interface of the ESP32 (open on your ESP32)
 ESP32_REMOTE_BROADCAST_PORT = 14550 # As configured in the web interface of the ESP32 (open on your GCS)
 LOG_DIR = "logs"
 
-def main():
-    global DLSE_RELEASE_PATH, LOG_DIR, TARGET_VERSION, SUBNET_MASK, ESP32_LOCAL_BROADCAST_PORT, ESP32_REMOTE_BROADCAST_PORT
-    # Parse command line arguments. These will overwrite the config above if set.
-    parser = argparse.ArgumentParser(description='Install DroneBridge DLSE on ESP32.')
+
+def parse_args() -> argparse.Namespace:
+    """
+    Parse command-line arguments for the OTA firmware update script.
+
+    :return: Parsed argparse namespace with release, discovery, and targeting options.
+    """
+    parser = argparse.ArgumentParser(description='Update DroneBridge DLSE on ESP32 devices over the air.')
     parser.add_argument('--release-folder', required=False, type=str,
                         help='Folder path to the root directory of the release e.g. /DroneBridge_ESP32DLSE_BETA3 . Download & extract them from https://drone-bridge.com/dlse/')
+    parser.add_argument('--token', required=False, type=str,
+                        help='Secret token to authenticate with the DroneBridge license server when downloading a release. Overrides DRONEBRIDGE_SECRET_TOKEN.')
     parser.add_argument('--subnetmask', required=False, type=str,
                         help='Subnet mask describing where to scan for devices. Default: 192.168.1.0/24')
     parser.add_argument('--esp32localbrcstport', required=False, type=int,
@@ -55,8 +63,23 @@ def main():
                              'Example: 1.0.0-beta.3 for v1.0.0 BETA3 release '
                              'Set to 0.0.0-dev.1 in case you want to target DLSE Beta4 and earlier. These versions are all identifying with 0.0.0-dev.1. '
                              'If parameter is not supplied, all detected devices will be upgraded.')
-    args = parser.parse_args()
+    return parser.parse_args()
 
+
+def apply_args(args: argparse.Namespace) -> None:
+    """
+    Apply command-line overrides to module-level OTA update settings.
+
+    :param args: Parsed command-line arguments.
+    :return: None. Updates module-level configuration used by ``main``.
+    """
+    global DLSE_RELEASE_PATH, LOG_DIR, TARGET_VERSION, SUBNET_MASK, ESP32_LOCAL_BROADCAST_PORT, ESP32_REMOTE_BROADCAST_PORT, MY_SECRET_TOKEN
+
+    env_token = os.environ.get("DRONEBRIDGE_SECRET_TOKEN")
+    if env_token:
+        MY_SECRET_TOKEN = env_token
+    if getattr(args, "token", None):
+        MY_SECRET_TOKEN = args.token
     if args.release_folder:
         DLSE_RELEASE_PATH = args.release_folder
     if args.subnetmask:
@@ -68,9 +91,28 @@ def main():
     if args.esp32remotebrcstport:
         ESP32_REMOTE_BROADCAST_PORT = args.esp32remotebrcstport
 
+
+def main():
+    """
+    Run the OTA firmware update workflow for detected DLSE ESP32 devices.
+
+    Release files are validated before network discovery starts. The operator
+    must confirm the selected devices before any firmware upload is attempted.
+    """
+    global DLSE_RELEASE_PATH
+
+    args = parse_args()
+    apply_args(args)
+
     # Initialize the singleton logger
     logger = DBLogger()
     logger.create_log_file("logs", log_file_prefix="dlse_ota_update_log")
+
+    selected_release_path = select_and_validate_dlse_release_folder(args.release_folder, MY_SECRET_TOKEN, logger)
+    if selected_release_path is None:
+        beep_failure()
+        return
+    DLSE_RELEASE_PATH = selected_release_path
 
     logger.log(f"Using release folder: {DLSE_RELEASE_PATH}")
     # Check if the DroneBridge binaries are present
@@ -170,14 +212,30 @@ def main():
         logger.log("\n✅ Successful devices:\n" + _format_device_list_for_print(successful_devices))
 
 def _format_device_list_for_print(devices: list) -> str:
+    """
+    Format detected device dictionaries for the final OTA update summary.
+
+    :param devices: Device dictionaries collected during the update workflow.
+    :return: Human-readable list or ``(none)`` placeholder.
+    """
     if not devices:
         return "  (none)"
     return "\n".join(f"  - {item}" for item in devices)
 
 def beep_success():
+    """
+    Play the best-effort success notification sound.
+
+    :return: None. Missing audio support does not fail the workflow.
+    """
     play_sound("resources/new-notification-011-364050.wav")
 
 def beep_failure():
+    """
+    Play the best-effort failure notification sound.
+
+    :return: None. Missing audio support does not fail the workflow.
+    """
     play_sound("resources/system-notification-04-206493.wav")
 
 if __name__ == "__main__":
