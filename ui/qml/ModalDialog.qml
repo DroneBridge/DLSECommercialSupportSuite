@@ -7,11 +7,38 @@ Dialog {
 
     default property alias bodyData: body.data
     property int preferredWidth: 520
+    property bool autoCenter: true
+
+    function centerInParent() {
+        if (!autoCenter)
+            return
+        const owner = parent || Overlay.overlay
+        if (!owner)
+            return
+        x = Math.max(24, Math.round((owner.width - width) / 2))
+        y = Math.max(24, Math.round((owner.height - height) / 2))
+    }
 
     width: Math.min(preferredWidth, parent ? parent.width - 48 : preferredWidth)
     modal: true
     closePolicy: Popup.CloseOnEscape
     padding: 18
+    onOpened: centerTimer.restart()
+    onHeightChanged: {
+        if (opened)
+            centerTimer.restart()
+    }
+    onWidthChanged: {
+        if (opened)
+            centerTimer.restart()
+    }
+
+    Timer {
+        id: centerTimer
+        interval: 0
+        repeat: false
+        onTriggered: dialog.centerInParent()
+    }
 
     Theme { id: theme }
 

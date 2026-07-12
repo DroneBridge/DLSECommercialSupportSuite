@@ -264,6 +264,7 @@ class FleetController(QObject):
             "hostname": record.hostname,
             "activationStatus": record.activation_status,
             "firmwareVersion": record.firmware_version,
+            "chip": record.chip,
             "dronebridgeVersion": record.dronebridge_version,
             "mavlinkSysId": record.mavlink_sys_id,
             "fcSysId": record.fc_sys_id,
@@ -639,6 +640,29 @@ class FleetController(QObject):
         keys.pop(index)
         keys.insert(target, key)
         self._apply_visible_columns(keys)
+
+    @Slot("QVariantList")
+    def setColumnOrder(self, keys: list[Any]) -> None:
+        """
+        Persist an absolute order for the currently visible data columns.
+
+        :param keys: Stable column keys in the desired visible order. Unknown,
+            hidden, and duplicate keys are ignored; currently visible keys not
+            included in the request keep their previous relative order.
+        :return: None. No change is emitted when the normalized order is
+            identical to the existing projection.
+        """
+        visible_keys = self.source_model.visible_column_keys()
+        visible = set(visible_keys)
+        ordered = []
+        for key in keys:
+            key = str(key)
+            if key in visible and key not in ordered:
+                ordered.append(key)
+        ordered.extend(key for key in visible_keys if key not in ordered)
+        if ordered == visible_keys:
+            return
+        self._apply_visible_columns(ordered)
 
     @Slot(str)
     def inspectDevice(self, identity: str) -> None:

@@ -45,7 +45,8 @@
   - Option to download the configuration as a .csv file from the selected devices using a button in the settings tab on the right side of the user interface.
   - Option to upload the configuration as a .csv file to the selected or all detected devices. Option to provide the .csv file from disk using a file chooser.
   - Inside the table the user can choose what columns shall be visible by clicking on the "Configure Columns" button. A popup with all available columns shall appear that lets the user pick the ones that shall be visible and rearrange the visible column order. The user shall be able to manually resize individual visible columns.
-  - By default the columns for the parameter: Hostname, IP, Activation Status, Firmware version, Build Version, MAVLink Sys ID, WiFi SSID, WiFi Channel, RSSI
+  - By default the columns for the parameter: Hostname, IP, Activation Status, Firmware version, Chip, Build Version, DLSE Configured MAVLink Sys ID, DB APMODE SSID, DB APMODE CHANNEL, DEVICE RSSI
+  - Optional REST-backed table columns shall include DLSE Mode (`esp32_mode`), Baud (`baud`), DLSE Local UDP Port (`udp_local_port`), DLSE Remote UDP Port (`wifi_brcst_port`), Power Management (`show_pm_en`), DLSE MAVLink Heartbeat (`show_pm_en_hb`), and DLSE MAVLink Sys ID Based On IP (`show_en_syid_ip`).
   - The user interface shall display the license server connection status (Online/Offline). The status shall be updated every 10s.
   - There shall be the option to provide the user token for the DLSE license server via an environment variable named "DRONEBRIDGE_SECRET_TOKEN"
 

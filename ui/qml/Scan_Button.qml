@@ -11,6 +11,7 @@ Rectangle {
     property alias text_LabelVisible: text_Label.visible
 
     property int eigenschaft_2: Scan_Button.Eigenschaft_1.Eigenschaft_1_Standard
+    property string labelText: "Scan for Devices"
 
     height: 30
     width: 154
@@ -247,7 +248,7 @@ Rectangle {
         font.pixelSize: 13
         font.weight: Font.DemiBold
         horizontalAlignment: Text.AlignLeft
-        text: "Scan for Devices"
+        text: scan_Button.labelText
         textFormat: Text.PlainText
         verticalAlignment: Text.AlignVCenter
         visible: true

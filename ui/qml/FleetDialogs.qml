@@ -12,6 +12,7 @@ Item {
     property string resultTitle: ""
     property string resultMessage: ""
     property bool resultRetryable: false
+    property bool csvSelectedOnly: false
 
     function center(dialog) {
         dialog.x = Math.max(24, (dialogs.width - dialog.width) / 2)
@@ -67,8 +68,53 @@ Item {
     }
 
     function openColumns() {
-        center(columnsDialog)
+        refreshColumnOrderModel()
         columnsDialog.open()
+    }
+
+    function refreshColumnOrderModel() {
+        columnOrderModel.clear()
+        const columns = fleetController.columns
+        for (let i = 0; i < columns.length; ++i) {
+            columnOrderModel.append({
+                "columnKey": columns[i].key,
+                "columnTitle": columns[i].title,
+                "columnVisible": columns[i].visible
+            })
+        }
+    }
+
+    function applyColumnOrder() {
+        const keys = []
+        for (let i = 0; i < columnOrderModel.count; ++i) {
+            const column = columnOrderModel.get(i)
+            if (column.columnVisible)
+                keys.push(column.columnKey)
+        }
+        fleetController.setColumnOrder(keys)
+    }
+
+    function updateDraggedColumnTarget(targetIndex) {
+        const rowCount = columnOrderModel.count
+        if (columnList.dragStartIndex < 0 || rowCount <= 1)
+            return
+        columnList.dragTargetIndex = Math.max(0, Math.min(rowCount - 1, targetIndex))
+    }
+
+    function finishDraggedColumn() {
+        const startIndex = columnList.dragStartIndex
+        const targetIndex = columnList.dragTargetIndex
+        columnList.dragStartIndex = -1
+        columnList.dragTargetIndex = -1
+        columnList.dragContentY = -1
+        columnList.draggingColumnKey = ""
+        columnList.interactive = true
+        if (startIndex < 0 || targetIndex < 0 || startIndex === targetIndex) {
+            applyColumnOrder()
+            return
+        }
+        columnOrderModel.move(startIndex, targetIndex, 1)
+        applyColumnOrder()
     }
 
     function openClearFleet() {
@@ -85,7 +131,17 @@ Item {
         confirmDialog.open()
     }
 
+    function openApplyCsvToSelected() {
+        if (fleetController.selectedCount <= 0) {
+            showToast("info", "Select at least one device before applying settings.")
+            return
+        }
+        csvSelectedOnly = true
+        importCsvDialog.open()
+    }
+
     function openImportCsv() {
+        csvSelectedOnly = false
         importCsvDialog.open()
     }
 
@@ -111,7 +167,7 @@ Item {
         target: fleetController
 
         function onCsvTemplateReady() {
-            csvScope.currentIndex = fleetController.selectedCount > 0 ? 0 : 1
+            csvScope.currentIndex = dialogs.csvSelectedOnly || fleetController.selectedCount > 0 ? 0 : 1
             dialogs.resetCsvExclusions(
                 csvScope.currentIndex === 0 ? "selected" : "visible"
             )
@@ -153,8 +209,8 @@ Item {
 
             Text { text: "Discovery methods"; color: theme.secondaryText; font.family: theme.bodyFont }
             ColumnLayout {
-                AppCheckBox { id: mavlinkCheck; text: "MAVLink broadcast" }
-                AppCheckBox { id: httpCheck; text: "HTTP IP-range scan" }
+                AppCheckBox { id: mavlinkCheck; text: "MAVLink broadcast (recommended)" }
+                AppCheckBox { id: httpCheck; text: "HTTP IP-range scan (slow - robust)" }
                 AppCheckBox { text: "UniFi discovery (future)"; enabled: false }
             }
 
@@ -505,75 +561,175 @@ Item {
         title: "Configure Columns"
         preferredWidth: 520
 
+        ListModel {
+            id: columnOrderModel
+        }
+
         ListView {
             id: columnList
+            property string draggingColumnKey: ""
+            property int dragStartIndex: -1
+            property int dragTargetIndex: -1
+            property real dragContentY: -1
+
             Layout.fillWidth: true
             Layout.preferredHeight: Math.min(contentHeight, 430)
             clip: true
             spacing: 4
-            model: fleetController.columns
+            model: columnOrderModel
             ScrollBar.vertical: ScrollBar {}
 
-            delegate: RowLayout {
-                required property var modelData
+            delegate: Item {
+                id: columnRow
+
+                required property int index
+                required property string columnKey
+                required property string columnTitle
+                required property bool columnVisible
+
                 width: columnList.width
-                height: 32
-                spacing: 8
+                height: 36
+                z: dragHandle.drag.active ? 10 : 0
 
-                AppCheckBox {
-                    Layout.fillWidth: true
-                    text: modelData.title
-                    checked: modelData.visible
-                    onClicked: fleetController.setColumnVisible(modelData.key, checked)
+                Rectangle {
+                    id: rowFrame
+                    width: parent.width
+                    height: parent.height
+                    y: 0
+                    radius: 5
+                    color: dragHandle.drag.active ? theme.hover : theme.background
+                    border.width: 1
+                    border.color: dragHandle.drag.active ? theme.accent : theme.border
+                    opacity: columnRow.columnVisible ? 1 : 0.62
+
+                    Drag.active: dragHandle.drag.active
+                    Drag.source: dragHandle
+                    Drag.hotSpot.x: width / 2
+                    Drag.hotSpot.y: height / 2
+
+                    MouseArea {
+                        id: dragHandle
+                        anchors.fill: parent
+                        enabled: columnOrderModel.count > 1
+                        hoverEnabled: true
+                        preventStealing: true
+                        cursorShape: Qt.SizeAllCursor
+                        drag.target: rowFrame
+                        drag.axis: Drag.YAxis
+                        property string columnKey: columnRow.columnKey
+
+                        onPressed: {
+                            columnList.draggingColumnKey = columnRow.columnKey
+                            columnList.dragStartIndex = columnRow.index
+                            columnList.dragTargetIndex = columnRow.index
+                            columnList.dragContentY = columnRow.y + columnRow.height / 2
+                            columnList.interactive = false
+                        }
+                        onPositionChanged: {
+                            if (!drag.active)
+                                return
+                            const center = rowFrame.mapToItem(
+                                columnList.contentItem,
+                                rowFrame.width / 2,
+                                rowFrame.height / 2
+                            )
+                            columnList.dragContentY = center.y
+                            let targetIndex = columnList.indexAt(center.x, center.y)
+                            if (targetIndex < 0) {
+                                targetIndex = center.y < 0
+                                              ? 0
+                                              : columnOrderModel.count - 1
+                            }
+                            dialogs.updateDraggedColumnTarget(targetIndex)
+                        }
+                        onReleased: {
+                            rowFrame.y = 0
+                            dialogs.finishDraggedColumn()
+                        }
+                        onCanceled: {
+                            rowFrame.y = 0
+                            columnList.draggingColumnKey = ""
+                            columnList.dragStartIndex = -1
+                            columnList.dragTargetIndex = -1
+                            columnList.dragContentY = -1
+                            columnList.interactive = true
+                            dialogs.refreshColumnOrderModel()
+                        }
+                    }
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 6
+                        anchors.rightMargin: 6
+                        spacing: 8
+
+                        Item {
+                            Layout.preferredWidth: 28
+                            Layout.preferredHeight: 28
+                            opacity: columnRow.columnVisible ? 1 : 0.28
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "::"
+                                color: theme.secondaryText
+                                font.family: theme.dataFont
+                                font.pixelSize: 15
+                                font.bold: true
+                            }
+                        }
+
+                        AppCheckBox {
+                            Layout.preferredWidth: 24
+                            Layout.preferredHeight: 28
+                            text: ""
+                            checked: columnRow.columnVisible
+                            onClicked: {
+                                columnOrderModel.setProperty(columnRow.index, "columnVisible", checked)
+                                fleetController.setColumnVisible(columnRow.columnKey, checked)
+                                dialogs.applyColumnOrder()
+                                dialogs.refreshColumnOrderModel()
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: columnRow.columnTitle
+                            color: theme.secondaryText
+                            font.family: theme.dataFont
+                            font.pixelSize: 10
+                            verticalAlignment: Text.AlignVCenter
+                            elide: Text.ElideRight
+                        }
+                    }
                 }
+            }
 
-                ToolButton {
-                    id: moveColumnUp
-                    Layout.preferredWidth: 30
-                    Layout.preferredHeight: 28
-                    enabled: modelData.canMoveUp
-                    opacity: enabled ? 1 : 0.28
-                    text: "^"
-                    onClicked: fleetController.moveColumn(modelData.key, -1)
-                    contentItem: Text {
-                        text: moveColumnUp.text
-                        color: theme.secondaryText
-                        font.family: theme.dataFont
-                        font.pixelSize: 13
-                        font.bold: true
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                    background: Rectangle {
-                        radius: 5
-                        color: moveColumnUp.hovered ? theme.hover : theme.panel
-                        border.width: 1
-                        border.color: moveColumnUp.activeFocus ? theme.accent : theme.border
-                    }
-                }
-
-                ToolButton {
-                    id: moveColumnDown
-                    Layout.preferredWidth: 30
-                    Layout.preferredHeight: 28
-                    enabled: modelData.canMoveDown
-                    opacity: enabled ? 1 : 0.28
-                    text: "v"
-                    onClicked: fleetController.moveColumn(modelData.key, 1)
-                    contentItem: Text {
-                        text: moveColumnDown.text
-                        color: theme.secondaryText
-                        font.family: theme.dataFont
-                        font.pixelSize: 13
-                        font.bold: true
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                    background: Rectangle {
-                        radius: 5
-                        color: moveColumnDown.hovered ? theme.hover : theme.panel
-                        border.width: 1
-                        border.color: moveColumnDown.activeFocus ? theme.accent : theme.border
+            Timer {
+                interval: 35
+                repeat: true
+                running: columnList.dragStartIndex >= 0
+                onTriggered: {
+                    const margin = 44
+                    const step = 18
+                    const maxContentY = Math.max(0, columnList.contentHeight - columnList.height)
+                    const viewportY = columnList.dragContentY - columnList.contentY
+                    if (viewportY < margin && columnList.contentY > 0) {
+                        columnList.contentY = Math.max(0, columnList.contentY - step)
+                        let targetIndex = columnList.indexAt(
+                            columnList.width / 2,
+                            columnList.contentY + 2
+                        )
+                        dialogs.updateDraggedColumnTarget(targetIndex < 0 ? 0 : targetIndex)
+                    } else if (viewportY > columnList.height - margin
+                               && columnList.contentY < maxContentY) {
+                        columnList.contentY = Math.min(maxContentY, columnList.contentY + step)
+                        let targetIndex = columnList.indexAt(
+                            columnList.width / 2,
+                            columnList.contentY + columnList.height - 2
+                        )
+                        dialogs.updateDraggedColumnTarget(
+                            targetIndex < 0 ? columnOrderModel.count - 1 : targetIndex
+                        )
                     }
                 }
             }
@@ -598,7 +754,9 @@ Item {
 
         Text {
             Layout.fillWidth: true
-            text: "Checked parameters are excluded. Bulk operations preselect static IP, subnet mask, gateway, hostname, and manual system ID."
+            text: dialogs.csvSelectedOnly
+                  ? "Checked parameters are excluded. This CSV will be applied to selected devices through the ESP32 REST API."
+                  : "Checked parameters are excluded. Bulk operations preselect static IP, subnet mask, gateway, hostname, and manual system ID."
             color: theme.secondaryText
             wrapMode: Text.Wrap
             font.family: theme.bodyFont
@@ -611,6 +769,7 @@ Item {
                 "Selected devices (" + fleetController.selectedCount + ")",
                 "All visible devices (" + fleetController.visibleCount + ")"
             ]
+            enabled: !dialogs.csvSelectedOnly
             onActivated: dialogs.resetCsvExclusions(
                 currentIndex === 0 ? "selected" : "visible"
             )
@@ -647,7 +806,7 @@ Item {
                     )
                     fleetController.applyCsvTemplate(
                         excluded,
-                        csvScope.currentIndex === 0 ? "selected" : "visible"
+                        dialogs.csvSelectedOnly || csvScope.currentIndex === 0 ? "selected" : "visible"
                     )
                     csvDialog.close()
                 }
@@ -719,6 +878,7 @@ Item {
 
     FileDialog {
         id: importCsvDialog
+        objectName: "importCsvDialog"
         title: "Select Settings Template"
         nameFilters: ["CSV files (*.csv)"]
         fileMode: FileDialog.OpenFile

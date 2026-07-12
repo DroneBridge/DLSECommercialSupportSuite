@@ -31,6 +31,17 @@ Item {
         return theme.secondaryText
     }
 
+    function dlseParameterWarning(columnKey, display) {
+        const value = String(display).trim()
+        if (columnKey === "power_mgmt")
+            return value.toLowerCase() === "disabled"
+        if (columnKey === "dlse_mavlink_heartbeat")
+            return value.toLowerCase() === "enabled"
+        if (columnKey === "dlse_mode")
+            return value !== "" && value.toUpperCase() !== "CLIENT"
+        return false
+    }
+
     Theme { id: theme }
 
     Rectangle {
@@ -236,6 +247,7 @@ Item {
                             id: scanButton
                             objectName: "scanButton"
                             anchors.fill: parent
+                            labelText: fleetController.scanning ? "Scanning ..." : "Scan for Devices"
                             eigenschaft_2: fleetController.scanning || scanButtonMouse.pressed
                                            ? Scan_Button.Eigenschaft_1.Eigenschaft_1_Variante3
                                            : (scanButtonMouse.containsMouse || scanButtonFocus.activeFocus
@@ -416,6 +428,48 @@ Item {
                     Keys.onSpacePressed: if (enabled) fleetDialogs.openActivation()
                     Keys.onReturnPressed: if (enabled) fleetDialogs.openActivation()
                     Keys.onEnterPressed: if (enabled) fleetDialogs.openActivation()
+                }
+
+                FocusScope {
+                    id: applySettingsButtonFocus
+                    Layout.preferredWidth: 158
+                    Layout.preferredHeight: 29
+                    activeFocusOnTab: enabled
+                    enabled: fleetController.selectedCount > 0 && fleetController.activeOperation.length === 0
+                    opacity: enabled ? 1 : 0.42
+
+                    OTA_Button_1 {
+                        id: applySettingsButton
+                        objectName: "applySettingsButton"
+                        anchors.fill: parent
+                        text_LabelText: "Apply Settings"
+                        text_LabelWidth: 108
+                        keyIconVisible: false
+                        eigenschaft_2: applySettingsMouse.pressed
+                                       ? OTA_Button_1.Eigenschaft_1.Eigenschaft_1_Variante3
+                                       : (applySettingsMouse.containsMouse || applySettingsButtonFocus.activeFocus
+                                          ? OTA_Button_1.Eigenschaft_1.Eigenschaft_1_Variante2
+                                          : OTA_Button_1.Eigenschaft_1.Eigenschaft_1_Standard)
+                    }
+
+                    Upload_file_24dp_1 {
+                        x: 9
+                        y: 2.5
+                    }
+
+                    MouseArea {
+                        id: applySettingsMouse
+                        anchors.fill: parent
+                        enabled: applySettingsButtonFocus.enabled
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onPressed: applySettingsButtonFocus.forceActiveFocus()
+                        onClicked: fleetDialogs.openApplyCsvToSelected()
+                    }
+
+                    Keys.onSpacePressed: if (enabled) fleetDialogs.openApplyCsvToSelected()
+                    Keys.onReturnPressed: if (enabled) fleetDialogs.openApplyCsvToSelected()
+                    Keys.onEnterPressed: if (enabled) fleetDialogs.openApplyCsvToSelected()
                 }
 
                 AppButton {
@@ -690,6 +744,7 @@ Item {
                                                  && columnKey !== "operation_progress"
                                         text: String(display)
                                         color: columnKey === "rssi" ? theme.success
+                                             : dlseParameterWarning(columnKey, display) ? theme.warning
                                              : theme.primaryText
                                         font.family: "JetBrains Mono"
                                         font.pixelSize: 10
@@ -719,8 +774,8 @@ Item {
                         objectName: "fleetMatrix"
                         clip: true
                         model: fleetCardModel
-                        cellWidth: Math.max(118, width / Math.max(1, Math.floor(width / 126)))
-                        cellHeight: 96
+                        cellWidth: Math.max(72, width / Math.max(1, Math.floor(width / 78)))
+                        cellHeight: 48
                         ScrollBar.vertical: ScrollBar {}
 
                         delegate: Rectangle {
@@ -729,6 +784,7 @@ Item {
                             required property string ip
                             required property string activationStatus
                             required property string mavlinkSysId
+                            required property string wifiSsid
                             required property string rssi
                             required property bool online
                             required property bool selected
@@ -739,74 +795,57 @@ Item {
                                 return parts.length === 4 ? parts[2] + "." + parts[3] : (ip || "-")
                             }
 
-                            width: matrixView.cellWidth - 6
-                            height: matrixView.cellHeight - 6
-                            x: 3
-                            y: 3
+                            width: matrixView.cellWidth - 4
+                            height: matrixView.cellHeight - 4
+                            x: 2
+                            y: 2
                             radius: 4
                             color: selected ? theme.raised : theme.panel
                             border.color: selected ? theme.accent : theme.border
                             border.width: selected ? 2 : 1
+                            ToolTip.visible: cardMouse.containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Hostname: " + (hostname || "-")
+                                          + "\nRSSI: " + (rssi ? rssi + " dBm" : "-")
+                                          + "\nOnline Status: " + (online ? "Online" : "Offline")
+                                          + "\nActivation Status: " + (activationStatus || "-")
+                                          + "\nAP SSID: " + (wifiSsid || "-")
+                                          + "\nFull IP: " + (ip || "-")
 
                             MouseArea {
+                                id: cardMouse
                                 anchors.fill: parent
+                                hoverEnabled: true
                                 onClicked: fleetController.inspectDevice(identity)
                             }
 
                             ColumnLayout {
                                 anchors.fill: parent
-                                anchors.margins: 5
-                                spacing: 1
+                                anchors.margins: 4
+                                spacing: 0
 
                                 Text {
                                     Layout.fillWidth: true
-                                    text: hostname || "-"
-                                    color: theme.secondaryText
-                                    font.family: theme.bodyFont
-                                    font.pixelSize: 9
-                                    horizontalAlignment: Text.AlignHCenter
-                                    elide: Text.ElideRight
-                                }
-
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: compactIp
-                                    color: theme.primaryText
-                                    font.family: theme.dataFont
-                                    font.pixelSize: 18
-                                    font.bold: true
-                                    horizontalAlignment: Text.AlignHCenter
-                                    elide: Text.ElideRight
-                                }
-
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: rssi ? rssi + " dBm" : "-"
-                                    color: rssi ? theme.success : theme.mutedText
-                                    font.family: theme.dataFont
-                                    font.pixelSize: 9
-                                    horizontalAlignment: Text.AlignHCenter
-                                    elide: Text.ElideRight
-                                }
-
-                                Text {
-                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
                                     text: mavlinkSysId || "-"
                                     color: theme.primaryText
                                     font.family: theme.dataFont
-                                    font.pixelSize: 13
+                                    font.pixelSize: 14
                                     font.bold: true
+                                    verticalAlignment: Text.AlignVCenter
                                     horizontalAlignment: Text.AlignHCenter
                                     elide: Text.ElideRight
                                 }
 
                                 Text {
                                     Layout.fillWidth: true
-                                    text: (online ? "ONLINE" : "OFFLINE") + " | " + (activationStatus || "-").toUpperCase()
-                                    color: online ? theme.success : theme.error
+                                    Layout.fillHeight: true
+                                    text: compactIp
+                                    color: theme.secondaryText
                                     font.family: theme.dataFont
-                                    font.pixelSize: 8
+                                    font.pixelSize: 13
                                     font.bold: true
+                                    verticalAlignment: Text.AlignVCenter
                                     horizontalAlignment: Text.AlignHCenter
                                     elide: Text.ElideRight
                                 }

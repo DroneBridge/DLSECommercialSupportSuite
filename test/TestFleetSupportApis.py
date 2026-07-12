@@ -1,5 +1,6 @@
 """Tests for shared REST, CSV, and OTA helpers used by the Fleet Manager."""
 
+import csv
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,10 +56,30 @@ class TestFleetSupportApis(unittest.TestCase):
         """REST settings survive NVS-compatible CSV export and import."""
         with tempfile.TemporaryDirectory(dir=".") as directory:
             path = Path(directory) / "settings.csv"
-            settings = {"wifi_hostname": "Drone1", "wifi_chan": 6, "wifi_chan_type": "number"}
+            settings = {
+                "wifi_hostname": "Drone1",
+                "wifi_chan": 6,
+                "baud": 57600,
+                "data_types": ["string", "u8", "i32"],
+                "wifi_chan_type": "number",
+            }
             self.assertTrue(db_settings_to_csv(settings, path))
+            with path.open("r", newline="", encoding="utf-8") as csv_file:
+                rows = list(csv.DictReader(csv_file))
+                self.assertNotIn(
+                    "data_types",
+                    [row["key"] for row in rows],
+                )
+                self.assertEqual(
+                    ["settings", "wifi_hostname", "wifi_chan", "baud"],
+                    [row["key"] for row in rows],
+                )
+                self.assertEqual(
+                    {"wifi_hostname": "string", "wifi_chan": "u8", "baud": "i32"},
+                    {row["key"]: row["encoding"] for row in rows if row["type"] == "data"},
+                )
             self.assertEqual(
-                {"wifi_hostname": "Drone1", "wifi_chan": 6},
+                {"wifi_hostname": "Drone1", "wifi_chan": 6, "baud": 57600},
                 db_settings_from_csv(path),
             )
 

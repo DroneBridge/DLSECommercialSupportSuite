@@ -10,6 +10,7 @@ from ui.models import (
     DeviceFilterProxyModel,
     DeviceRecord,
     DeviceTableModel,
+    record_from_discovery,
 )
 
 
@@ -236,12 +237,196 @@ class TestFleetModels(unittest.TestCase):
         self.assertEqual("ip", model.column_key(2))
         self.assertEqual("hostname", model.column_key(3))
 
+    def test_rssi_display_includes_dbm_unit(self):
+        """The table display value adds the RSSI unit while roles stay raw."""
+        model = DeviceTableModel()
+        model.set_visible_columns(["rssi"])
+        model.upsert_many([
+            DeviceRecord(identity="A", ip="10.0.0.1", rssi="-64"),
+        ])
+
+        index = model.index(0, 1)
+
+        self.assertEqual("-64 dBm", index.data(Qt.DisplayRole))
+        self.assertEqual("-64", index.data(DeviceTableModel.RssiRole))
+
+    def test_rest_chip_id_is_decoded_to_chip_column(self):
+        """REST system info chip IDs are exposed as supported chip names."""
+        record = record_from_discovery(
+            {
+                "ip": "10.0.0.1",
+                "system_info": {"esp_chip_model": 23},
+            },
+            "rest",
+        )
+        model = DeviceTableModel()
+        model.set_visible_columns(["chip"])
+        model.upsert_many([record])
+
+        index = model.index(0, 1)
+
+        self.assertEqual("ESP32C5", index.data(Qt.DisplayRole))
+        self.assertEqual("ESP32C5", index.data(DeviceTableModel.ChipRole))
+
     def test_dronebridge_version_column_is_labeled_build_version(self):
         """The middleware build field uses the operator-facing Build Version title."""
         self.assertEqual(
-            "BUILD VERSION",
+            "DLSE BUILD\nVERSION",
             DeviceTableModel.column_definition("dronebridge_version")[1],
         )
+
+    def test_mavlink_sys_id_column_is_labeled_configured_sys_id(self):
+        """The MAVLink system ID column identifies the configured DLSE value."""
+        self.assertEqual(
+            "DLSE CONFIGURED\nMAVLINK SYS ID",
+            DeviceTableModel.column_definition("mavlink_sys_id")[1],
+        )
+
+    def test_rest_record_uses_static_ip_sys_id_when_enabled(self):
+        """REST discovery derives the configured sys ID from ip_sta when enabled."""
+        record = record_from_discovery(
+            {
+                "ip": "192.168.1.88",
+                "settings": {
+                    "show_en_syid_ip": 1,
+                    "ip_sta": "192.168.50.42",
+                    "show_man_sysid": 7,
+                },
+            },
+            "rest",
+        )
+
+        self.assertEqual("42", record.mavlink_sys_id)
+
+    def test_rest_record_preserves_manual_zero_sys_id_when_ip_sys_id_disabled(self):
+        """Manual MAVLink system ID zero is not dropped by fallback handling."""
+        record = record_from_discovery(
+            {
+                "ip": "192.168.1.88",
+                "settings": {
+                    "show_en_syid_ip": 0,
+                    "ip_sta": "192.168.50.42",
+                    "show_man_sysid": 0,
+                },
+            },
+            "rest",
+        )
+
+        self.assertEqual("0", record.mavlink_sys_id)
+
+    def test_mavlink_discovery_sys_id_takes_precedence_over_settings(self):
+        """Observed MAVLink sys IDs remain preferred when discovery supplies them."""
+        record = record_from_discovery(
+            {
+                "ip": "192.168.1.88",
+                "sys_id": 99,
+                "settings": {
+                    "show_en_syid_ip": 1,
+                    "ip_sta": "192.168.50.42",
+                    "show_man_sysid": 7,
+                },
+            },
+            "mavlink",
+        )
+
+        self.assertEqual("99", record.mavlink_sys_id)
+
+    def test_rest_settings_columns_are_available_with_requested_labels(self):
+        """REST API settings are exposed as configurable table columns."""
+        expected = {
+            "dlse_mode": "DLSE MODE",
+            "baud": "BAUD",
+            "dlse_local_udp_port": "DLSE LOCAL\nUDP PORT",
+            "dlse_remote_udp_port": "DLSE REMOTE\nUDP PORT",
+            "power_mgmt": "POWER\nMGMT",
+            "dlse_mavlink_heartbeat": "DLSE MAVLINK\nHEARTBEAT",
+            "dlse_mavlink_sys_id_based_on_ip": "DLSE MAVLINK\nSYS ID BASED ON IP",
+        }
+
+        for key, label in expected.items():
+            self.assertEqual(label, DeviceTableModel.column_definition(key)[1])
+
+    def test_rest_settings_columns_are_populated_from_hydrated_settings(self):
+        """Hydrated REST settings populate the additional operator columns."""
+        record = record_from_discovery(
+            {
+                "ip": "192.168.1.88",
+                "settings": {
+                    "esp32_mode": 2,
+                    "baud": 921600,
+                    "udp_local_port": 14555,
+                    "wifi_brcst_port": 14550,
+                    "show_pm_en": 1,
+                    "show_pm_en_hb": 0,
+                    "show_en_syid_ip": 1,
+                },
+            },
+            "rest",
+        )
+
+        self.assertEqual("CLIENT", record.dlse_mode)
+        self.assertEqual("921600", record.baud)
+        self.assertEqual("14555", record.dlse_local_udp_port)
+        self.assertEqual("14550", record.dlse_remote_udp_port)
+        self.assertEqual("enabled", record.power_mgmt)
+        self.assertEqual("disabled", record.dlse_mavlink_heartbeat)
+        self.assertEqual("yes", record.dlse_mavlink_sys_id_based_on_ip)
+
+    def test_rest_settings_columns_are_exposed_as_qml_roles(self):
+        """QML delegates can read REST setting columns from any table cell."""
+        record = record_from_discovery(
+            {
+                "ip": "192.168.1.88",
+                "settings": {
+                    "esp32_mode": 1,
+                    "baud": 921600,
+                    "udp_local_port": 14555,
+                    "wifi_brcst_port": 14550,
+                    "show_pm_en": 0,
+                    "show_pm_en_hb": 1,
+                    "show_en_syid_ip": 0,
+                },
+            },
+            "rest",
+        )
+        model = DeviceTableModel()
+        model.upsert_many([record])
+        index = model.index(0, 0)
+
+        self.assertEqual(b"dlseMode", model.roleNames()[DeviceTableModel.DlseModeRole])
+        self.assertEqual("ACCESS POINT", index.data(DeviceTableModel.DlseModeRole))
+        self.assertEqual("disabled", index.data(DeviceTableModel.PowerMgmtRole))
+        self.assertEqual("enabled", index.data(DeviceTableModel.DlseMavlinkHeartbeatRole))
+
+    def test_rest_settings_columns_decode_access_point_disabled_and_no_values(self):
+        """Mode, power management, and sys-id source settings decode both states."""
+        record = record_from_discovery(
+            {
+                "ip": "192.168.1.88",
+                "settings": {
+                    "esp32_mode": "1",
+                    "show_pm_en": "0",
+                    "show_en_syid_ip": "0",
+                },
+            },
+            "rest",
+        )
+
+        self.assertEqual("ACCESS POINT", record.dlse_mode)
+        self.assertEqual("disabled", record.power_mgmt)
+        self.assertEqual("no", record.dlse_mavlink_sys_id_based_on_ip)
+
+    def test_rest_settings_columns_mark_invalid_modes(self):
+        """Unsupported ESP32 mode values are shown as invalid."""
+        record = record_from_discovery(
+            {
+                "ip": "192.168.1.88",
+                "settings": {"esp32_mode": 3},
+            },
+            "rest",
+        )
+
+        self.assertEqual("INVALID", record.dlse_mode)
 
 
 if __name__ == "__main__":

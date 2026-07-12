@@ -158,6 +158,7 @@ class TestFleetUI(unittest.TestCase):
         self.assertEqual(30, scan_settings.height())
         self.assertEqual(0, scan_button.property("eigenschaft_2"))
         self.assertEqual(0, scan_settings.property("eigenschaft_2"))
+        self.assertEqual("Scan for Devices", scan_button.property("labelText"))
 
     def test_scan_exported_button_toggles_discovery(self):
         """Clicking the exported scan segment invokes the scan workflow."""
@@ -170,6 +171,7 @@ class TestFleetUI(unittest.TestCase):
         self.assertTrue(self.controller.scanning)
         self.controller.pool.start.assert_called_once()
         self.assertEqual(2, scan_button.property("eigenschaft_2"))
+        self.assertEqual("Scanning ...", scan_button.property("labelText"))
 
     def test_scan_settings_exported_button_opens_dialog(self):
         """Clicking the exported settings segment opens scan settings."""
@@ -193,6 +195,7 @@ class TestFleetUI(unittest.TestCase):
             "rebootButton": ("Reboot Devices", 150, 100, False),
             "otaFirmwareButton": ("OTA Firmware Upgrade", 208, 158, False),
             "otaActivationButton": ("OTA DLSE Activation", 190, 140, True),
+            "applySettingsButton": ("Apply Settings", 158, 108, False),
         }
         for name, (label, width, label_width, key_icon_visible) in expected.items():
             button = self.root.findChild(QQuickItem, name)
@@ -207,6 +210,22 @@ class TestFleetUI(unittest.TestCase):
         source = (self.QML_ROOT / "OTA_Button_1.qml").read_text(encoding="utf-8")
         self.assertIn("property bool keyIconVisible: true", source)
         self.assertIn("visible: oTA_Button.keyIconVisible", source)
+
+    def test_apply_settings_toolbar_uses_selected_only_csv_import(self):
+        """The toolbar settings action imports CSV files for selected devices only."""
+        self._enter_main_screen()
+        button = self.root.findChild(QQuickItem, "applySettingsButton")
+
+        self.assertIsNotNone(button)
+
+        source = (self.QML_ROOT / "FleetDialogs.qml").read_text(encoding="utf-8")
+        self.assertIn("function openApplyCsvToSelected()", source)
+        self.assertIn("csvSelectedOnly = true", source)
+        self.assertIn(
+            'dialogs.csvSelectedOnly || csvScope.currentIndex === 0 ? "selected" : "visible"',
+            source,
+        )
+        self.assertIn('objectName: "importCsvDialog"', source)
 
     def test_operation_exported_buttons_open_dialogs(self):
         """Clicking restored operation buttons opens the existing QML dialogs."""
@@ -695,16 +714,16 @@ class TestFleetUI(unittest.TestCase):
         self.assertLessEqual(right_edge, self.root.width())
 
     def test_default_columns_match_requirements(self):
-        """The required nine fields are the default table projection."""
+        """The required fields are the default table projection."""
         self.assertEqual(
             list(DeviceTableModel.DEFAULT_COLUMN_KEYS),
             self.controller.source_model.visible_column_keys(),
         )
-        self.assertEqual(10, self.controller.source_model.columnCount())
+        self.assertEqual(11, self.controller.source_model.columnCount())
 
     def test_column_order_can_be_moved_and_persisted(self):
         """The column dialog can reorder visible data columns across sessions."""
-        self.controller.moveColumn("rssi", -8)
+        self.controller.moveColumn("rssi", -9)
 
         self.assertEqual(
             ["rssi", *list(DeviceTableModel.DEFAULT_COLUMN_KEYS[:-1])],
@@ -712,7 +731,7 @@ class TestFleetUI(unittest.TestCase):
         )
         self.assertEqual(
             "rssi,hostname,ip,activation_status,firmware_version,"
-            "dronebridge_version,mavlink_sys_id,wifi_ssid,wifi_channel",
+            "chip,dronebridge_version,mavlink_sys_id,wifi_ssid,wifi_channel",
             self._test_settings.value("columns/visible"),
         )
         columns = self.controller.columns
@@ -720,9 +739,40 @@ class TestFleetUI(unittest.TestCase):
         self.assertFalse(columns[0]["canMoveUp"])
         self.assertTrue(columns[0]["canMoveDown"])
 
+    def test_column_order_can_be_set_absolutely(self):
+        """Drag/drop column ordering can persist the final visible key order."""
+        self.controller.setColumnOrder([
+            "rssi",
+            "ip",
+            "ip",
+            "unknown",
+            "hostname",
+        ])
+
+        self.assertEqual(
+            [
+                "rssi",
+                "ip",
+                "hostname",
+                "activation_status",
+                "firmware_version",
+                "chip",
+                "dronebridge_version",
+                "mavlink_sys_id",
+                "wifi_ssid",
+                "wifi_channel",
+            ],
+            self.controller.source_model.visible_column_keys(),
+        )
+        self.assertEqual(
+            "rssi,ip,hostname,activation_status,firmware_version,"
+            "chip,dronebridge_version,mavlink_sys_id,wifi_ssid,wifi_channel",
+            self._test_settings.value("columns/visible"),
+        )
+
     def test_column_visibility_preserves_custom_order(self):
         """Newly shown columns are appended instead of resetting prior order."""
-        self.controller.moveColumn("rssi", -8)
+        self.controller.moveColumn("rssi", -9)
         self.controller.setColumnVisible("activation_key", True)
 
         self.assertEqual(
@@ -769,15 +819,32 @@ class TestFleetUI(unittest.TestCase):
         self.assertIsNone(self._test_settings.value("columns/width/ip"))
         self.assertIsNone(self._test_settings.value("columns/width/activation_status"))
 
-    def test_columns_dialog_exposes_move_controls(self):
-        """Configure Columns includes per-column move actions."""
+    def test_columns_dialog_exposes_drag_reorder_controls(self):
+        """Configure Columns includes drag/drop column ordering controls."""
         source = (self.QML_ROOT / "FleetDialogs.qml").read_text(encoding="utf-8")
 
-        self.assertIn("fleetController.moveColumn(modelData.key, -1)", source)
-        self.assertIn("fleetController.moveColumn(modelData.key, 1)", source)
-        self.assertIn("modelData.canMoveUp", source)
-        self.assertIn("modelData.canMoveDown", source)
+        self.assertIn("ListModel {", source)
+        self.assertIn("id: columnOrderModel", source)
+        self.assertIn("function updateDraggedColumnTarget(targetIndex)", source)
+        self.assertIn("function finishDraggedColumn()", source)
+        self.assertIn("columnOrderModel.move", source)
+        self.assertIn("onPositionChanged:", source)
+        self.assertIn("columnList.indexAt(center.x, center.y)", source)
+        self.assertIn("property real dragContentY", source)
+        self.assertIn("Timer {", source)
+        self.assertIn("running: columnList.dragStartIndex >= 0", source)
+        self.assertIn("viewportY < margin && columnList.contentY > 0", source)
+        self.assertIn("enabled: columnOrderModel.count > 1", source)
+        self.assertIn("Drag.active: dragHandle.drag.active", source)
+        self.assertIn("fleetController.setColumnOrder(keys)", source)
+        self.assertNotIn("id: moveColumnUp", source)
+        self.assertNotIn("id: moveColumnDown", source)
         self.assertIn("fleetController.resetColumnWidths()", source)
+
+        modal_source = (self.QML_ROOT / "ModalDialog.qml").read_text(encoding="utf-8")
+        self.assertIn("function centerInParent()", modal_source)
+        self.assertIn("onOpened: centerTimer.restart()", modal_source)
+        self.assertIn("onHeightChanged:", modal_source)
 
     def test_table_header_exposes_resize_controls(self):
         """The table header includes a drag handle for manual column widths."""

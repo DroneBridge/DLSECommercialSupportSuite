@@ -17,6 +17,8 @@ from PySide6.QtCore import (
     Slot,
 )
 
+from DroneBridgeCommercialSupportSuite import DLSESupportedChips
+
 
 @dataclass
 class DeviceRecord:
@@ -27,8 +29,16 @@ class DeviceRecord:
     hostname: str = ""
     activation_status: str = "discovered"
     firmware_version: str = ""
+    chip: str = ""
     dronebridge_version: str = ""
     mavlink_sys_id: str = ""
+    dlse_mode: str = ""
+    baud: str = ""
+    dlse_local_udp_port: str = ""
+    dlse_remote_udp_port: str = ""
+    power_mgmt: str = ""
+    dlse_mavlink_heartbeat: str = ""
+    dlse_mavlink_sys_id_based_on_ip: str = ""
     fc_sys_id: str = ""
     wifi_ssid: str = ""
     wifi_channel: str = ""
@@ -63,8 +73,16 @@ class DeviceRecord:
             self.hostname,
             self.activation_status,
             self.firmware_version,
+            self.chip,
             self.dronebridge_version,
             self.mavlink_sys_id,
+            self.dlse_mode,
+            self.baud,
+            self.dlse_local_udp_port,
+            self.dlse_remote_udp_port,
+            self.power_mgmt,
+            self.dlse_mavlink_heartbeat,
+            self.dlse_mavlink_sys_id_based_on_ip,
             self.fc_sys_id,
             self.wifi_ssid,
             self.wifi_channel,
@@ -90,46 +108,62 @@ class DeviceTableModel(QAbstractTableModel):
     COLUMNS = [
         ("hostname", "HOSTNAME", 112),
         ("ip", "IP", 112),
-        ("activation_status", "ACTIVATION STATUS", 138),
+        ("activation_status", "ACTIVATION\nSTATUS", 138),
         ("firmware_version", "DLSE FIRMWARE", 132),
-        ("dronebridge_version", "BUILD VERSION", 116),
-        ("mavlink_sys_id", "MAVLINK SYS ID", 116),
-        ("wifi_ssid", "WIFI SSID", 120),
-        ("wifi_channel", "CHANNEL", 82),
-        ("rssi", "RSSI", 76),
+        ("chip", "CHIP", 86),
+        ("dronebridge_version", "DLSE BUILD\nVERSION", 116),
+        ("mavlink_sys_id", "DLSE CONFIGURED\nMAVLINK SYS ID", 136),
+        ("wifi_ssid", "DB APMODE\nSSID", 120),
+        ("wifi_channel", "DB APMODE\nCHANNEL", 82),
+        ("rssi", "DEVICE\nRSSI", 76),
+        ("dlse_mode", "DLSE MODE", 118),
+        ("baud", "BAUD", 92),
+        ("dlse_local_udp_port", "DLSE LOCAL\nUDP PORT", 116),
+        ("dlse_remote_udp_port", "DLSE REMOTE\nUDP PORT", 122),
+        ("power_mgmt", "POWER\nMGMT", 94),
+        ("dlse_mavlink_heartbeat", "DLSE MAVLINK\nHEARTBEAT", 122),
+        ("dlse_mavlink_sys_id_based_on_ip", "DLSE MAVLINK\nSYS ID BASED ON IP", 154),
         ("activation_key", "ACTIVATION KEY", 210),
         ("mac", "MAC", 138),
         ("online", "ONLINE", 86),
         ("operation", "OPERATION", 150),
         ("operation_progress", "PROGRESS", 106),
     ]
-    DEFAULT_COLUMN_KEYS = tuple(column[0] for column in COLUMNS[:9])
+    DEFAULT_COLUMN_KEYS = tuple(column[0] for column in COLUMNS[:10])
 
     IdentityRole = Qt.UserRole + 1
     IpRole = Qt.UserRole + 2
     HostnameRole = Qt.UserRole + 3
     ActivationStatusRole = Qt.UserRole + 4
     FirmwareVersionRole = Qt.UserRole + 5
-    DronebridgeVersionRole = Qt.UserRole + 6
-    MavlinkSysIdRole = Qt.UserRole + 7
-    FcSysIdRole = Qt.UserRole + 8
-    WifiSsidRole = Qt.UserRole + 9
-    WifiChannelRole = Qt.UserRole + 10
-    RssiRole = Qt.UserRole + 11
-    BatteryVoltageRole = Qt.UserRole + 12
-    ActivationKeyRole = Qt.UserRole + 13
-    MacRole = Qt.UserRole + 14
-    SourceRole = Qt.UserRole + 15
-    LastSeenRole = Qt.UserRole + 16
-    OnlineRole = Qt.UserRole + 17
-    SelectedRole = Qt.UserRole + 18
-    OperationRole = Qt.UserRole + 19
-    OperationProgressRole = Qt.UserRole + 20
-    SystemInfoRole = Qt.UserRole + 21
-    SettingsRole = Qt.UserRole + 22
-    StatsRole = Qt.UserRole + 23
-    ErrorsRole = Qt.UserRole + 24
-    ColumnKeyRole = Qt.UserRole + 25
+    ChipRole = Qt.UserRole + 6
+    DronebridgeVersionRole = Qt.UserRole + 7
+    MavlinkSysIdRole = Qt.UserRole + 8
+    DlseModeRole = Qt.UserRole + 9
+    BaudRole = Qt.UserRole + 10
+    DlseLocalUdpPortRole = Qt.UserRole + 11
+    DlseRemoteUdpPortRole = Qt.UserRole + 12
+    PowerMgmtRole = Qt.UserRole + 13
+    DlseMavlinkHeartbeatRole = Qt.UserRole + 14
+    DlseMavlinkSysIdBasedOnIpRole = Qt.UserRole + 15
+    FcSysIdRole = Qt.UserRole + 16
+    WifiSsidRole = Qt.UserRole + 17
+    WifiChannelRole = Qt.UserRole + 18
+    RssiRole = Qt.UserRole + 19
+    BatteryVoltageRole = Qt.UserRole + 20
+    ActivationKeyRole = Qt.UserRole + 21
+    MacRole = Qt.UserRole + 22
+    SourceRole = Qt.UserRole + 23
+    LastSeenRole = Qt.UserRole + 24
+    OnlineRole = Qt.UserRole + 25
+    SelectedRole = Qt.UserRole + 26
+    OperationRole = Qt.UserRole + 27
+    OperationProgressRole = Qt.UserRole + 28
+    SystemInfoRole = Qt.UserRole + 29
+    SettingsRole = Qt.UserRole + 30
+    StatsRole = Qt.UserRole + 31
+    ErrorsRole = Qt.UserRole + 32
+    ColumnKeyRole = Qt.UserRole + 33
 
     _ROLE_ATTRIBUTES = {
         IdentityRole: "identity",
@@ -137,8 +171,16 @@ class DeviceTableModel(QAbstractTableModel):
         HostnameRole: "hostname",
         ActivationStatusRole: "activation_status",
         FirmwareVersionRole: "firmware_version",
+        ChipRole: "chip",
         DronebridgeVersionRole: "dronebridge_version",
         MavlinkSysIdRole: "mavlink_sys_id",
+        DlseModeRole: "dlse_mode",
+        BaudRole: "baud",
+        DlseLocalUdpPortRole: "dlse_local_udp_port",
+        DlseRemoteUdpPortRole: "dlse_remote_udp_port",
+        PowerMgmtRole: "power_mgmt",
+        DlseMavlinkHeartbeatRole: "dlse_mavlink_heartbeat",
+        DlseMavlinkSysIdBasedOnIpRole: "dlse_mavlink_sys_id_based_on_ip",
         FcSysIdRole: "fc_sys_id",
         WifiSsidRole: "wifi_ssid",
         WifiChannelRole: "wifi_channel",
@@ -172,8 +214,16 @@ class DeviceTableModel(QAbstractTableModel):
             self.HostnameRole: b"hostname",
             self.ActivationStatusRole: b"activationStatus",
             self.FirmwareVersionRole: b"firmwareVersion",
+            self.ChipRole: b"chip",
             self.DronebridgeVersionRole: b"dronebridgeVersion",
             self.MavlinkSysIdRole: b"mavlinkSysId",
+            self.DlseModeRole: b"dlseMode",
+            self.BaudRole: b"baud",
+            self.DlseLocalUdpPortRole: b"dlseLocalUdpPort",
+            self.DlseRemoteUdpPortRole: b"dlseRemoteUdpPort",
+            self.PowerMgmtRole: b"powerMgmt",
+            self.DlseMavlinkHeartbeatRole: b"dlseMavlinkHeartbeat",
+            self.DlseMavlinkSysIdBasedOnIpRole: b"dlseMavlinkSysIdBasedOnIp",
             self.FcSysIdRole: b"fcSysId",
             self.WifiSsidRole: b"wifiSsid",
             self.WifiChannelRole: b"wifiChannel",
@@ -460,8 +510,16 @@ class DeviceTableModel(QAbstractTableModel):
             "hostname",
             "activation_status",
             "firmware_version",
+            "chip",
             "dronebridge_version",
             "mavlink_sys_id",
+            "dlse_mode",
+            "baud",
+            "dlse_local_udp_port",
+            "dlse_remote_udp_port",
+            "power_mgmt",
+            "dlse_mavlink_heartbeat",
+            "dlse_mavlink_sys_id_based_on_ip",
             "wifi_ssid",
             "wifi_channel",
             "activation_key",
@@ -498,7 +556,7 @@ class DeviceTableModel(QAbstractTableModel):
 
     @staticmethod
     def _display_value(record: DeviceRecord, column_key: str) -> Any:
-        """Format one cell without masking operator-visible activation keys."""
+        """Format one cell without changing the raw role values."""
         if column_key == "selected":
             return record.selected
         value = getattr(record, column_key, "")
@@ -506,6 +564,8 @@ class DeviceTableModel(QAbstractTableModel):
             return "ONLINE" if record.online else "OFFLINE"
         if column_key == "operation_progress":
             return f"{value}%" if record.operation else ""
+        if column_key == "rssi" and str(value).strip():
+            return f"{value} dBm"
         return value
 
 
@@ -610,6 +670,155 @@ def preferred_identity(record: DeviceRecord) -> str:
     return record.activation_key or record.mac.lower() or record.ip
 
 
+def _first_configured_value(*values: Any) -> Any:
+    """
+    Return the first present settings or discovery value.
+
+    :param values: Candidate values ordered by precedence.
+    :return: The first value that is neither ``None`` nor an empty string. Numeric
+        zero is preserved because it can be a configured MAVLink system ID.
+    """
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return ""
+
+
+def _setting_enabled(value: Any) -> bool:
+    """
+    Interpret ESP32 integer-style setting values as a boolean.
+
+    :param value: Raw setting value from REST hydration, commonly ``0``, ``1``,
+        or a string representation of those values.
+    :return: ``True`` only when the normalized integer value is ``1``. Missing or
+        malformed values are treated as disabled.
+    """
+    try:
+        return int(value) == 1
+    except (TypeError, ValueError):
+        return False
+
+
+def _setting_text(value: Any) -> str:
+    """
+    Convert a REST setting value to table text without losing configured zeroes.
+
+    :param value: Raw REST setting value.
+    :return: Empty string for absent settings, otherwise the string value.
+    """
+    return "" if value is None or value == "" else str(value)
+
+
+def _format_esp32_mode(value: Any) -> str:
+    """
+    Decode the ESP32 mode setting for operator display.
+
+    :param value: Raw ``esp32_mode`` setting from REST hydration.
+    :return: ``ACCESS POINT`` for mode ``1``, ``CLIENT`` for mode ``2``,
+        ``INVALID`` for unsupported or malformed configured values, and an
+        empty string when the setting is absent.
+    """
+    if value is None or value == "":
+        return ""
+    try:
+        mode = int(value)
+    except (TypeError, ValueError):
+        return "INVALID"
+    if mode == 1:
+        return "ACCESS POINT"
+    if mode == 2:
+        return "CLIENT"
+    return "INVALID"
+
+
+def _format_enabled_disabled(value: Any) -> str:
+    """
+    Decode a REST ``0``/``1`` setting as enabled or disabled.
+
+    :param value: Raw REST setting value.
+    :return: ``enabled`` for ``1``, ``disabled`` for ``0``, ``INVALID`` for
+        other configured values, and an empty string when the setting is absent.
+    """
+    if value is None or value == "":
+        return ""
+    try:
+        enabled = int(value)
+    except (TypeError, ValueError):
+        return "INVALID"
+    if enabled == 1:
+        return "enabled"
+    if enabled == 0:
+        return "disabled"
+    return "INVALID"
+
+
+def _format_yes_no(value: Any) -> str:
+    """
+    Decode a REST ``0``/``1`` setting as yes or no.
+
+    :param value: Raw REST setting value.
+    :return: ``yes`` for ``1``, ``no`` for ``0``, ``INVALID`` for other
+        configured values, and an empty string when the setting is absent.
+    """
+    if value is None or value == "":
+        return ""
+    try:
+        enabled = int(value)
+    except (TypeError, ValueError):
+        return "INVALID"
+    if enabled == 1:
+        return "yes"
+    if enabled == 0:
+        return "no"
+    return "INVALID"
+
+
+def _sys_id_from_static_ip(value: Any) -> str:
+    """
+    Derive the MAVLink system ID from a configured static IPv4 address.
+
+    :param value: Raw ``ip_sta`` setting value from REST hydration.
+    :return: The last IPv4 octet as a string, or an empty string when the static
+        IP is missing or malformed.
+    """
+    try:
+        ip_address = ipaddress.ip_address(str(value))
+        if not isinstance(ip_address, ipaddress.IPv4Address):
+            return ""
+        return str(ip_address.packed[-1])
+    except ValueError:
+        return ""
+
+
+def _configured_mavlink_sys_id(
+    device: dict[str, Any],
+    settings: dict[str, Any],
+) -> Any:
+    """
+    Resolve the operator-facing configured MAVLink system ID.
+
+    :param device: Raw discovery record, optionally including observed
+        ``sys_id`` or ``mavlink_sys_id`` values from MAVLink discovery.
+    :param settings: REST settings object, optionally including
+        ``show_en_syid_ip``, ``ip_sta``, and ``show_man_sysid``.
+    :return: The best available configured system ID. MAVLink discovery values
+        are preferred when present; otherwise ``show_en_syid_ip`` derives the
+        value from the static ``ip_sta`` last octet before falling back to
+        ``show_man_sysid``.
+    """
+    observed_sys_id = _first_configured_value(
+        device.get("sys_id"),
+        device.get("mavlink_sys_id"),
+    )
+    if observed_sys_id != "":
+        return observed_sys_id
+    if _setting_enabled(settings.get("show_en_syid_ip")):
+        static_ip_sys_id = _sys_id_from_static_ip(settings.get("ip_sta"))
+        if static_ip_sys_id != "":
+            return static_ip_sys_id
+    return _first_configured_value(settings.get("show_man_sysid"))
+
+
 def record_from_discovery(device: dict[str, Any], source: str) -> DeviceRecord:
     """Normalize MAVLink or REST discovery data into one fleet record."""
     info = device.get("system_info") or {}
@@ -623,24 +832,27 @@ def record_from_discovery(device: dict[str, Any], source: str) -> DeviceRecord:
     )
     ip = str(device.get("ip") or "")
     mac = str(info.get("esp_mac") or device.get("mac") or "")
-    sys_id = (
-        device.get("sys_id")
-        or device.get("mavlink_sys_id")
-        or settings.get("show_man_sysid")
-        or ""
-    )
+    sys_id = _configured_mavlink_sys_id(device, settings)
     return DeviceRecord(
         identity=activation_key or mac.lower() or ip,
         ip=ip,
         hostname=str(settings.get("wifi_hostname") or info.get("hostname") or ""),
         activation_status=str(info.get("license_type") or "discovered"),
         firmware_version=_format_firmware(info, device),
+        chip=_format_chip(info.get("esp_chip_model")),
         dronebridge_version=str(
             info.get("db_build_version")
             or device.get("middleware_sw_version")
             or ""
         ),
         mavlink_sys_id=str(sys_id),
+        dlse_mode=_format_esp32_mode(settings.get("esp32_mode")),
+        baud=_setting_text(settings.get("baud")),
+        dlse_local_udp_port=_setting_text(settings.get("udp_local_port")),
+        dlse_remote_udp_port=_setting_text(settings.get("wifi_brcst_port")),
+        power_mgmt=_format_enabled_disabled(settings.get("show_pm_en")),
+        dlse_mavlink_heartbeat=_format_enabled_disabled(settings.get("show_pm_en_hb")),
+        dlse_mavlink_sys_id_based_on_ip=_format_yes_no(settings.get("show_en_syid_ip")),
         fc_sys_id=str(stats.get("fc_sys_id") or ""),
         wifi_ssid=str(settings.get("ssid") or settings.get("ssid_ap") or ""),
         wifi_channel=str(settings.get("wifi_chan") or ""),
@@ -654,6 +866,20 @@ def record_from_discovery(device: dict[str, Any], source: str) -> DeviceRecord:
         stats=stats,
         errors=device.get("errors") or {},
     )
+
+
+def _format_chip(chip_id: Any) -> str:
+    """
+    Decode a REST API ESP32 chip ID into the library's supported chip name.
+
+    :param chip_id: Raw ``esp_chip_model`` value from ``/api/system/info``.
+    :return: The decoded chip string, such as ``ESP32C5``. Missing, malformed,
+        or unsupported chip IDs return an empty string.
+    """
+    try:
+        return DLSESupportedChips(int(chip_id)).name
+    except (TypeError, ValueError):
+        return ""
 
 
 def _format_firmware(info: dict[str, Any], device: dict[str, Any]) -> str:

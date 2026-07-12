@@ -2038,8 +2038,9 @@ def db_settings_to_csv(settings: dict[str, Any], output_path: str | Path) -> boo
     """
     Export REST settings to the NVS-compatible ``key,type,encoding,value`` CSV format.
 
-    Metadata entries ending in ``_type`` are omitted. Existing integer widths
-    cannot be inferred from REST JSON and therefore default to ``i32``.
+    The REST ``data_types`` metadata is used for CSV encodings and omitted from
+    the output, along with metadata entries ending in ``_type``. Existing
+    integer widths fall back to ``i32`` when ``data_types`` is unavailable.
 
     :param settings: Settings returned by ``GET /api/settings``.
     :param output_path: Destination CSV file path.
@@ -2054,11 +2055,18 @@ def db_settings_to_csv(settings: dict[str, Any], output_path: str | Path) -> boo
             writer = csv.writer(csv_file)
             writer.writerow(["key", "type", "encoding", "value"])
             writer.writerow(["settings", "namespace", "", ""])
-            for key in sorted(settings):
-                if key.endswith("_type"):
+            data_types = settings.get("data_types")
+            data_type_index = 0
+            for key, value in settings.items():
+                if key == "data_types" or key.endswith("_type"):
                     continue
-                value = settings[key]
-                encoding = _CSV_ENCODING_BY_TYPE.get(type(value), "string")
+                if isinstance(data_types, (list, tuple)) and data_type_index < len(data_types):
+                    encoding = str(data_types[data_type_index])
+                elif isinstance(data_types, dict) and key in data_types:
+                    encoding = str(data_types[key])
+                else:
+                    encoding = _CSV_ENCODING_BY_TYPE.get(type(value), "string")
+                data_type_index += 1
                 if isinstance(value, bool):
                     value = int(value)
                 writer.writerow([key, "data", encoding, value])
