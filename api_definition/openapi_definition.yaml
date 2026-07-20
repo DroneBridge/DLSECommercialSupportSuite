@@ -551,12 +551,16 @@ components:
             `0` = disarmed, `1` = armed.
           example: 0
         fc_sysid:
-          type: integer
-          minimum: -1
-          maximum: 254
+          oneOf:
+            - type: integer
+              enum: [-1]
+            - type: integer
+              minimum: 1
+              maximum: 255
           description: >
             MAVLink system ID reported by the connected flight controller.
             `-1` indicates that no flight-controller system ID has been received yet.
+            Valid MAVLink system IDs range from `1` through `255`; `0` is invalid.
           example: 42
         battery_voltage:
           type: number
