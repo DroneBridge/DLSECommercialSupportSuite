@@ -79,7 +79,7 @@ class TestFleetModels(unittest.TestCase):
         model.apply_stats_result(
             "KEY",
             True,
-            {"esp_rssi": -51, "battery_voltage": 15.8, "fc_sys_id": 3},
+            {"esp_rssi": -51, "battery_voltage": 15.8, "fc_sysid": 3},
         )
 
         updated = model.record_at(0)
@@ -88,6 +88,62 @@ class TestFleetModels(unittest.TestCase):
         self.assertEqual("-51", updated.rssi)
         self.assertEqual("15.8", updated.battery_voltage)
         self.assertEqual("3", updated.fc_sys_id)
+
+    def test_fc_mavlink_sys_id_uses_the_stats_api_contract(self):
+        """Only API values 1 through 255 produce a visible FC MAVLink SYS ID."""
+        model = DeviceTableModel()
+        model.upsert_many([DeviceRecord(identity="KEY", ip="192.168.1.42")])
+
+        for raw_value, expected in (
+            (-1, "unknown"),
+            (0, "unknown"),
+            (1, "1"),
+            (255, "255"),
+            (256, "unknown"),
+            ("invalid", "unknown"),
+            (None, "unknown"),
+        ):
+            model.apply_stats_result("KEY", True, {"fc_sysid": raw_value})
+            self.assertEqual(expected, model.record_at(0).fc_sys_id)
+
+        model.apply_stats_result("KEY", True, {"fc_sys_id": 42})
+        self.assertEqual("unknown", model.record_at(0).fc_sys_id)
+
+    def test_fc_sys_id_mismatch_role_compares_known_numeric_ids(self):
+        """Only a known, numerically different FC SYS ID triggers the warning."""
+        model = DeviceTableModel()
+        model.set_visible_columns(["mavlink_sys_id", "fc_sys_id"])
+        model.upsert_many([
+            DeviceRecord(
+                identity="MATCH",
+                ip="192.168.1.2",
+                mavlink_sys_id="03",
+                fc_sys_id="3",
+            ),
+            DeviceRecord(
+                identity="MISMATCH",
+                ip="192.168.1.3",
+                mavlink_sys_id="4",
+                fc_sys_id="3",
+            ),
+            DeviceRecord(
+                identity="UNKNOWN",
+                ip="192.168.1.4",
+                mavlink_sys_id="4",
+                fc_sys_id="unknown",
+            ),
+        ])
+
+        self.assertFalse(model.record_at(0).fc_sys_id_mismatch)
+        self.assertTrue(model.record_at(1).fc_sys_id_mismatch)
+        self.assertFalse(model.record_at(2).fc_sys_id_mismatch)
+        self.assertEqual(
+            b"fcSysIdMismatch",
+            model.roleNames()[DeviceTableModel.FcSysIdMismatchRole],
+        )
+        self.assertTrue(
+            model.index(1, 1).data(DeviceTableModel.FcSysIdMismatchRole)
+        )
 
     def test_discovery_merge_does_not_reset_stats_health(self):
         """Rediscovery refreshes inventory data without changing stats health."""
@@ -281,6 +337,33 @@ class TestFleetModels(unittest.TestCase):
             "DLSE CONFIGURED\nMAVLINK SYS ID",
             DeviceTableModel.column_definition("mavlink_sys_id")[1],
         )
+
+    def test_fc_mavlink_sys_id_column_is_default_and_labeled(self):
+        """The REST-backed flight-controller SYS ID is a default table column."""
+        self.assertEqual(
+            "FC MAVLINK\nSYS ID",
+            DeviceTableModel.column_definition("fc_sys_id")[1],
+        )
+        self.assertEqual(
+            "fc_sys_id",
+            DeviceTableModel.DEFAULT_COLUMN_KEYS[
+                DeviceTableModel.DEFAULT_COLUMN_KEYS.index("mavlink_sys_id") + 1
+            ],
+        )
+
+    def test_rest_record_formats_fc_mavlink_sys_id(self):
+        """Initial REST hydration formats the firmware's FC SYS ID sentinel."""
+        known = record_from_discovery(
+            {"ip": "192.168.1.88", "stats": {"fc_sysid": 255}},
+            "rest",
+        )
+        unknown = record_from_discovery(
+            {"ip": "192.168.1.89", "stats": {"fc_sysid": -1}},
+            "rest",
+        )
+
+        self.assertEqual("255", known.fc_sys_id)
+        self.assertEqual("unknown", unknown.fc_sys_id)
 
     def test_rest_record_uses_static_ip_sys_id_when_enabled(self):
         """REST discovery derives the configured sys ID from ip_sta when enabled."""

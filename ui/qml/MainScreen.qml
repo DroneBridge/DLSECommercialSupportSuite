@@ -673,6 +673,7 @@ Item {
                                     required property bool selected
                                     required property string activationStatus
                                     required property bool online
+                                    required property bool fcSysIdMismatch
                                     required property string operation
                                     required property int operationProgress
 
@@ -708,8 +709,17 @@ Item {
 
                                     StatusBadge {
                                         anchors.centerIn: parent
-                                        visible: columnKey === "activation_status" || columnKey === "online"
-                                        status: columnKey === "online" ? (online ? "online" : "offline") : activationStatus
+                                        visible: columnKey === "activation_status"
+                                                 || columnKey === "online"
+                                                 || (fcSysIdMismatch
+                                                     && (columnKey === "mavlink_sys_id"
+                                                         || columnKey === "fc_sys_id"))
+                                        status: columnKey === "online" ? (online ? "online" : "offline")
+                                                : columnKey === "activation_status" ? activationStatus
+                                                : String(display)
+                                        critical: fcSysIdMismatch
+                                                  && (columnKey === "mavlink_sys_id"
+                                                      || columnKey === "fc_sys_id")
                                     }
 
                                     Item {
@@ -742,6 +752,9 @@ Item {
                                                  && columnKey !== "activation_status"
                                                  && columnKey !== "online"
                                                  && columnKey !== "operation_progress"
+                                                 && !(fcSysIdMismatch
+                                                      && (columnKey === "mavlink_sys_id"
+                                                          || columnKey === "fc_sys_id"))
                                         text: String(display)
                                         color: columnKey === "rssi" ? theme.success
                                              : dlseParameterWarning(columnKey, display) ? theme.warning

@@ -4,8 +4,11 @@ Rectangle {
     id: badge
 
     property string status: ""
+    property bool critical: false
     readonly property string normalized: status.toLowerCase()
     readonly property color backgroundColor: {
+        if (critical)
+            return "#52141e"
         if (normalized.indexOf("activated") >= 0 || normalized === "online" || normalized === "complete")
             return "#16554a"
         if (normalized.indexOf("evaluation") >= 0 || normalized.indexOf("waiting") >= 0 || normalized.indexOf("queued") >= 0)
@@ -15,6 +18,8 @@ Rectangle {
         return "#162330"
     }
     readonly property color foregroundColor: {
+        if (critical)
+            return theme.error
         if (normalized.indexOf("activated") >= 0 || normalized === "online" || normalized === "complete")
             return theme.success
         if (normalized.indexOf("evaluation") >= 0 || normalized.indexOf("waiting") >= 0 || normalized.indexOf("queued") >= 0)

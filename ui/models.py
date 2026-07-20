@@ -39,7 +39,7 @@ class DeviceRecord:
     power_mgmt: str = ""
     dlse_mavlink_heartbeat: str = ""
     dlse_mavlink_sys_id_based_on_ip: str = ""
-    fc_sys_id: str = ""
+    fc_sys_id: str = "unknown"
     wifi_ssid: str = ""
     wifi_channel: str = ""
     rssi: str = ""
@@ -63,6 +63,22 @@ class DeviceRecord:
     def source(self) -> str:
         """Return a stable display string for all discovery sources."""
         return ", ".join(sorted(self.sources))
+
+    @property
+    def fc_sys_id_mismatch(self) -> bool:
+        """
+        Return whether a known FC MAVLink SYS ID differs from the DLSE setting.
+
+        :return: ``False`` while the FC SYS ID is unknown. Otherwise ``True``
+            when the configured DLSE MAVLink SYS ID is missing, malformed, or
+            numerically different from the FC-reported value.
+        """
+        if self.fc_sys_id == "unknown":
+            return False
+        try:
+            return int(self.fc_sys_id) != int(self.mavlink_sys_id)
+        except (TypeError, ValueError):
+            return True
 
     @property
     def searchable_text(self) -> str:
@@ -113,6 +129,7 @@ class DeviceTableModel(QAbstractTableModel):
         ("chip", "CHIP", 86),
         ("dronebridge_version", "DLSE BUILD\nVERSION", 116),
         ("mavlink_sys_id", "DLSE CONFIGURED\nMAVLINK SYS ID", 136),
+        ("fc_sys_id", "FC MAVLINK\nSYS ID", 104),
         ("wifi_ssid", "DB APMODE\nSSID", 120),
         ("wifi_channel", "DB APMODE\nCHANNEL", 82),
         ("rssi", "DEVICE\nRSSI", 76),
@@ -164,6 +181,7 @@ class DeviceTableModel(QAbstractTableModel):
     StatsRole = Qt.UserRole + 31
     ErrorsRole = Qt.UserRole + 32
     ColumnKeyRole = Qt.UserRole + 33
+    FcSysIdMismatchRole = Qt.UserRole + 34
 
     _ROLE_ATTRIBUTES = {
         IdentityRole: "identity",
@@ -196,6 +214,7 @@ class DeviceTableModel(QAbstractTableModel):
         SettingsRole: "settings",
         StatsRole: "stats",
         ErrorsRole: "errors",
+        FcSysIdMismatchRole: "fc_sys_id_mismatch",
     }
 
     def __init__(self) -> None:
@@ -242,6 +261,7 @@ class DeviceTableModel(QAbstractTableModel):
             self.StatsRole: b"stats",
             self.ErrorsRole: b"errors",
             self.ColumnKeyRole: b"columnKey",
+            self.FcSysIdMismatchRole: b"fcSysIdMismatch",
         }
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -384,8 +404,7 @@ class DeviceTableModel(QAbstractTableModel):
             record.offline_grace_until = None
             record.online = True
             record.errors.pop("stats", None)
-            if "fc_sys_id" in stats:
-                record.fc_sys_id = str(stats["fc_sys_id"])
+            record.fc_sys_id = _format_fc_sys_id(stats.get("fc_sysid"))
             if "battery_voltage" in stats:
                 record.battery_voltage = str(stats["battery_voltage"])
             if "esp_rssi" in stats:
@@ -540,6 +559,8 @@ class DeviceTableModel(QAbstractTableModel):
                 if key != "stats"
             }
         )
+        if incoming.stats:
+            existing.fc_sys_id = incoming.fc_sys_id
         existing.last_seen = datetime.now()
 
     def _emit_record_changed(self, identity: str) -> None:
@@ -853,7 +874,7 @@ def record_from_discovery(device: dict[str, Any], source: str) -> DeviceRecord:
         power_mgmt=_format_enabled_disabled(settings.get("show_pm_en")),
         dlse_mavlink_heartbeat=_format_enabled_disabled(settings.get("show_pm_en_hb")),
         dlse_mavlink_sys_id_based_on_ip=_format_yes_no(settings.get("show_en_syid_ip")),
-        fc_sys_id=str(stats.get("fc_sys_id") or ""),
+        fc_sys_id=_format_fc_sys_id(stats.get("fc_sysid")),
         wifi_ssid=str(settings.get("ssid") or settings.get("ssid_ap") or ""),
         wifi_channel=str(settings.get("wifi_chan") or ""),
         rssi=str(stats.get("esp_rssi") or stats.get("sta_rssi") or ""),
@@ -866,6 +887,26 @@ def record_from_discovery(device: dict[str, Any], source: str) -> DeviceRecord:
         stats=stats,
         errors=device.get("errors") or {},
     )
+
+
+def _format_fc_sys_id(value: Any) -> str:
+    """
+    Format the flight-controller MAVLink system ID reported by DLSE statistics.
+
+    :param value: Raw ``fc_sysid`` value from ``/api/system/stats``.
+    :return: A valid MAVLink system ID from ``1`` through ``255`` as text.
+        The firmware's ``-1`` unknown sentinel, zero, missing values, booleans,
+        malformed values, and values outside the valid range return ``"unknown"``.
+    """
+    if isinstance(value, bool) or (
+        isinstance(value, float) and not value.is_integer()
+    ):
+        return "unknown"
+    try:
+        sys_id = int(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    return str(sys_id) if 1 <= sys_id <= 255 else "unknown"
 
 
 def _format_chip(chip_id: Any) -> str:

@@ -719,11 +719,56 @@ class TestFleetUI(unittest.TestCase):
             list(DeviceTableModel.DEFAULT_COLUMN_KEYS),
             self.controller.source_model.visible_column_keys(),
         )
-        self.assertEqual(11, self.controller.source_model.columnCount())
+        self.assertEqual(12, self.controller.source_model.columnCount())
+
+    def test_sys_id_mismatch_uses_critical_status_badges(self):
+        """Known FC/DLSE SYS ID mismatches highlight exactly the two ID cells."""
+        screen = (self.QML_ROOT / "MainScreen.qml").read_text(encoding="utf-8")
+        badge = (self.QML_ROOT / "StatusBadge.qml").read_text(encoding="utf-8")
+
+        self.assertIn("required property bool fcSysIdMismatch", screen)
+        self.assertIn('columnKey === "mavlink_sys_id"', screen)
+        self.assertIn('columnKey === "fc_sys_id"', screen)
+        self.assertIn("critical: fcSysIdMismatch", screen)
+        self.assertIn("property bool critical: false", badge)
+        self.assertIn('return "#52141e"', badge)
+
+    def test_saved_column_layout_adds_fc_sys_id_only_once(self):
+        """Existing layouts receive the new default column without overriding a later hide."""
+        self._test_settings.setValue(
+            "columns/visible",
+            "hostname,ip,mavlink_sys_id,wifi_ssid",
+        )
+        self._test_settings.remove("columns/fc_sys_id_default_added")
+        with (
+            patch("ui.controller.QSettings", return_value=self._test_settings),
+            patch("ui.controller.QTimer.singleShot"),
+        ):
+            migrated = FleetController()
+        migrated.license_timer.stop()
+        migrated.scan_timer.stop()
+        migrated.stats_timer.stop()
+
+        self.assertEqual(
+            ["hostname", "ip", "mavlink_sys_id", "fc_sys_id", "wifi_ssid"],
+            migrated.source_model.visible_column_keys(),
+        )
+
+        migrated.setColumnVisible("fc_sys_id", False)
+        with (
+            patch("ui.controller.QSettings", return_value=self._test_settings),
+            patch("ui.controller.QTimer.singleShot"),
+        ):
+            restored = FleetController()
+        restored.license_timer.stop()
+        restored.scan_timer.stop()
+        restored.stats_timer.stop()
+
+        self.assertNotIn("fc_sys_id", restored.source_model.visible_column_keys())
 
     def test_column_order_can_be_moved_and_persisted(self):
         """The column dialog can reorder visible data columns across sessions."""
-        self.controller.moveColumn("rssi", -9)
+        self.controller.moveColumn("rssi", -10)
 
         self.assertEqual(
             ["rssi", *list(DeviceTableModel.DEFAULT_COLUMN_KEYS[:-1])],
@@ -731,7 +776,7 @@ class TestFleetUI(unittest.TestCase):
         )
         self.assertEqual(
             "rssi,hostname,ip,activation_status,firmware_version,"
-            "chip,dronebridge_version,mavlink_sys_id,wifi_ssid,wifi_channel",
+            "chip,dronebridge_version,mavlink_sys_id,fc_sys_id,wifi_ssid,wifi_channel",
             self._test_settings.value("columns/visible"),
         )
         columns = self.controller.columns
@@ -759,6 +804,7 @@ class TestFleetUI(unittest.TestCase):
                 "chip",
                 "dronebridge_version",
                 "mavlink_sys_id",
+                "fc_sys_id",
                 "wifi_ssid",
                 "wifi_channel",
             ],
@@ -766,13 +812,13 @@ class TestFleetUI(unittest.TestCase):
         )
         self.assertEqual(
             "rssi,ip,hostname,activation_status,firmware_version,"
-            "chip,dronebridge_version,mavlink_sys_id,wifi_ssid,wifi_channel",
+            "chip,dronebridge_version,mavlink_sys_id,fc_sys_id,wifi_ssid,wifi_channel",
             self._test_settings.value("columns/visible"),
         )
 
     def test_column_visibility_preserves_custom_order(self):
         """Newly shown columns are appended instead of resetting prior order."""
-        self.controller.moveColumn("rssi", -9)
+        self.controller.moveColumn("rssi", -10)
         self.controller.setColumnVisible("activation_key", True)
 
         self.assertEqual(

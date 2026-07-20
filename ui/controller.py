@@ -1533,9 +1533,23 @@ class FleetController(QObject):
         self.scan_timer.start(max(5, self._scan_values()["interval"]) * 1000)
 
     def _restore_columns(self) -> None:
-        """Restore persisted column keys or the required defaults."""
+        """Restore persisted keys and migrate newly introduced default columns once."""
         stored = str(self.settings.value("columns/visible", "")).strip()
         keys = [key for key in stored.split(",") if key] if stored else []
+        migrated = self.settings.value(
+            "columns/fc_sys_id_default_added",
+            False,
+            bool,
+        )
+        if not migrated:
+            if keys and "fc_sys_id" not in keys:
+                try:
+                    insert_at = keys.index("mavlink_sys_id") + 1
+                except ValueError:
+                    insert_at = len(keys)
+                keys.insert(insert_at, "fc_sys_id")
+                self.settings.setValue("columns/visible", ",".join(keys))
+            self.settings.setValue("columns/fc_sys_id_default_added", True)
         self.source_model.set_visible_columns(
             keys or list(DeviceTableModel.DEFAULT_COLUMN_KEYS)
         )
