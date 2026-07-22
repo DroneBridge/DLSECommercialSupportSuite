@@ -10,8 +10,22 @@ Rectangle {
     clip: true
     color: "transparent"
 
+    Image {
+        id: uploadFileIcon
+
+        objectName: "uploadFileIcon"
+        x: 2
+        y: 2
+        height: 20
+        width: 20
+        fillMode: Image.PreserveAspectFit
+        source: "../resources/images/upload_file_24dp.svg"
+    }
+
     Shape {
         id: _vector
+
+        opacity: 0
 
         x: 5
         y: 3

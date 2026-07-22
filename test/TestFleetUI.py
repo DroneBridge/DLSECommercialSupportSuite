@@ -152,6 +152,22 @@ class TestFleetUI(unittest.TestCase):
 
         self.assertIsNotNone(scan_button)
         self.assertIsNotNone(scan_settings)
+        radar_icon = scan_button.findChild(QQuickItem, "radarIcon")
+        settings_icon = scan_settings.findChild(QQuickItem, "settingsIcon")
+        self.assertIsNotNone(radar_icon)
+        self.assertIsNotNone(settings_icon)
+        self.assertEqual(20, radar_icon.width())
+        self.assertEqual(20, radar_icon.height())
+        self.assertEqual(20, settings_icon.width())
+        self.assertEqual(20, settings_icon.height())
+        self.assertIn(
+            'fill="#e2d5c8"',
+            (self.QML_ROOT.parent / "resources" / "images" / "radar_24dp.svg").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            'fill="#e2d5c8"',
+            (self.QML_ROOT.parent / "resources" / "images" / "settings_24dp.svg").read_text(encoding="utf-8"),
+        )
         self.assertEqual(154, scan_button.width())
         self.assertEqual(30, scan_button.height())
         self.assertEqual(36, scan_settings.width())
@@ -193,8 +209,9 @@ class TestFleetUI(unittest.TestCase):
         self._enter_main_screen()
         expected = {
             "rebootButton": ("Reboot Devices", 150, 100, False),
+            "alignSysIdsButton": ("Align SYS IDs", 150, 100, False),
             "otaFirmwareButton": ("OTA Firmware Upgrade", 208, 158, False),
-            "otaActivationButton": ("OTA DLSE Activation", 190, 140, True),
+            "otaActivationButton": ("OTA DLSE Activation", 190, 140, False),
             "applySettingsButton": ("Apply Settings", 158, 108, False),
         }
         for name, (label, width, label_width, key_icon_visible) in expected.items():
@@ -210,6 +227,22 @@ class TestFleetUI(unittest.TestCase):
         source = (self.QML_ROOT / "OTA_Button_1.qml").read_text(encoding="utf-8")
         self.assertIn("property bool keyIconVisible: true", source)
         self.assertIn("visible: oTA_Button.keyIconVisible", source)
+
+        for icon_name in ("computerArrowIcon", "keyIcon", "uploadFileIcon"):
+            icon = self.root.findChild(QQuickItem, icon_name)
+            self.assertIsNotNone(icon, icon_name)
+            self.assertAlmostEqual(20, icon.width(), places=2)
+            self.assertAlmostEqual(20, icon.height(), places=2)
+
+        for asset_name in (
+            "computer_arrow_up_24dp.svg",
+            "key_24dp.svg",
+            "upload_file_24dp.svg",
+        ):
+            asset = (self.QML_ROOT.parents[1] / "ui" / "resources" / "images" / asset_name).read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('fill="#e2d5c8"', asset)
 
     def test_apply_settings_toolbar_uses_selected_only_csv_import(self):
         """The toolbar settings action imports CSV files for selected devices only."""
@@ -247,6 +280,42 @@ class TestFleetUI(unittest.TestCase):
             self.assertTrue(dialog.property("opened"), dialog_name)
             dialog.close()
             self.app.processEvents()
+
+    def test_align_sys_ids_button_opens_selected_only_dialog(self):
+        """The SYS ID alignment toolbar button opens its selected-device dialog."""
+        self._enter_main_screen()
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="A",
+                ip="192.168.1.2",
+                activation_key="A",
+                activation_status="ACTIVATED",
+                selected=True,
+            )
+        ])
+        self.app.processEvents()
+        button = self.root.findChild(QQuickItem, "alignSysIdsButton")
+        icon = self.root.findChild(QQuickItem, "syncAltIcon")
+        image = self.root.findChild(QQuickItem, "syncAltImage")
+        dialog = self.root.findChild(object, "sysIdAlignmentDialog")
+
+        self.assertTrue(button.isEnabled())
+        self.assertIsNotNone(icon)
+        self.assertIsNotNone(image)
+        icon_source = (self.QML_ROOT / "sync_alt.svg").read_text(encoding="utf-8")
+        self.assertIn("M280-120 80-320", icon_source)
+        self.assertIn('fill="#e2d5c8"', icon_source)
+        self.assertEqual(20, image.width())
+        self.assertEqual(20, image.height())
+        self.assertFalse(dialog.property("opened"))
+        self._click_item(button)
+
+        self.assertTrue(dialog.property("opened"))
+        source = (self.QML_ROOT / "FleetDialogs.qml").read_text(encoding="utf-8")
+        self.assertIn("Only EVALUATION and ACTIVATED devices are processed.", source)
+        self.assertIn("Based on DLSE IP address", source)
+        self.assertIn("Based on FC SYS ID", source)
+        self.assertIn("Based on manual DLSE SYS ID", source)
 
     def test_view_mode_uses_exported_controls_switch(self):
         """The List/Matrix toggle uses the exported switch and changes views."""
@@ -959,6 +1028,38 @@ class TestFleetUI(unittest.TestCase):
         )
         self.controller.source_model.set_selected("A", True)
         self.assertEqual([], self.controller.defaultCsvExclusions("selected"))
+
+    def test_sys_id_alignment_filters_selected_devices_by_license_status(self):
+        """Only selected Evaluation and Activated records enter SYS ID alignment."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(identity="EVAL", ip="192.168.1.2", activation_status="evaluation", selected=True),
+            DeviceRecord(identity="ACTIVE", ip="192.168.1.3", activation_status="ACTIVATED", selected=True),
+            DeviceRecord(identity="OTHER", ip="192.168.1.4", activation_status="discovered", selected=True),
+        ])
+        self.controller._launch_sys_id_alignment = Mock()
+
+        self.controller.startSysIdAlignment("ip")
+
+        records, mode = self.controller._launch_sys_id_alignment.call_args.args[:2]
+        self.assertEqual(["192.168.1.2", "192.168.1.3"], [record.identity for record in records])
+        self.assertEqual("ip", mode)
+        self.assertEqual(2, self.controller.eligibleSysIdAlignmentCount)
+        self.assertEqual(1, self.controller.ineligibleSysIdAlignmentCount)
+
+    def test_sys_id_alignment_rejects_empty_eligible_selection(self):
+        """A selected unlicensed device does not create an alignment operation."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(identity="OTHER", ip="192.168.1.4", activation_status="discovered", selected=True)
+        ])
+        self.controller._launch_sys_id_alignment = Mock()
+        toast = []
+        self.controller.toastRequested.connect(lambda level, message: toast.append((level, message)))
+
+        self.controller.startSysIdAlignment("manual")
+
+        self.controller._launch_sys_id_alignment.assert_not_called()
+        self.assertEqual("info", toast[-1][0])
+        self.assertIn("Evaluation or Activated", toast[-1][1])
 
     def test_settings_preflight_rejects_invalid_network_values(self):
         """High-risk settings fail validation before worker creation."""

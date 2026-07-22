@@ -221,3 +221,4 @@ test/test_resources/db_show_params_user_same_release_merged.csv
 /dlse_releases/
 /ui/resources/Material_Symbols_Outlined
 /DroneBridge_ESP32_v2_2_1_stable
+/.idea

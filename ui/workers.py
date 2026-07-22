@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
+from ipaddress import IPv4Address
 from pathlib import Path
 from threading import Event
+from time import monotonic, sleep
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
+from pymavlink import mavutil
 
 from DroneBridgeCommercialSupportSuite import (
     DBDLSERelease,
@@ -544,6 +547,449 @@ class SettingsWorker(QRunnable):
             return db_api_update_settings(session, record.ip, self.settings)
         finally:
             session.close()
+
+
+class SysIdAlignmentWorker(QRunnable):
+    """Align selected DLSE and flight-controller MAVLink system IDs safely."""
+
+    MODES = {"ip", "fc", "manual"}
+    PARAMETER_CANDIDATES = ("SYSID_THISMAV", "MAV_SYS_ID")
+    PARAMETER_TIMEOUT_SECONDS = 2.0
+    PARAMETER_ATTEMPTS = 2
+    RETRY_DELAY_SECONDS = 0.25
+
+    def __init__(
+        self,
+        records: list[DeviceRecord],
+        mode: str,
+        fallback_port: int,
+        workers: int = 20,
+    ) -> None:
+        """
+        Create a selected-device SYS ID alignment operation.
+
+        :param records: Eligible selected device records to process.
+        :param mode: One of ``ip``, ``fc``, or ``manual`` source modes.
+        :param fallback_port: UDP destination port when device settings lack one.
+        :param workers: Maximum number of simultaneous device operations.
+        :raises ValueError: If ``mode`` is unsupported.
+        """
+        super().__init__()
+        normalized_mode = mode.strip().lower()
+        if normalized_mode not in self.MODES:
+            raise ValueError(f"Unsupported SYS ID alignment mode: {mode}")
+        self.signals = WorkerSignals()
+        self.records = records
+        self.mode = normalized_mode
+        self.fallback_port = fallback_port
+        self.workers = max(1, min(workers, 64))
+        self.cancel_event = Event()
+
+    def cancel(self) -> None:
+        """Prevent queued devices from starting new SYS ID alignment work."""
+        self.cancel_event.set()
+
+    @Slot()
+    def run(self) -> None:
+        """Align queued devices with bounded parallelism and emit row progress."""
+        results: list[dict[str, Any]] = []
+        try:
+            with ThreadPoolExecutor(max_workers=self.workers) as executor:
+                futures: dict[Any, DeviceRecord] = {}
+                pending_records = iter(self.records)
+
+                def submit_next() -> bool:
+                    """Submit one device unless cancellation was requested."""
+                    if self.cancel_event.is_set():
+                        return False
+                    try:
+                        record = next(pending_records)
+                    except StopIteration:
+                        return False
+                    futures[executor.submit(self._align_one, record)] = record
+                    return True
+
+                for _ in range(min(self.workers, len(self.records))):
+                    submit_next()
+                while futures:
+                    completed, _pending = wait(futures, return_when=FIRST_COMPLETED)
+                    for future in completed:
+                        record = futures.pop(future)
+                        try:
+                            result = future.result()
+                        except Exception as exc:
+                            result = self._result(record, False, str(exc))
+                        results.append(result)
+                        self.signals.progress.emit({
+                            "identity": record.identity,
+                            "success": result["success"],
+                            "status": "complete" if result["success"] else "failed",
+                            "percent": 100 if result["success"] else 0,
+                            "message": result["message"],
+                        })
+                        submit_next()
+            self.signals.finished.emit(results)
+        except Exception as exc:
+            self.signals.error.emit(str(exc))
+
+    def _align_one(self, record: DeviceRecord) -> dict[str, Any]:
+        """
+        Align one device and return its structured success or failure result.
+
+        Flight-controller changes are completed before a DLSE settings request,
+        because accepted settings reboot the ESP32 and would interrupt MAVLink.
+        """
+        target_sys_id, error = self._target_sys_id(record)
+        if error:
+            return self._result(record, False, error)
+
+        if self.mode != "fc":
+            self._emit_stage(record, "writing FC SYS ID", 15)
+            success, message = self._update_and_reboot_fc(record, target_sys_id)
+            if not success:
+                return self._result(record, False, message)
+
+        self._emit_stage(record, "applying DLSE SYS ID settings", 75)
+        session = db_api_create_request_session()
+        try:
+            settings_result = db_api_update_settings(
+                session,
+                record.ip,
+                self._dlse_settings(target_sys_id),
+            )
+        finally:
+            session.close()
+        if not settings_result.success:
+            return self._result(
+                record,
+                False,
+                f"DLSE settings update failed: {settings_result.message}",
+            )
+        return self._result(record, True, "SYS IDs aligned; DLSE settings accepted")
+
+    def _target_sys_id(self, record: DeviceRecord) -> tuple[int, str]:
+        """
+        Resolve and validate the selected source SYS ID for one record.
+
+        :param record: Selected device whose cached details provide the source.
+        :return: A valid target ID and an empty error, or ``0`` and an error.
+        """
+        if self.mode == "ip":
+            try:
+                target = int(IPv4Address(str(record.ip).strip())) & 0xFF
+            except ValueError:
+                return 0, "DLSE IP address does not provide a valid SYS ID"
+            if not self._is_valid_sys_id(target):
+                return 0, "DLSE IP address last octet must be between 1 and 255"
+            return target, ""
+        source = (
+            record.stats.get("fc_sysid")
+            if self.mode == "fc"
+            else record.settings.get("show_man_sysid")
+        )
+        target = self._coerce_sys_id(source)
+        if target is None:
+            label = "FC SYS ID" if self.mode == "fc" else "manual DLSE SYS ID"
+            return 0, f"Cached {label} must be between 1 and 255"
+        return target, ""
+
+    def _dlse_settings(self, target_sys_id: int) -> dict[str, int]:
+        """
+        Return the minimal DLSE settings payload for the selected alignment mode.
+
+        :param target_sys_id: Already validated source ID for FC-based mode.
+        :return: Partial settings safe for ``POST /api/settings``.
+        """
+        if self.mode == "ip":
+            return {"show_en_syid_ip": 1}
+        if self.mode == "fc":
+            return {"show_man_sysid": target_sys_id, "show_en_syid_ip": 0}
+        return {"show_en_syid_ip": 0}
+
+    def _update_and_reboot_fc(
+        self,
+        record: DeviceRecord,
+        target_sys_id: int,
+    ) -> tuple[bool, str]:
+        """
+        Confirm an FC parameter update, then request an acknowledged reboot.
+
+        :param record: Device whose cached FC SYS ID and UDP port are used.
+        :param target_sys_id: Valid ID to write to the FC.
+        :return: Success flag and operator-facing result message.
+        """
+        current_sys_id = self._coerce_sys_id(record.stats.get("fc_sysid"))
+        if current_sys_id is None:
+            return False, "Cached FC SYS ID must be between 1 and 255"
+        port = self._resolve_udp_port(record.settings.get("udp_local_port"), self.fallback_port)
+        if port is None:
+            return False, "DLSE UDP port must be between 1 and 65535"
+
+        connection = f"udpout:{record.ip}:{port}"
+        master = None
+        reasons: list[str] = []
+        try:
+            master = mavutil.mavlink_connection(connection, source_system=255)
+            for parameter_name in self.PARAMETER_CANDIDATES:
+                if parameter_name == "MAV_SYS_ID" and target_sys_id > 250:
+                    reasons.append("PX4 MAV_SYS_ID accepts values only through 250")
+                    continue
+                parameter_type = self._read_parameter_type(
+                    master,
+                    current_sys_id,
+                    parameter_name,
+                )
+                if parameter_type is None:
+                    reasons.append(f"{parameter_name} was not available")
+                    continue
+                if self._write_parameter_and_confirm(
+                    master,
+                    current_sys_id,
+                    parameter_name,
+                    target_sys_id,
+                    parameter_type,
+                ):
+                    self._emit_stage(record, "rebooting FC", 55)
+                    if self._reboot_fc(master, current_sys_id):
+                        return True, f"FC SYS ID set through {parameter_name} and reboot accepted"
+                    return False, "FC SYS ID updated but reboot not confirmed; DLSE settings were not changed"
+                reasons.append(f"{parameter_name} did not confirm the requested value")
+            return False, "FC SYS ID update failed: " + "; ".join(reasons)
+        except Exception as exc:
+            return False, f"FC MAVLink operation failed: {exc}"
+        finally:
+            close = getattr(master, "close", None)
+            if callable(close):
+                close()
+
+    def _read_parameter_type(
+        self,
+        master: Any,
+        target_system: int,
+        parameter_name: str,
+    ) -> Any | None:
+        """
+        Request a parameter and return its MAVLink type when it is echoed.
+
+        :param master: Open MAVLink connection to one DLSE endpoint.
+        :param target_system: Current FC system ID used for targeted messages.
+        :param parameter_name: Candidate ArduPilot or PX4 parameter name.
+        :return: MAVLink parameter type, or ``None`` when not confirmed.
+        """
+        for attempt in range(self.PARAMETER_ATTEMPTS):
+            master.mav.param_request_read_send(
+                target_system,
+                mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1,
+                parameter_name.encode("ascii"),
+                -1,
+            )
+            message = self._wait_for_parameter(master, parameter_name)
+            if message is not None:
+                return getattr(message, "param_type", None)
+            if attempt + 1 < self.PARAMETER_ATTEMPTS:
+                sleep(self.RETRY_DELAY_SECONDS)
+        return None
+
+    def _write_parameter_and_confirm(
+        self,
+        master: Any,
+        target_system: int,
+        parameter_name: str,
+        target_value: int,
+        parameter_type: Any,
+    ) -> bool:
+        """
+        Write a parameter and require a matching ``PARAM_VALUE`` echo.
+
+        :param master: Open MAVLink connection to one DLSE endpoint.
+        :param target_system: Current FC system ID used for targeted messages.
+        :param parameter_name: Confirmed parameter name to update.
+        :param target_value: Valid MAVLink system ID to store.
+        :param parameter_type: Type reported by the FC during parameter read.
+        :return: ``True`` only after a matching echoed value is received.
+        """
+        for attempt in range(self.PARAMETER_ATTEMPTS):
+            master.mav.param_set_send(
+                target_system,
+                mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1,
+                parameter_name.encode("ascii"),
+                float(target_value),
+                parameter_type,
+            )
+            message = self._wait_for_parameter(master, parameter_name, target_value)
+            if message is not None:
+                return True
+            if attempt + 1 < self.PARAMETER_ATTEMPTS:
+                sleep(self.RETRY_DELAY_SECONDS)
+        return False
+
+    def _reboot_fc(self, master: Any, target_system: int) -> bool:
+        """
+        Request an FC reboot and require an accepted MAVLink command acknowledgement.
+
+        :param master: Open MAVLink connection to one DLSE endpoint.
+        :param target_system: Current FC system ID used for targeted messages.
+        :return: ``True`` only when the FC accepts the reboot command.
+        """
+        command = mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN
+        for attempt in range(self.PARAMETER_ATTEMPTS):
+            master.mav.command_long_send(
+                target_system,
+                mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1,
+                command,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
+            message = self._wait_for_command_ack(master, command)
+            if message is not None:
+                return True
+            if attempt + 1 < self.PARAMETER_ATTEMPTS:
+                sleep(self.RETRY_DELAY_SECONDS)
+        return False
+
+    def _wait_for_parameter(
+        self,
+        master: Any,
+        parameter_name: str,
+        expected_value: int | None = None,
+    ) -> Any | None:
+        """
+        Wait up to the bounded timeout for a matching FC parameter response.
+
+        :param master: Open MAVLink connection to one DLSE endpoint.
+        :param parameter_name: Expected parameter identifier.
+        :param expected_value: Optional value that must match the echo.
+        :return: Matching MAVLink message, or ``None`` after timeout.
+        """
+        deadline = monotonic() + self.PARAMETER_TIMEOUT_SECONDS
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return None
+            message = master.recv_match(
+                type="PARAM_VALUE",
+                blocking=True,
+                timeout=remaining,
+            )
+            if message is None:
+                return None
+            if self._parameter_name(message) != parameter_name:
+                continue
+            if expected_value is None:
+                return message
+            try:
+                if int(round(float(message.param_value))) == expected_value:
+                    return message
+            except (AttributeError, TypeError, ValueError):
+                pass
+
+    def _wait_for_command_ack(self, master: Any, command: int) -> Any | None:
+        """
+        Wait up to the bounded timeout for an accepted FC reboot acknowledgement.
+
+        :param master: Open MAVLink connection to one DLSE endpoint.
+        :param command: MAVLink command identifier that must be acknowledged.
+        :return: Accepted acknowledgement message, or ``None`` after timeout.
+        """
+        deadline = monotonic() + self.PARAMETER_TIMEOUT_SECONDS
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return None
+            message = master.recv_match(
+                type="COMMAND_ACK",
+                blocking=True,
+                timeout=remaining,
+            )
+            if message is None:
+                return None
+            if getattr(message, "command", None) != command:
+                continue
+            if getattr(message, "result", None) == mavutil.mavlink.MAV_RESULT_ACCEPTED:
+                return message
+
+    @staticmethod
+    def _parameter_name(message: Any) -> str:
+        """
+        Normalize a MAVLink parameter identifier from bytes or text.
+
+        :param message: MAVLink ``PARAM_VALUE`` message.
+        :return: Null-trimmed ASCII parameter identifier.
+        """
+        value = getattr(message, "param_id", b"")
+        if isinstance(value, bytes):
+            return value.decode("ascii", errors="ignore").split("\x00", 1)[0]
+        return str(value).split("\x00", 1)[0]
+
+    @staticmethod
+    def _resolve_udp_port(value: Any, fallback: int) -> int | None:
+        """
+        Select a valid device UDP port or a valid operation fallback port.
+
+        :param value: Hydrated ``udp_local_port`` value from one DLSE.
+        :param fallback: Scan settings ESP32 port used when ``value`` is invalid.
+        :return: A port from 1 through 65535, or ``None`` when unavailable.
+        """
+        for candidate in (value, fallback):
+            try:
+                port = int(candidate)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= port <= 65535:
+                return port
+        return None
+
+    @staticmethod
+    def _coerce_sys_id(value: Any) -> int | None:
+        """
+        Convert one cached source value to a valid MAVLink system ID.
+
+        :param value: Raw cached REST settings or stats value.
+        :return: An ID from 1 through 255, or ``None`` when invalid.
+        """
+        try:
+            sys_id = int(value)
+        except (TypeError, ValueError):
+            return None
+        return sys_id if SysIdAlignmentWorker._is_valid_sys_id(sys_id) else None
+
+    @staticmethod
+    def _is_valid_sys_id(value: int) -> bool:
+        """Return whether ``value`` is a valid MAVLink system ID from 1 through 255."""
+        return 1 <= value <= 255
+
+    def _emit_stage(self, record: DeviceRecord, status: str, percent: int) -> None:
+        """
+        Emit an in-progress row status for one device.
+
+        :param record: Device currently being aligned.
+        :param status: Short operator-facing activity label.
+        :param percent: Approximate operation completion percentage.
+        :return: None.
+        """
+        self.signals.progress.emit({
+            "identity": record.identity,
+            "status": status,
+            "percent": percent,
+        })
+
+    @staticmethod
+    def _result(record: DeviceRecord, success: bool, message: str) -> dict[str, Any]:
+        """
+        Create one result mapping compatible with the shared controller handler.
+
+        :param record: Device the result belongs to.
+        :param success: Whether every required operation succeeded.
+        :param message: Safe operator-facing success or failure explanation.
+        :return: Structured result mapping with the stable device identity.
+        """
+        return {"identity": record.identity, "success": success, "message": message}
 
 
 class OtaWorker(QRunnable):

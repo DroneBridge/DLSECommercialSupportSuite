@@ -45,6 +45,7 @@ from ui.workers import (
     RebootWorker,
     SettingsWorker,
     StatsPollingWorker,
+    SysIdAlignmentWorker,
 )
 
 
@@ -185,6 +186,16 @@ class FleetController(QObject):
     def selectedCount(self) -> int:
         """Return the number of explicitly selected devices."""
         return len(self.source_model.selected_records())
+
+    @Property(int, notify=stateChanged)
+    def eligibleSysIdAlignmentCount(self) -> int:
+        """Return selected devices licensed for the SYS ID alignment operation."""
+        return len(self._sys_id_alignment_records())
+
+    @Property(int, notify=stateChanged)
+    def ineligibleSysIdAlignmentCount(self) -> int:
+        """Return selected devices excluded from SYS ID alignment by license status."""
+        return self.selectedCount - self.eligibleSysIdAlignmentCount
 
     @Property(str, notify=stateChanged)
     def activeOperation(self) -> str:
@@ -828,6 +839,30 @@ class FleetController(QObject):
             return
         self._launch_reboot(records, mavlink=mavlink, remember=not mavlink)
 
+    @Slot(str)
+    def startSysIdAlignment(self, mode: str) -> None:
+        """
+        Align SYS IDs for selected Evaluation or Activated DLSE devices only.
+
+        :param mode: ``ip``, ``fc``, or ``manual`` source selection from QML.
+        :return: None. Invalid modes or empty eligible selections show a toast.
+        """
+        normalized_mode = mode.strip().lower()
+        if normalized_mode not in SysIdAlignmentWorker.MODES:
+            self.toastRequested.emit("error", "Select a valid SYS ID alignment mode.")
+            return
+        if not self.source_model.selected_records():
+            self.toastRequested.emit("info", "Select at least one device first.")
+            return
+        records = self._sys_id_alignment_records()
+        if not records:
+            self.toastRequested.emit(
+                "info",
+                "Only selected Evaluation or Activated devices can be aligned.",
+            )
+            return
+        self._launch_sys_id_alignment(records, normalized_mode, remember=True)
+
     @Slot(str, str, str, str, int, str)
     def startOta(
         self,
@@ -969,6 +1004,18 @@ class FleetController(QObject):
             self._start_settings(records, options["settings"], remember=False)
         elif kind == "reboot":
             self._launch_reboot(records, mavlink=False, remember=False)
+        elif kind == "sys_id_alignment":
+            eligible = [
+                record
+                for record in records
+                if self._is_sys_id_alignment_eligible(record)
+            ]
+            if eligible:
+                self._launch_sys_id_alignment(
+                    eligible,
+                    options["mode"],
+                    remember=False,
+                )
 
     @Slot()
     def checkLicenseServer(self) -> None:
@@ -1161,6 +1208,35 @@ class FleetController(QObject):
         if remember:
             self._retry_context = ("settings", {"settings": settings})
         self._begin_worker("settings", worker)
+
+    def _launch_sys_id_alignment(
+        self,
+        records: list[DeviceRecord],
+        mode: str,
+        remember: bool,
+    ) -> None:
+        """
+        Create and launch the UI-only selected-device SYS ID alignment worker.
+
+        :param records: Selected, license-eligible records to process.
+        :param mode: Valid ``ip``, ``fc``, or ``manual`` source mode.
+        :param remember: Whether failed records can use the shared retry action.
+        :return: None. An active operation prevents launch.
+        """
+        if not self._operation_available():
+            return
+        values = self._scan_values()
+        for record in records:
+            self.source_model.update_operation(record.identity, "queued SYS ID alignment", 0)
+        worker = SysIdAlignmentWorker(
+            records,
+            mode,
+            fallback_port=values["esp32_port"],
+            workers=values["workers"],
+        )
+        if remember:
+            self._retry_context = ("sys_id_alignment", {"mode": mode})
+        self._begin_worker("sys_id_alignment", worker)
 
     def _begin_worker(self, kind: str, worker: Any) -> None:
         """Connect common worker signals and start one fleet operation."""
@@ -1430,6 +1506,28 @@ class FleetController(QObject):
         if scope == "visible":
             return visible
         return selected or visible
+
+    def _sys_id_alignment_records(self) -> list[DeviceRecord]:
+        """
+        Return explicitly selected devices with an eligible license status.
+
+        :return: Selected records whose status is Evaluation or Activated.
+        """
+        return [
+            record
+            for record in self.source_model.selected_records()
+            if self._is_sys_id_alignment_eligible(record)
+        ]
+
+    @staticmethod
+    def _is_sys_id_alignment_eligible(record: DeviceRecord) -> bool:
+        """
+        Return whether a record has a license eligible for SYS ID alignment.
+
+        :param record: Retained device whose activation status is inspected.
+        :return: ``True`` only for Evaluation or Activated license values.
+        """
+        return record.activation_status.strip().upper() in {"EVALUATION", "ACTIVATED"}
 
     def _inspected_record(self) -> DeviceRecord | None:
         """Return the record currently shown in the inspector."""

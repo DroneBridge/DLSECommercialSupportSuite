@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from DroneBridgeCommercialSupportSuite import DBDLSERelease
+from pymavlink import mavutil
 from ui.models import DeviceRecord
 from ui.workers import (
     DiscoveryWorker,
@@ -14,6 +15,7 @@ from ui.workers import (
     OtaReleaseResolveWorker,
     OtaWorker,
     StatsPollingWorker,
+    SysIdAlignmentWorker,
 )
 
 
@@ -221,6 +223,128 @@ class TestFleetWorkers(unittest.TestCase):
         self.assertEqual([[]], finished)
         mavlink_scan.assert_called_once()
         http_scan.assert_called_once()
+
+    def test_sys_id_alignment_resolves_all_three_source_modes(self):
+        """IP, FC, and manual modes derive their documented source IDs."""
+        record = DeviceRecord(
+            identity="KEY",
+            ip="192.168.1.42",
+            settings={"show_man_sysid": 17},
+            stats={"fc_sysid": 23},
+        )
+
+        self.assertEqual((42, ""), SysIdAlignmentWorker([record], "ip", 14555)._target_sys_id(record))
+        self.assertEqual((23, ""), SysIdAlignmentWorker([record], "fc", 14555)._target_sys_id(record))
+        self.assertEqual((17, ""), SysIdAlignmentWorker([record], "manual", 14555)._target_sys_id(record))
+
+    def test_sys_id_alignment_rejects_invalid_source_ids_before_network_work(self):
+        """Missing or invalid cached sources become safe per-device failures."""
+        worker = SysIdAlignmentWorker([], "manual", 14555)
+        record = DeviceRecord(
+            identity="KEY",
+            ip="192.168.1.0",
+            settings={"show_man_sysid": 0},
+            stats={"fc_sysid": -1},
+        )
+
+        self.assertIn("last octet", SysIdAlignmentWorker([], "ip", 14555)._target_sys_id(record)[1])
+        self.assertIn("FC SYS ID", SysIdAlignmentWorker([], "fc", 14555)._target_sys_id(record)[1])
+        self.assertIn("manual DLSE SYS ID", worker._target_sys_id(record)[1])
+
+    def test_sys_id_alignment_prefers_device_udp_port_and_falls_back_safely(self):
+        """Per-device udp_local_port wins, with the scan port used only as fallback."""
+        self.assertEqual(14600, SysIdAlignmentWorker._resolve_udp_port("14600", 14555))
+        self.assertEqual(14555, SysIdAlignmentWorker._resolve_udp_port("invalid", 14555))
+        self.assertIsNone(SysIdAlignmentWorker._resolve_udp_port(0, 70000))
+
+    @patch("ui.workers.sleep")
+    @patch("ui.workers.mavutil.mavlink_connection")
+    def test_sys_id_alignment_falls_back_to_px4_parameter_and_requires_reboot_ack(
+        self,
+        mavlink_connection,
+        _sleep,
+    ):
+        """A missing ArduPilot parameter falls back to confirmed PX4 update and reboot."""
+        master = Mock()
+        mavlink_connection.return_value = master
+        master.recv_match.side_effect = [
+            None,
+            None,
+            SimpleNamespace(param_id=b"MAV_SYS_ID\x00", param_type=6),
+            SimpleNamespace(param_id=b"MAV_SYS_ID\x00", param_value=42),
+            SimpleNamespace(
+                command=mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+                result=mavutil.mavlink.MAV_RESULT_ACCEPTED,
+            ),
+        ]
+        record = DeviceRecord(
+            identity="KEY",
+            ip="192.168.1.42",
+            settings={"udp_local_port": 14600},
+            stats={"fc_sysid": 10},
+        )
+        worker = SysIdAlignmentWorker([record], "ip", 14555, workers=1)
+
+        success, message = worker._update_and_reboot_fc(record, 42)
+
+        self.assertTrue(success)
+        self.assertIn("MAV_SYS_ID", message)
+        mavlink_connection.assert_called_once_with("udpout:192.168.1.42:14600", source_system=255)
+        self.assertEqual(
+            b"MAV_SYS_ID",
+            master.mav.param_set_send.call_args.args[2],
+        )
+        master.mav.command_long_send.assert_called_once()
+        master.close.assert_called_once()
+
+    @patch("ui.workers.db_api_update_settings")
+    def test_sys_id_alignment_keeps_dlse_settings_unchanged_when_fc_fails(self, update_settings):
+        """A failed FC confirmation prevents the subsequent DLSE settings mutation."""
+        record = DeviceRecord(
+            identity="KEY",
+            ip="192.168.1.42",
+            settings={"show_man_sysid": 42},
+            stats={"fc_sysid": 10},
+        )
+        worker = SysIdAlignmentWorker([record], "manual", 14555)
+        worker._update_and_reboot_fc = Mock(return_value=(False, "FC confirmation failed"))
+
+        result = worker._align_one(record)
+
+        self.assertFalse(result["success"])
+        self.assertIn("confirmation", result["message"])
+        update_settings.assert_not_called()
+
+    @patch("ui.workers.db_api_update_settings")
+    @patch("ui.workers.db_api_create_request_session")
+    def test_sys_id_alignment_fc_mode_updates_dlse_without_fc_commands(
+        self,
+        create_session,
+        update_settings,
+    ):
+        """FC-source mode copies the cached FC ID to DLSE settings only."""
+        session = Mock()
+        create_session.return_value = session
+        update_settings.return_value = SimpleNamespace(success=True, message="accepted")
+        record = DeviceRecord(
+            identity="KEY",
+            ip="192.168.1.42",
+            activation_status="ACTIVATED",
+            stats={"fc_sysid": 19},
+        )
+        worker = SysIdAlignmentWorker([record], "fc", 14555)
+        worker._update_and_reboot_fc = Mock()
+
+        result = worker._align_one(record)
+
+        self.assertTrue(result["success"])
+        worker._update_and_reboot_fc.assert_not_called()
+        update_settings.assert_called_once_with(
+            session,
+            "192.168.1.42",
+            {"show_man_sysid": 19, "show_en_syid_ip": 0},
+        )
+        session.close.assert_called_once()
 
 
 if __name__ == "__main__":

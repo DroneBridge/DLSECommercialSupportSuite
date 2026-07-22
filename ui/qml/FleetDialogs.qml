@@ -52,6 +52,16 @@ Item {
         rebootDialog.open()
     }
 
+    function openAlignSysIds() {
+        if (fleetController.selectedCount <= 0) {
+            showToast("info", "Select at least one device before aligning SYS IDs.")
+            return
+        }
+        sysIdAlignmentMode.currentIndex = 0
+        center(sysIdAlignmentDialog)
+        sysIdAlignmentDialog.open()
+    }
+
     function openOta() {
         otaSource.currentIndex = 0
         releaseTokenField.text = fleetController.environmentToken
@@ -416,6 +426,71 @@ Item {
                         rebootMethod.currentIndex === 1 ? "mavlink" : "rest"
                     )
                     rebootDialog.close()
+                }
+            }
+        }
+    }
+
+    ModalDialog {
+        id: sysIdAlignmentDialog
+        objectName: "sysIdAlignmentDialog"
+        title: "Align SYS IDs"
+        preferredWidth: 610
+
+        Text {
+            Layout.fillWidth: true
+            text: "Selected devices only: " + fleetController.selectedCount
+                  + ". Eligible: " + fleetController.eligibleSysIdAlignmentCount
+                  + ". Excluded by license status: " + fleetController.ineligibleSysIdAlignmentCount + "."
+            color: theme.secondaryText
+            wrapMode: Text.Wrap
+            font.family: theme.bodyFont
+        }
+
+        Text {
+            Layout.fillWidth: true
+            text: "Only EVALUATION and ACTIVATED devices are processed. FC-changing modes write a MAVLink parameter and remotely reboot the FC after confirmation."
+            color: theme.warning
+            wrapMode: Text.Wrap
+            font.family: theme.bodyFont
+        }
+
+        Text { text: "Set MAVLink SYS ID"; color: theme.secondaryText; font.family: theme.bodyFont }
+        AppComboBox {
+            id: sysIdAlignmentMode
+            Layout.fillWidth: true
+            model: [
+                "Based on DLSE IP address",
+                "Based on FC SYS ID",
+                "Based on manual DLSE SYS ID"
+            ]
+        }
+
+        Text {
+            Layout.fillWidth: true
+            text: sysIdAlignmentMode.currentIndex === 0
+                  ? "Sets the FC SYS ID to the DLSE IP address last octet and enables DLSE SYS ID based on IP."
+                  : sysIdAlignmentMode.currentIndex === 1
+                    ? "Copies the cached FC SYS ID to the DLSE manual SYS ID and disables DLSE SYS ID based on IP."
+                    : "Sets the FC SYS ID to the DLSE manual SYS ID and disables DLSE SYS ID based on IP."
+            color: theme.secondaryText
+            wrapMode: Text.Wrap
+            font.family: theme.bodyFont
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Item { Layout.fillWidth: true }
+            AppButton { text: "Cancel"; quiet: true; onClicked: sysIdAlignmentDialog.close() }
+            AppButton {
+                text: "Align SYS IDs"
+                emphasized: true
+                accentColor: theme.warning
+                enabled: fleetController.eligibleSysIdAlignmentCount > 0
+                onClicked: {
+                    const modes = ["ip", "fc", "manual"]
+                    fleetController.startSysIdAlignment(modes[sysIdAlignmentMode.currentIndex])
+                    sysIdAlignmentDialog.close()
                 }
             }
         }

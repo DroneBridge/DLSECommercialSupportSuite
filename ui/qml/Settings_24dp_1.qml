@@ -12,8 +12,22 @@ Rectangle {
     clip: true
     color: "transparent"
 
+    Image {
+        id: settingsIcon
+
+        objectName: "settingsIcon"
+        x: 2
+        y: 2
+        height: 20
+        width: 20
+        fillMode: Image.PreserveAspectFit
+        source: "../resources/images/settings_24dp.svg"
+    }
+
     Shape {
         id: _vector
+
+        opacity: 0
 
         x: 3.26
         y: 3

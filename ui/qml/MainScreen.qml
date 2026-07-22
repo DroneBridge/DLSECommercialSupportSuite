@@ -353,6 +353,48 @@ Item {
                 }
 
                 FocusScope {
+                    id: alignSysIdsButtonFocus
+                    Layout.preferredWidth: 150
+                    Layout.preferredHeight: 29
+                    activeFocusOnTab: enabled
+                    enabled: fleetController.selectedCount > 0 && fleetController.activeOperation.length === 0
+                    opacity: enabled ? 1 : 0.42
+
+                    OTA_Button_1 {
+                        id: alignSysIdsButton
+                        objectName: "alignSysIdsButton"
+                        anchors.fill: parent
+                        text_LabelText: "Align SYS IDs"
+                        text_LabelWidth: 100
+                        keyIconVisible: false
+                        eigenschaft_2: alignSysIdsMouse.pressed
+                                       ? OTA_Button_1.Eigenschaft_1.Eigenschaft_1_Variante3
+                                       : (alignSysIdsMouse.containsMouse || alignSysIdsButtonFocus.activeFocus
+                                          ? OTA_Button_1.Eigenschaft_1.Eigenschaft_1_Variante2
+                                          : OTA_Button_1.Eigenschaft_1.Eigenschaft_1_Standard)
+                    }
+
+                    Sync_alt {
+                        x: 9
+                        y: 2.5
+                    }
+
+                    MouseArea {
+                        id: alignSysIdsMouse
+                        anchors.fill: parent
+                        enabled: alignSysIdsButtonFocus.enabled
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onPressed: alignSysIdsButtonFocus.forceActiveFocus()
+                        onClicked: fleetDialogs.openAlignSysIds()
+                    }
+
+                    Keys.onSpacePressed: if (enabled) fleetDialogs.openAlignSysIds()
+                    Keys.onReturnPressed: if (enabled) fleetDialogs.openAlignSysIds()
+                    Keys.onEnterPressed: if (enabled) fleetDialogs.openAlignSysIds()
+                }
+
+                FocusScope {
                     id: otaFirmwareButtonFocus
                     Layout.preferredWidth: 208
                     Layout.preferredHeight: 29
@@ -408,11 +450,17 @@ Item {
                         anchors.fill: parent
                         text_LabelText: "OTA DLSE Activation"
                         text_LabelWidth: 140
+                        keyIconVisible: false
                         eigenschaft_2: otaActivationMouse.pressed
                                        ? OTA_Button_1.Eigenschaft_1.Eigenschaft_1_Variante3
                                        : (otaActivationMouse.containsMouse || otaActivationButtonFocus.activeFocus
                                           ? OTA_Button_1.Eigenschaft_1.Eigenschaft_1_Variante2
                                           : OTA_Button_1.Eigenschaft_1.Eigenschaft_1_Standard)
+                    }
+
+                    Key_24dp_1 {
+                        x: 9
+                        y: 2.5
                     }
 
                     MouseArea {
@@ -756,7 +804,7 @@ Item {
                                                       && (columnKey === "mavlink_sys_id"
                                                           || columnKey === "fc_sys_id"))
                                         text: String(display)
-                                        color: columnKey === "rssi" ? theme.success
+                                        color: columnKey === "rssi" ? "white"
                                              : dlseParameterWarning(columnKey, display) ? theme.warning
                                              : theme.primaryText
                                         font.family: "JetBrains Mono"

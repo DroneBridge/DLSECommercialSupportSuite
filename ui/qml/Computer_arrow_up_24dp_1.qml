@@ -10,8 +10,22 @@ Rectangle {
     clip: true
     color: "transparent"
 
+    Image {
+        id: computerArrowIcon
+
+        objectName: "computerArrowIcon"
+        x: 2
+        y: 2
+        height: 20
+        width: 20
+        fillMode: Image.PreserveAspectFit
+        source: "../resources/images/computer_arrow_up_24dp.svg"
+    }
+
     Shape {
         id: _vector
+
+        opacity: 0
 
         x: 1.77
         y: 4.46
