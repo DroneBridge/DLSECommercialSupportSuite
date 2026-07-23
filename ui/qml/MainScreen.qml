@@ -353,6 +353,49 @@ Item {
                 }
 
                 FocusScope {
+                    id: assignStaticIpButtonFocus
+                    Layout.preferredWidth: 170
+                    Layout.preferredHeight: 29
+                    activeFocusOnTab: enabled
+                    enabled: fleetController.eligibleStaticIpCount > 0
+                             && fleetController.activeOperation.length === 0
+                    opacity: enabled ? 1 : 0.42
+
+                    OTA_Button_1 {
+                        id: assignStaticIpButton
+                        objectName: "assignStaticIpButton"
+                        anchors.fill: parent
+                        text_LabelText: "Assign Static IPs"
+                        text_LabelWidth: 130
+                        keyIconVisible: false
+                        eigenschaft_2: assignStaticIpMouse.pressed
+                                       ? OTA_Button_1.Eigenschaft_1.Eigenschaft_1_Variante3
+                                       : (assignStaticIpMouse.containsMouse || assignStaticIpButtonFocus.activeFocus
+                                          ? OTA_Button_1.Eigenschaft_1.Eigenschaft_1_Variante2
+                                          : OTA_Button_1.Eigenschaft_1.Eigenschaft_1_Standard)
+                    }
+
+                    Format_list_numbered_24dp_1 {
+                        x: 9
+                        y: 2.5
+                    }
+
+                    MouseArea {
+                        id: assignStaticIpMouse
+                        anchors.fill: parent
+                        enabled: assignStaticIpButtonFocus.enabled
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onPressed: assignStaticIpButtonFocus.forceActiveFocus()
+                        onClicked: fleetDialogs.openStaticIpAssignment()
+                    }
+
+                    Keys.onSpacePressed: if (enabled) fleetDialogs.openStaticIpAssignment()
+                    Keys.onReturnPressed: if (enabled) fleetDialogs.openStaticIpAssignment()
+                    Keys.onEnterPressed: if (enabled) fleetDialogs.openStaticIpAssignment()
+                }
+
+                FocusScope {
                     id: alignSysIdsButtonFocus
                     Layout.preferredWidth: 150
                     Layout.preferredHeight: 29

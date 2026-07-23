@@ -209,6 +209,7 @@ class TestFleetUI(unittest.TestCase):
         self._enter_main_screen()
         expected = {
             "rebootButton": ("Reboot Devices", 150, 100, False),
+            "assignStaticIpButton": ("Assign Static IPs", 170, 130, False),
             "alignSysIdsButton": ("Align SYS IDs", 150, 100, False),
             "otaFirmwareButton": ("OTA Firmware Upgrade", 208, 158, False),
             "otaActivationButton": ("OTA DLSE Activation", 190, 140, False),
@@ -228,13 +229,22 @@ class TestFleetUI(unittest.TestCase):
         self.assertIn("property bool keyIconVisible: true", source)
         self.assertIn("visible: oTA_Button.keyIconVisible", source)
 
-        for icon_name in ("computerArrowIcon", "keyIcon", "uploadFileIcon"):
+        expected_icon_sizes = {
+            "restartIcon": 20,
+            "formatListNumberedImage": 16,
+            "computerArrowIcon": 20,
+            "keyIcon": 20,
+            "uploadFileIcon": 20,
+        }
+        for icon_name, expected_size in expected_icon_sizes.items():
             icon = self.root.findChild(QQuickItem, icon_name)
             self.assertIsNotNone(icon, icon_name)
-            self.assertAlmostEqual(20, icon.width(), places=2)
-            self.assertAlmostEqual(20, icon.height(), places=2)
+            self.assertAlmostEqual(expected_size, icon.width(), places=2)
+            self.assertAlmostEqual(expected_size, icon.height(), places=2)
 
         for asset_name in (
+            "restart_alt_24dp.svg",
+            "format_list_numbered.svg",
             "computer_arrow_up_24dp.svg",
             "key_24dp.svg",
             "upload_file_24dp.svg",
@@ -243,6 +253,36 @@ class TestFleetUI(unittest.TestCase):
                 encoding="utf-8"
             )
             self.assertIn('fill="#e2d5c8"', asset)
+
+    def test_static_ip_assignment_button_opens_documented_dialog(self):
+        """The static-IP toolbar action opens its eligible selected-device dialog."""
+        self._enter_main_screen()
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="A",
+                ip="10.0.0.2",
+                activation_status="ACTIVATED",
+                selected=True,
+            )
+        ])
+        self.app.processEvents()
+
+        button = self.root.findChild(QQuickItem, "assignStaticIpButton")
+        dialog = self.root.findChild(object, "staticIpAssignmentDialog")
+        self.assertIsNotNone(button)
+        self.assertIsNotNone(dialog)
+        self.assertTrue(button.isEnabled())
+        self.assertFalse(dialog.property("opened"))
+
+        self._click_item(button)
+
+        self.assertTrue(dialog.property("opened"))
+        source = (self.QML_ROOT / "FleetDialogs.qml").read_text(encoding="utf-8")
+        self.assertIn("Addresses are assigned in the current table order", source)
+        self.assertIn("after .254, the third octet increases", source)
+        self.assertIn('placeholderText: "e.g. 255.255.255.0"', source)
+        self.assertIn('objectName: "staticIpAssignmentDialog"', source)
+        dialog.close()
 
     def test_apply_settings_toolbar_uses_selected_only_csv_import(self):
         """The toolbar settings action imports CSV files for selected devices only."""
@@ -327,6 +367,20 @@ class TestFleetUI(unittest.TestCase):
         self.assertEqual(128, view_switch.width())
         self.assertEqual(24, view_switch.height())
         self.assertEqual(0, main_screen.property("viewMode"))
+
+        list_icon = view_switch.findChild(QQuickItem, "listViewIcon")
+        matrix_icon = view_switch.findChild(QQuickItem, "gridViewIcon")
+        self.assertIsNotNone(list_icon)
+        self.assertIsNotNone(matrix_icon)
+        self.assertEqual(16, list_icon.width())
+        self.assertEqual(16, list_icon.height())
+        self.assertEqual(16, matrix_icon.width())
+        self.assertEqual(16, matrix_icon.height())
+        for asset_name in ("list_24dp.svg", "grid_view.svg"):
+            asset = (self.QML_ROOT.parents[1] / "ui" / "resources" / "images" / asset_name).read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('fill="#e2d5c8"', asset)
 
         self._click_item(view_switch)
         self.assertEqual(1, main_screen.property("viewMode"))
@@ -1060,6 +1114,149 @@ class TestFleetUI(unittest.TestCase):
         self.controller._launch_sys_id_alignment.assert_not_called()
         self.assertEqual("info", toast[-1][0])
         self.assertIn("Evaluation or Activated", toast[-1][1])
+
+    def test_static_ip_assignment_uses_visible_table_order_and_license_filter(self):
+        """Static IP targets follow the filtered table order and eligible licenses only."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="B",
+                ip="10.0.0.3",
+                hostname="B",
+                activation_status="ACTIVATED",
+                activation_key="B",
+                selected=True,
+            ),
+            DeviceRecord(
+                identity="A",
+                ip="10.0.0.2",
+                hostname="A",
+                activation_status="EVALUATION",
+                activation_key="A",
+                selected=True,
+            ),
+            DeviceRecord(
+                identity="OTHER",
+                ip="10.0.0.4",
+                hostname="Other",
+                activation_status="DISCOVERED",
+                activation_key="OTHER",
+                selected=True,
+            ),
+        ])
+        self.controller.sortByColumn(1, True)
+        self.controller._launch_static_ip_assignment = Mock()
+
+        self.assertTrue(
+            self.controller.startStaticIpAssignment(
+                "192.168.20.1",
+                "255.255.255.0",
+                "192.168.20.254",
+            )
+        )
+
+        records, assignments = self.controller._launch_static_ip_assignment.call_args.args[:2]
+        self.assertEqual(["A", "B"], [record.identity for record in records])
+        self.assertEqual(
+            {"A": "192.168.20.1", "B": "192.168.20.2"},
+            assignments,
+        )
+        self.assertEqual(2, self.controller.eligibleStaticIpCount)
+        self.assertEqual(1, self.controller.ineligibleStaticIpCount)
+        self.assertEqual(0, self.controller.filteredStaticIpCount)
+
+    def test_static_ip_assignment_excludes_selected_rows_hidden_by_search(self):
+        """Selected rows hidden by the search filter are excluded and reported separately."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="VISIBLE",
+                ip="10.0.0.2",
+                activation_status="ACTIVATED",
+                activation_key="VISIBLE",
+                selected=True,
+            ),
+            DeviceRecord(
+                identity="HIDDEN",
+                ip="10.0.0.3",
+                activation_status="EVALUATION",
+                activation_key="HIDDEN",
+                selected=True,
+            ),
+        ])
+        self.controller.setSearchText("VISIBLE")
+        self.controller._launch_static_ip_assignment = Mock()
+
+        self.assertTrue(
+            self.controller.startStaticIpAssignment(
+                "192.168.20.1",
+                "255.255.255.0",
+                "192.168.20.254",
+            )
+        )
+
+        records = self.controller._launch_static_ip_assignment.call_args.args[0]
+        self.assertEqual(["VISIBLE"], [record.identity for record in records])
+        self.assertEqual(1, self.controller.eligibleStaticIpCount)
+        self.assertEqual(1, self.controller.filteredStaticIpCount)
+
+    def test_static_ip_assignment_rejects_invalid_preflight_without_launching(self):
+        """Invalid static network input reports an error before creating a worker."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="A",
+                ip="10.0.0.2",
+                activation_status="ACTIVATED",
+                activation_key="A",
+                selected=True,
+            )
+        ])
+        self.controller._launch_static_ip_assignment = Mock()
+        toast = []
+        self.controller.toastRequested.connect(lambda level, message: toast.append((level, message)))
+
+        self.assertFalse(
+            self.controller.startStaticIpAssignment(
+                "192.168.20.1",
+                "255.255.255.0",
+                "192.168.21.1",
+            )
+        )
+
+        self.controller._launch_static_ip_assignment.assert_not_called()
+        self.assertEqual("error", toast[-1][0])
+        self.assertIn("gateway", toast[-1][1].lower())
+
+    def test_static_ip_success_updates_cached_address_and_reboot_grace(self):
+        """An accepted static-IP result updates the table address before reboot polling resumes."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="A",
+                ip="10.0.0.2",
+                activation_key="A",
+                activation_status="ACTIVATED",
+            )
+        ])
+        self.controller._active_worker = Mock()
+        self.controller._active_operation = "static_ip"
+        self.controller._active_targets = {"A"}
+
+        self.controller._operation_finished(
+            "static_ip",
+            [{
+                "identity": "A",
+                "target_ip": "192.168.20.1",
+                "settings": {
+                    "ip_sta": "192.168.20.1",
+                    "ip_sta_netmsk": "255.255.255.0",
+                    "ip_sta_gw": "192.168.20.254",
+                },
+                "success": True,
+            }],
+        )
+
+        record = self.controller.source_model.record_by_identity("A")
+        self.assertEqual("192.168.20.1", record.ip)
+        self.assertEqual("255.255.255.0", record.settings["ip_sta_netmsk"])
+        self.assertIsNotNone(record.offline_grace_until)
 
     def test_settings_preflight_rejects_invalid_network_values(self):
         """High-risk settings fail validation before worker creation."""

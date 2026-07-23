@@ -434,6 +434,20 @@ class DeviceTableModel(QAbstractTableModel):
         record.operation_progress = max(0, min(100, progress))
         self._emit_record_changed(identity)
 
+    def update_static_network(
+        self,
+        identity: str,
+        ip: str,
+        settings: dict[str, Any],
+    ) -> None:
+        """Update a device's cached IP and accepted static-network settings."""
+        record = self._records.get(identity)
+        if record is None:
+            return
+        record.ip = str(ip)
+        record.settings.update(settings)
+        self._emit_record_changed(identity)
+
     def set_reboot_grace(self, identities: set[str], seconds: int = 20) -> None:
         """Delay offline failure counting after accepted reboot commands."""
         grace_until = datetime.now() + timedelta(seconds=max(0, seconds))

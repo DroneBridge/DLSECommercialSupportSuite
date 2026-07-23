@@ -10,8 +10,22 @@ Rectangle {
     clip: true
     color: "transparent"
 
+    Image {
+        id: restartIcon
+
+        objectName: "restartIcon"
+        x: 2
+        y: 2
+        height: 20
+        width: 20
+        fillMode: Image.PreserveAspectFit
+        source: "../resources/images/restart_alt_24dp.svg"
+    }
+
     Shape {
         id: _vector
+
+        opacity: 0
 
         x: 5
         y: 3.69

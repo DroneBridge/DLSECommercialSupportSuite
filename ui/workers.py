@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
-from ipaddress import IPv4Address
+from ipaddress import IPv4Address, IPv4Network
 from pathlib import Path
 from threading import Event
 from time import monotonic, sleep
@@ -545,6 +545,217 @@ class SettingsWorker(QRunnable):
         session = db_api_create_request_session()
         try:
             return db_api_update_settings(session, record.ip, self.settings)
+        finally:
+            session.close()
+
+
+class StaticIpAssignmentWorker(QRunnable):
+    """Assign generated static IPv4 settings to visible selected DLSE devices."""
+
+    def __init__(
+        self,
+        records: list[DeviceRecord],
+        assignments: dict[str, str],
+        netmask: str,
+        gateway: str,
+        workers: int = 20,
+    ) -> None:
+        """Create a bounded static-IP operation with a stable identity mapping."""
+        super().__init__()
+        self.signals = WorkerSignals()
+        self.records = records
+        self.assignments = dict(assignments)
+        self.settings = {
+            "ip_sta_netmsk": netmask,
+            "ip_sta_gw": gateway,
+        }
+        self.workers = max(1, min(workers, 64))
+        self._cancel_event = Event()
+
+    def cancel(self) -> None:
+        """Request cancellation of assignments that have not started yet."""
+        self._cancel_event.set()
+
+    @staticmethod
+    def _normalize_netmask(value: str) -> tuple[str, IPv4Network]:
+        """Normalize a dotted or prefix-length IPv4 mask and return its network helper."""
+        text = str(value or "").strip().lstrip("/")
+        if not text:
+            raise ValueError("Enter a subnet mask, for example 255.255.255.0.")
+        try:
+            network = IPv4Network(f"0.0.0.0/{text}", strict=False)
+        except ValueError as exc:
+            raise ValueError("Enter a valid contiguous IPv4 subnet mask.") from exc
+        if network.prefixlen >= 31:
+            raise ValueError("The subnet mask must leave at least two usable host addresses.")
+        return str(network.netmask), network
+
+    @staticmethod
+    def generate_target_ips(start_ip: str, count: int) -> list[str]:
+        """Generate host-style addresses, carrying to the third octet after `.254`."""
+        if count < 0:
+            raise ValueError("The assignment count cannot be negative.")
+        try:
+            start = IPv4Address(str(start_ip or "").strip())
+        except ValueError as exc:
+            raise ValueError("Enter a valid starting IPv4 address.") from exc
+        start_last_octet = int(str(start).rsplit(".", 1)[1])
+        if not 1 <= start_last_octet <= 254:
+            raise ValueError("The starting IP final octet must be between 1 and 254.")
+
+        base = (int(start) // 256) * 256
+        targets = []
+        for offset in range(count):
+            host_position = start_last_octet - 1 + offset
+            block_offset, final_octet = divmod(host_position, 254)
+            address_value = base + (block_offset * 256) + final_octet + 1
+            try:
+                targets.append(str(IPv4Address(address_value)))
+            except ValueError as exc:
+                raise ValueError("The generated IP range exceeds IPv4 address space.") from exc
+        return targets
+
+    @classmethod
+    def prepare_assignments(
+        cls,
+        records: list[DeviceRecord],
+        all_records: list[DeviceRecord],
+        start_ip: str,
+        netmask: str,
+        gateway: str,
+    ) -> tuple[dict[str, str], str, str]:
+        """Validate the batch and return identity-to-target-IP assignments."""
+        normalized_mask, _ = cls._normalize_netmask(netmask)
+        try:
+            start_address = IPv4Address(str(start_ip or "").strip())
+        except ValueError as exc:
+            raise ValueError("Enter a valid starting IPv4 address.") from exc
+        network = IPv4Network(f"{start_address}/{normalized_mask}", strict=False)
+        try:
+            gateway_address = IPv4Address(str(gateway or "").strip())
+        except ValueError as exc:
+            raise ValueError("Enter a valid gateway IPv4 address.") from exc
+        if gateway_address not in network:
+            raise ValueError("The gateway must be inside the entered subnet.")
+        if gateway_address in {network.network_address, network.broadcast_address}:
+            raise ValueError("The gateway must be a usable host address.")
+
+        targets = cls.generate_target_ips(start_ip, len(records))
+        target_addresses = [IPv4Address(target) for target in targets]
+        target_set = set(target_addresses)
+        assignment_by_identity = {
+            record.identity: target
+            for record, target in zip(records, targets)
+        }
+        for target in target_addresses:
+            if target not in network:
+                raise ValueError(
+                    f"Generated IP {target} is outside the entered subnet; use a larger subnet mask."
+                )
+            if target in {network.network_address, network.broadcast_address}:
+                raise ValueError(f"Generated IP {target} is not a usable host address.")
+            if target == gateway_address:
+                raise ValueError(f"Generated IP {target} conflicts with the gateway.")
+
+        for record in all_records:
+            try:
+                current_address = IPv4Address(str(record.ip or "").strip())
+            except ValueError:
+                continue
+            own_target = assignment_by_identity.get(record.identity)
+            if current_address in target_set and own_target != str(current_address):
+                raise ValueError(
+                    f"Generated IP {current_address} is already assigned to another retained device."
+                )
+
+        return (
+            {record.identity: target for record, target in zip(records, targets)},
+            normalized_mask,
+            str(gateway_address),
+        )
+
+    @Slot()
+    def run(self) -> None:
+        """Apply assignments concurrently and emit per-device progress and results."""
+        try:
+            results = []
+            with ThreadPoolExecutor(max_workers=self.workers) as executor:
+                futures = {}
+                pending_records = iter(self.records)
+
+                def submit_next() -> bool:
+                    """Submit one queued assignment unless cancellation was requested."""
+                    if self._cancel_event.is_set():
+                        return False
+                    try:
+                        record = next(pending_records)
+                    except StopIteration:
+                        return False
+                    target_ip = self.assignments.get(record.identity, "")
+                    futures[executor.submit(self._apply_one, record, target_ip)] = record
+                    return True
+
+                for _ in range(min(self.workers, len(self.records))):
+                    submit_next()
+                while futures:
+                    completed, _pending = wait(
+                        futures,
+                        return_when=FIRST_COMPLETED,
+                    )
+                    for future in completed:
+                        record = futures.pop(future)
+                        target_ip = self.assignments.get(record.identity, "")
+                        try:
+                            result = future.result()
+                            payload = {
+                                "identity": record.identity,
+                                "target_ip": target_ip,
+                                "settings": {
+                                    "ip_sta": target_ip,
+                                    **self.settings,
+                                },
+                                **result,
+                            }
+                            payload["status"] = (
+                                "static IP accepted"
+                                if payload.get("success")
+                                else "static IP failed"
+                            )
+                        except Exception as exc:
+                            payload = {
+                                "identity": record.identity,
+                                "target_ip": target_ip,
+                                "success": False,
+                                "status": "static IP failed",
+                                "message": str(exc),
+                            }
+                        results.append(payload)
+                        self.signals.progress.emit(payload)
+                        submit_next()
+            self.signals.finished.emit(results)
+        except Exception as exc:
+            self.signals.error.emit(str(exc))
+
+    def _apply_one(self, record: DeviceRecord, target_ip: str) -> dict[str, Any]:
+        """Apply one generated static-IP payload to the record's current address."""
+        try:
+            IPv4Address(str(record.ip or "").strip())
+        except ValueError:
+            return {
+                "success": False,
+                "message": f"Current DLSE IP '{record.ip}' is invalid or missing.",
+            }
+        session = db_api_create_request_session()
+        try:
+            result = db_api_update_settings(
+                session,
+                record.ip,
+                {"ip_sta": target_ip, **self.settings},
+            )
+            return {
+                "success": bool(getattr(result, "success", False)),
+                "message": str(getattr(result, "message", "") or ""),
+            }
         finally:
             session.close()
 

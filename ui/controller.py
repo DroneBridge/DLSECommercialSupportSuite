@@ -45,6 +45,7 @@ from ui.workers import (
     RebootWorker,
     SettingsWorker,
     StatsPollingWorker,
+    StaticIpAssignmentWorker,
     SysIdAlignmentWorker,
 )
 
@@ -196,6 +197,26 @@ class FleetController(QObject):
     def ineligibleSysIdAlignmentCount(self) -> int:
         """Return selected devices excluded from SYS ID alignment by license status."""
         return self.selectedCount - self.eligibleSysIdAlignmentCount
+
+    @Property(int, notify=stateChanged)
+    def selectedVisibleStaticIpCount(self) -> int:
+        """Return selected devices currently visible in the filtered table."""
+        return len(self._selected_visible_records())
+
+    @Property(int, notify=stateChanged)
+    def eligibleStaticIpCount(self) -> int:
+        """Return visible selected devices eligible for static-IP assignment."""
+        return len(self._static_ip_records())
+
+    @Property(int, notify=stateChanged)
+    def ineligibleStaticIpCount(self) -> int:
+        """Return visible selected devices excluded by license status."""
+        return self.selectedVisibleStaticIpCount - self.eligibleStaticIpCount
+
+    @Property(int, notify=stateChanged)
+    def filteredStaticIpCount(self) -> int:
+        """Return selected devices hidden by the current table filter."""
+        return max(0, self.selectedCount - self.selectedVisibleStaticIpCount)
 
     @Property(str, notify=stateChanged)
     def activeOperation(self) -> str:
@@ -839,6 +860,48 @@ class FleetController(QObject):
             return
         self._launch_reboot(records, mavlink=mavlink, remember=not mavlink)
 
+    @Slot(str, str, str, result=bool)
+    def startStaticIpAssignment(
+        self,
+        start_ip: str,
+        netmask: str,
+        gateway: str,
+    ) -> bool:
+        """Validate and start static-IP assignment for visible selected eligible devices."""
+        if not self.source_model.selected_records():
+            self.toastRequested.emit("info", "Select at least one device first.")
+            return False
+        records = self._static_ip_records()
+        if not records:
+            self.toastRequested.emit(
+                "info",
+                "Only visible selected Evaluation or Activated devices can receive static IPs.",
+            )
+            return False
+        try:
+            assignments, normalized_mask, normalized_gateway = (
+                StaticIpAssignmentWorker.prepare_assignments(
+                    records,
+                    self.source_model.all_records(),
+                    start_ip,
+                    netmask,
+                    gateway,
+                )
+            )
+        except ValueError as exc:
+            self.toastRequested.emit("error", str(exc))
+            return False
+        if not self._operation_available():
+            return False
+        self._launch_static_ip_assignment(
+            records,
+            assignments,
+            normalized_mask,
+            normalized_gateway,
+            remember=True,
+        )
+        return True
+
     @Slot(str)
     def startSysIdAlignment(self, mode: str) -> None:
         """
@@ -1002,6 +1065,20 @@ class FleetController(QObject):
             self._launch_ota(records, remember=False, **options)
         elif kind == "settings":
             self._start_settings(records, options["settings"], remember=False)
+        elif kind == "static_ip":
+            eligible = [
+                record
+                for record in records
+                if record.identity in options["assignments"]
+            ]
+            if eligible:
+                self._launch_static_ip_assignment(
+                    eligible,
+                    options["assignments"],
+                    options["netmask"],
+                    options["gateway"],
+                    remember=False,
+                )
         elif kind == "reboot":
             self._launch_reboot(records, mavlink=False, remember=False)
         elif kind == "sys_id_alignment":
@@ -1209,6 +1286,37 @@ class FleetController(QObject):
             self._retry_context = ("settings", {"settings": settings})
         self._begin_worker("settings", worker)
 
+    def _launch_static_ip_assignment(
+        self,
+        records: list[DeviceRecord],
+        assignments: dict[str, str],
+        netmask: str,
+        gateway: str,
+        remember: bool,
+    ) -> None:
+        """Create and launch the selected static-IP assignment worker."""
+        if not self._operation_available():
+            return
+        for record in records:
+            self.source_model.update_operation(record.identity, "queued static IP", 0)
+        worker = StaticIpAssignmentWorker(
+            records,
+            assignments,
+            netmask,
+            gateway,
+            workers=self._scan_values()["workers"],
+        )
+        if remember:
+            self._retry_context = (
+                "static_ip",
+                {
+                    "assignments": dict(assignments),
+                    "netmask": netmask,
+                    "gateway": gateway,
+                },
+            )
+        self._begin_worker("static_ip", worker)
+
     def _launch_sys_id_alignment(
         self,
         records: list[DeviceRecord],
@@ -1406,6 +1514,15 @@ class FleetController(QObject):
             if identity and not success:
                 failed.add(identity)
             if identity and success:
+                if kind == "static_ip" and isinstance(item, dict):
+                    target_ip = str(item.get("target_ip") or "").strip()
+                    settings = item.get("settings")
+                    if target_ip and isinstance(settings, dict):
+                        self.source_model.update_static_network(
+                            identity,
+                            target_ip,
+                            settings,
+                        )
                 label = "reboot accepted" if kind == "reboot" else "complete"
                 self.source_model.update_operation(identity, label, 100)
         if kind == "reboot" and isinstance(results, dict) and results.get("mavlink"):
@@ -1423,7 +1540,7 @@ class FleetController(QObject):
                     "MAVLink command sent" if command_success else "MAVLink command failed",
                     100 if command_success else 0,
                 )
-        if kind == "reboot" and successes:
+        if kind in {"reboot", "static_ip"} and successes:
             successful_ids = {
                 self._result_identity(item)
                 for item in items
@@ -1506,6 +1623,18 @@ class FleetController(QObject):
         if scope == "visible":
             return visible
         return selected or visible
+
+    def _selected_visible_records(self) -> list[DeviceRecord]:
+        """Return selected records in the current filtered table order."""
+        return [record for record in self.fleet_model.visible_records() if record.selected]
+
+    def _static_ip_records(self) -> list[DeviceRecord]:
+        """Return visible selected devices with an eligible license status."""
+        return [
+            record
+            for record in self._selected_visible_records()
+            if self._is_sys_id_alignment_eligible(record)
+        ]
 
     def _sys_id_alignment_records(self) -> list[DeviceRecord]:
         """

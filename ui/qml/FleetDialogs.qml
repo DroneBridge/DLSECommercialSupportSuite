@@ -62,6 +62,18 @@ Item {
         sysIdAlignmentDialog.open()
     }
 
+    function openStaticIpAssignment() {
+        if (fleetController.eligibleStaticIpCount <= 0) {
+            showToast("info", "Select a visible Evaluation or Activated device first.")
+            return
+        }
+        staticIpStartField.text = ""
+        staticIpNetmaskField.text = ""
+        staticIpGatewayField.text = ""
+        center(staticIpAssignmentDialog)
+        staticIpAssignmentDialog.open()
+    }
+
     function openOta() {
         otaSource.currentIndex = 0
         releaseTokenField.text = fleetController.environmentToken
@@ -426,6 +438,84 @@ Item {
                         rebootMethod.currentIndex === 1 ? "mavlink" : "rest"
                     )
                     rebootDialog.close()
+                }
+            }
+        }
+    }
+
+    ModalDialog {
+        id: staticIpAssignmentDialog
+        objectName: "staticIpAssignmentDialog"
+        title: "Assign Static IPs"
+        preferredWidth: 610
+
+        Text {
+            Layout.fillWidth: true
+            text: "Visible selected devices: " + fleetController.selectedVisibleStaticIpCount
+                  + ". Eligible: " + fleetController.eligibleStaticIpCount
+                  + ". Excluded by license: " + fleetController.ineligibleStaticIpCount
+                  + ". Hidden by filter: " + fleetController.filteredStaticIpCount + "."
+            color: theme.secondaryText
+            wrapMode: Text.Wrap
+            font.family: theme.bodyFont
+        }
+
+        Text {
+            Layout.fillWidth: true
+            text: "Addresses are assigned in the current table order. The final octet increases from .1 through .254; after .254, the third octet increases and the final octet resumes at .1. Use a subnet mask large enough for the complete range."
+            color: theme.secondaryText
+            wrapMode: Text.Wrap
+            font.family: theme.bodyFont
+        }
+
+        Text {
+            Layout.fillWidth: true
+            text: "Applying these settings reboots each DLSE. It will stop responding at its old IP, and the table updates to the new IP only after the device accepts the request."
+            color: theme.warning
+            wrapMode: Text.Wrap
+            font.family: theme.bodyFont
+        }
+
+        Text { text: "Starting static IP"; color: theme.secondaryText; font.family: theme.bodyFont }
+        AppTextField {
+            id: staticIpStartField
+            Layout.fillWidth: true
+            placeholderText: "e.g. 192.168.1.1"
+        }
+
+        Text { text: "Subnet mask"; color: theme.secondaryText; font.family: theme.bodyFont }
+        AppTextField {
+            id: staticIpNetmaskField
+            Layout.fillWidth: true
+            placeholderText: "e.g. 255.255.255.0"
+        }
+
+        Text { text: "Gateway IP"; color: theme.secondaryText; font.family: theme.bodyFont }
+        AppTextField {
+            id: staticIpGatewayField
+            Layout.fillWidth: true
+            placeholderText: "e.g. 192.168.1.254"
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Item { Layout.fillWidth: true }
+            AppButton { text: "Cancel"; quiet: true; onClicked: staticIpAssignmentDialog.close() }
+            AppButton {
+                text: "Assign Static IPs"
+                emphasized: true
+                enabled: fleetController.eligibleStaticIpCount > 0
+                         && staticIpStartField.text.trim().length > 0
+                         && staticIpNetmaskField.text.trim().length > 0
+                         && staticIpGatewayField.text.trim().length > 0
+                onClicked: {
+                    const started = fleetController.startStaticIpAssignment(
+                        staticIpStartField.text,
+                        staticIpNetmaskField.text,
+                        staticIpGatewayField.text
+                    )
+                    if (started)
+                        staticIpAssignmentDialog.close()
                 }
             }
         }

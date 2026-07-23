@@ -15,6 +15,7 @@ from ui.workers import (
     OtaReleaseResolveWorker,
     OtaWorker,
     StatsPollingWorker,
+    StaticIpAssignmentWorker,
     SysIdAlignmentWorker,
 )
 
@@ -223,6 +224,91 @@ class TestFleetWorkers(unittest.TestCase):
         self.assertEqual([[]], finished)
         mavlink_scan.assert_called_once()
         http_scan.assert_called_once()
+
+    def test_static_ip_generation_rolls_from_final_octet_to_third_octet(self):
+        """Generated host addresses skip zero and 255 while carrying to octet three."""
+        targets = StaticIpAssignmentWorker.generate_target_ips("192.168.1.253", 4)
+
+        self.assertEqual(
+            ["192.168.1.253", "192.168.1.254", "192.168.2.1", "192.168.2.2"],
+            targets,
+        )
+
+    def test_static_ip_preflight_normalizes_network_and_rejects_conflicts(self):
+        """Static-IP preflight normalizes masks and rejects retained IP collisions."""
+        records = [
+            DeviceRecord(identity="A", ip="192.168.10.10"),
+            DeviceRecord(identity="B", ip="192.168.10.11"),
+        ]
+        assignments, netmask, gateway = StaticIpAssignmentWorker.prepare_assignments(
+            records,
+            records,
+            "192.168.20.1",
+            "/16",
+            "192.168.0.1",
+        )
+
+        self.assertEqual({"A": "192.168.20.1", "B": "192.168.20.2"}, assignments)
+        self.assertEqual("255.255.0.0", netmask)
+        self.assertEqual("192.168.0.1", gateway)
+        with self.assertRaisesRegex(ValueError, "already assigned"):
+            StaticIpAssignmentWorker.prepare_assignments(
+                records,
+                records,
+                "192.168.10.11",
+                "255.255.0.0",
+                "192.168.0.1",
+            )
+
+    def test_static_ip_preflight_rejects_range_outside_subnet(self):
+        """A /24 cannot accept a generated range that rolls into another third octet."""
+        records = [
+            DeviceRecord(identity=f"A{index}", ip=f"10.0.10.{index + 20}")
+            for index in range(2)
+        ]
+
+        with self.assertRaisesRegex(ValueError, "outside the entered subnet"):
+            StaticIpAssignmentWorker.prepare_assignments(
+                records,
+                records,
+                "192.168.1.254",
+                "255.255.255.0",
+                "192.168.1.1",
+            )
+
+    @patch("ui.workers.db_api_update_settings")
+    @patch("ui.workers.db_api_create_request_session")
+    def test_static_ip_worker_posts_per_device_payload_and_returns_target(self, create_session, update_settings):
+        """Each device receives its own generated IP and the result carries cache data."""
+        session = Mock()
+        create_session.return_value = session
+        update_settings.return_value = SimpleNamespace(success=True, message="accepted")
+        record = DeviceRecord(identity="A", ip="192.168.1.42")
+        worker = StaticIpAssignmentWorker(
+            [record],
+            {"A": "192.168.20.1"},
+            "255.255.0.0",
+            "192.168.0.1",
+            workers=1,
+        )
+        progress = []
+        worker.signals.progress.connect(progress.append)
+
+        worker.run()
+
+        update_settings.assert_called_once_with(
+            session,
+            "192.168.1.42",
+            {
+                "ip_sta": "192.168.20.1",
+                "ip_sta_netmsk": "255.255.0.0",
+                "ip_sta_gw": "192.168.0.1",
+            },
+        )
+        self.assertTrue(progress[0]["success"])
+        self.assertEqual("192.168.20.1", progress[0]["target_ip"])
+        self.assertEqual("static IP accepted", progress[0]["status"])
+        session.close.assert_called_once()
 
     def test_sys_id_alignment_resolves_all_three_source_modes(self):
         """IP, FC, and manual modes derive their documented source IDs."""
