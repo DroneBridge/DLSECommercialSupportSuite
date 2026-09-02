@@ -61,7 +61,7 @@ Dialog {
             text: dialog.title
             color: theme.primaryText
             font.family: theme.bodyFont
-            font.pixelSize: 16
+            font.pixelSize: theme.headingTextSize
             font.bold: true
             elide: Text.ElideRight
         }
@@ -76,7 +76,7 @@ Dialog {
             contentItem: Text {
                 text: closeButton.text
                 color: theme.secondaryText
-                font.pixelSize: 20
+                font.pixelSize: theme.iconGlyphSize
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
             }

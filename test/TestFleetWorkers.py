@@ -16,6 +16,7 @@ from ui.workers import (
     OtaWorker,
     StatsPollingWorker,
     StaticIpAssignmentWorker,
+    SystemInfoRefreshWorker,
     SysIdAlignmentWorker,
 )
 
@@ -431,6 +432,47 @@ class TestFleetWorkers(unittest.TestCase):
             {"show_man_sysid": 19, "show_en_syid_ip": 0},
         )
         session.close.assert_called_once()
+
+    @patch("ui.workers.db_api_get_json")
+    @patch("ui.workers.db_api_create_request_session")
+    def test_system_info_refresh_worker_requests_only_supplied_devices(
+        self,
+        create_session,
+        get_json,
+    ):
+        """Post-operation info refresh requests only the submitted device set."""
+        sessions = [Mock(), Mock()]
+        create_session.side_effect = sessions
+        get_json.side_effect = [
+            {"license_type": "ACTIVATED"},
+            {"license_type": "EVALUATION"},
+        ]
+        records = [
+            DeviceRecord(identity="A", ip="192.168.1.2"),
+            DeviceRecord(identity="B", ip="192.168.1.3"),
+        ]
+        worker = SystemInfoRefreshWorker(records, timeout=1.5, workers=1)
+        progress = []
+        finished = []
+        worker.signals.progress.connect(progress.append)
+        worker.signals.finished.connect(finished.append)
+
+        worker.run()
+
+        self.assertEqual(2, len(progress))
+        self.assertEqual(2, len(finished[0]))
+        self.assertEqual(
+            ["192.168.1.2", "192.168.1.3"],
+            [request.args[1] for request in get_json.call_args_list],
+        )
+        self.assertTrue(all(
+            request.args[2] == "/api/system/info"
+            and request.kwargs["timeout"] == 1.5
+            for request in get_json.call_args_list
+        ))
+        self.assertEqual(2, create_session.call_count)
+        for session in sessions:
+            session.close.assert_called_once()
 
 
 if __name__ == "__main__":

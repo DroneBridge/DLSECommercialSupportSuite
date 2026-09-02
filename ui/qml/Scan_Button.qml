@@ -3,6 +3,7 @@ import DesignTokens as Tokens
 import QtQuick.Shapes
 
 Rectangle {
+    Theme { id: theme }
     enum Eigenschaft_1 { Eigenschaft_1_Standard, Eigenschaft_1_Variante2, Eigenschaft_1_Variante3, Eigenschaft_1_Variante4}
 
     id: scan_Button
@@ -259,7 +260,7 @@ Rectangle {
 
         color: "#e2d5c8"
         font.family: "Geist"
-        font.pixelSize: 13
+        font.pixelSize: theme.bodyTextSize
         font.weight: Font.DemiBold
         horizontalAlignment: Text.AlignLeft
         text: scan_Button.labelText

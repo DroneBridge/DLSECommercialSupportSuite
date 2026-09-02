@@ -1,6 +1,7 @@
 import QtQuick
 
 Rectangle {
+    Theme { id: theme }
     enum Eigenschaft_1 { Eigenschaft_1_Standard, Eigenschaft_1_Variante2}
 
     id: searchbar
@@ -65,7 +66,7 @@ Rectangle {
 
         color: "#deceb9"
         font.family: "JetBrains Mono"
-        font.pixelSize: 12
+        font.pixelSize: theme.bodyTextSize
         font.weight: Font.Normal
         horizontalAlignment: Text.AlignLeft
         text: "Search for SYS ID, SSID ..."

@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Shapes
 
 Rectangle {
+    Theme { id: theme }
     enum Status { Status_Default, Status_Disabled, Status_Hovered}
     enum Check { Check_Off, Check_On}
 
@@ -188,7 +189,7 @@ Rectangle {
         font.capitalization: Font.AllUppercase
         font.family: "JetBrains Mono"
         font.letterSpacing: -0.70
-        font.pixelSize: 10
+        font.pixelSize: theme.smallTextSize
         font.weight: Font.Bold
         horizontalAlignment: Text.AlignLeft
         text: controlsCheckbox.labelText

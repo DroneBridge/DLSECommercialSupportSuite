@@ -42,7 +42,7 @@ Rectangle {
         text: badge.status.length ? badge.status.toUpperCase() : "-"
         color: badge.foregroundColor
         font.family: theme.dataFont
-        font.pixelSize: 9
+        font.pixelSize: theme.smallTextSize
         font.bold: true
     }
 }

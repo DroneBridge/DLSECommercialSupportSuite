@@ -31,7 +31,7 @@ Button {
             text: control.title
             color: "#f0f0f0"
             font.family: theme.bodyFont
-            font.pixelSize: 16
+            font.pixelSize: theme.headingTextSize
             font.bold: true
         }
 
@@ -45,7 +45,7 @@ Button {
             text: control.description
             color: "#f0f0f0"
             font.family: theme.bodyFont
-            font.pixelSize: 12
+            font.pixelSize: theme.bodyTextSize
             wrapMode: Text.Wrap
         }
     }

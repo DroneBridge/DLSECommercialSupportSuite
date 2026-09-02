@@ -2,6 +2,7 @@ import QtQuick
 import DesignTokens as Tokens
 
 Rectangle {
+    Theme { id: theme }
     enum Eigenschaft_1 { Eigenschaft_1_Standard, Eigenschaft_1_Variante2, Eigenschaft_1_Variante3}
 
     id: uniFiButton
@@ -89,7 +90,7 @@ Rectangle {
 
         color: "#f8ebeb"
         font.family: "Geist"
-        font.pixelSize: 13
+        font.pixelSize: theme.bodyTextSize
         font.weight: Font.DemiBold
         horizontalAlignment: Text.AlignLeft
         text: "Add UniFi Gateway"

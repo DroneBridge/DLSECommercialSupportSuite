@@ -8,7 +8,7 @@ ComboBox {
     leftPadding: 10
     rightPadding: 28
     font.family: theme.bodyFont
-    font.pixelSize: 12
+    font.pixelSize: theme.bodyTextSize
 
     Theme { id: theme }
 
@@ -26,7 +26,7 @@ ComboBox {
         anchors.verticalCenter: parent.verticalCenter
         text: "⌄"
         color: theme.secondaryText
-        font.pixelSize: 16
+        font.pixelSize: theme.smallIconGlyphSize
     }
 
     background: Rectangle {

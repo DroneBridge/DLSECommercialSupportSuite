@@ -231,7 +231,7 @@ Item {
 
             Text { text: "Discovery methods"; color: theme.secondaryText; font.family: theme.bodyFont }
             ColumnLayout {
-                AppCheckBox { id: mavlinkCheck; text: "MAVLink broadcast (recommended)" }
+                AppCheckBox { id: mavlinkCheck; text: "MAVLink broadcast (recommended) - UART must be configured" }
                 AppCheckBox { id: httpCheck; text: "HTTP IP-range scan (slow - robust)" }
                 AppCheckBox { text: "UniFi discovery (future)"; enabled: false }
             }
@@ -267,7 +267,7 @@ Item {
                 text: "SYSTEM STATS POLLING  /api/system/stats"
                 color: theme.primaryText
                 font.family: theme.dataFont
-                font.pixelSize: 10
+                font.pixelSize: theme.smallTextSize
                 font.bold: true
             }
 
@@ -364,7 +364,7 @@ Item {
         AppTextField {
             id: tokenField
             Layout.fillWidth: true
-            echoMode: TextInput.Password
+            echoMode: TextInput.Normal
             placeholderText: "Session-only token"
         }
 
@@ -639,7 +639,7 @@ Item {
                 color: theme.secondaryText
                 wrapMode: Text.Wrap
                 font.family: theme.bodyFont
-                font.pixelSize: 11
+                font.pixelSize: theme.bodyTextSize
             }
         }
 
@@ -838,7 +838,7 @@ Item {
                                 text: "::"
                                 color: theme.secondaryText
                                 font.family: theme.dataFont
-                                font.pixelSize: 15
+                                font.pixelSize: theme.headingTextSize
                                 font.bold: true
                             }
                         }
@@ -861,7 +861,7 @@ Item {
                             text: columnRow.columnTitle
                             color: theme.secondaryText
                             font.family: theme.dataFont
-                            font.pixelSize: 10
+                            font.pixelSize: theme.smallTextSize
                             verticalAlignment: Text.AlignVCenter
                             elide: Text.ElideRight
                         }
@@ -990,7 +990,7 @@ Item {
             color: theme.primaryText
             wrapMode: Text.Wrap
             font.family: theme.bodyFont
-            font.pixelSize: 13
+            font.pixelSize: theme.bodyTextSize
         }
 
         RowLayout {
@@ -1023,7 +1023,7 @@ Item {
             color: theme.primaryText
             wrapMode: Text.Wrap
             font.family: theme.bodyFont
-            font.pixelSize: 13
+            font.pixelSize: theme.bodyTextSize
         }
 
         RowLayout {
@@ -1098,7 +1098,7 @@ Item {
             color: theme.primaryText
             wrapMode: Text.Wrap
             font.family: theme.bodyFont
-            font.pixelSize: 12
+            font.pixelSize: theme.bodyTextSize
         }
 
         background: Rectangle {

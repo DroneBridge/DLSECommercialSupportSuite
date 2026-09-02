@@ -1,6 +1,7 @@
 import QtQuick
 
 Rectangle {
+    Theme { id: theme }
     enum Eigenschaft_1 { Eigenschaft_1_Standard, Eigenschaft_1_Variante2, Eigenschaft_1_Variante3}
 
     id: mainTab
@@ -85,7 +86,7 @@ Rectangle {
             color: "#e2d5c8"
             font.capitalization: Font.AllUppercase
             font.family: "Geist"
-            font.pixelSize: 12
+            font.pixelSize: theme.bodyTextSize
             font.weight: Font.Bold
             horizontalAlignment: Text.AlignHCenter
             text: "Fleet Manager"

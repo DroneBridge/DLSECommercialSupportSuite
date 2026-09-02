@@ -57,7 +57,7 @@ Button {
             text: control.text
             color: control.foregroundColor
             font.family: theme.bodyFont
-            font.pixelSize: 12
+            font.pixelSize: theme.bodyTextSize
             font.bold: true
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter

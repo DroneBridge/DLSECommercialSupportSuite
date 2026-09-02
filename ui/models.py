@@ -425,6 +425,50 @@ class DeviceTableModel(QAbstractTableModel):
                     record.online = False
         self._emit_record_changed(identity)
 
+    def apply_system_info_result(
+        self,
+        identity: str,
+        success: bool,
+        system_info: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> None:
+        """
+        Apply a post-operation ``/api/system/info`` result to one device.
+
+        :param identity: Stable inventory identity of the refreshed device.
+        :param success: Whether the request returned a valid JSON object.
+        :param system_info: Latest static system-information payload on success.
+        :param error: Sanitized failure detail stored for inspector diagnostics.
+        :return: None. Failed refreshes preserve existing device values.
+        """
+        record = self._records.get(identity)
+        if record is None:
+            return
+        if success and isinstance(system_info, dict):
+            record.system_info = dict(system_info)
+            license_type = system_info.get("license_type")
+            if license_type not in (None, ""):
+                record.activation_status = str(license_type)
+            activation_key = system_info.get("activation_key") or system_info.get("key")
+            if activation_key:
+                record.activation_key = str(activation_key)
+            mac = system_info.get("esp_mac")
+            if mac:
+                record.mac = str(mac)
+            chip = _format_chip(system_info.get("esp_chip_model"))
+            if chip:
+                record.chip = chip
+            firmware_version = _format_firmware(system_info, {})
+            if firmware_version:
+                record.firmware_version = firmware_version
+            build_version = system_info.get("db_build_version")
+            if build_version not in (None, ""):
+                record.dronebridge_version = str(build_version)
+            record.errors.pop("system_info", None)
+        else:
+            record.errors["system_info"] = error or "System info request failed"
+        self._emit_record_changed(identity)
+
     def update_operation(self, identity: str, operation: str, progress: int = 0) -> None:
         """Update one device operation label and bounded percentage."""
         record = self._records.get(identity)
@@ -808,13 +852,13 @@ def _format_yes_no(value: Any) -> str:
     return "INVALID"
 
 
-def _sys_id_from_static_ip(value: Any) -> str:
+def _sys_id_from_device_ip(value: Any) -> str:
     """
-    Derive the MAVLink system ID from a configured static IPv4 address.
+    Derive the MAVLink system ID from the ESP32's current IPv4 address.
 
-    :param value: Raw ``ip_sta`` setting value from REST hydration.
-    :return: The last IPv4 octet as a string, or an empty string when the static
-        IP is missing or malformed.
+    :param value: Discovered ESP32 IP address.
+    :return: The last IPv4 octet as a string, or an empty string when the IP is
+        missing or malformed.
     """
     try:
         ip_address = ipaddress.ip_address(str(value))
@@ -835,22 +879,21 @@ def _configured_mavlink_sys_id(
     :param device: Raw discovery record, optionally including observed
         ``sys_id`` or ``mavlink_sys_id`` values from MAVLink discovery.
     :param settings: REST settings object, optionally including
-        ``show_en_syid_ip``, ``ip_sta``, and ``show_man_sysid``.
-    :return: The best available configured system ID. MAVLink discovery values
-        are preferred when present; otherwise ``show_en_syid_ip`` derives the
-        value from the static ``ip_sta`` last octet before falling back to
-        ``show_man_sysid``.
+        ``show_en_syid_ip`` and ``show_man_sysid``.
+    :return: The best available configured system ID. When
+        ``show_en_syid_ip`` is enabled, derive it from the discovered ESP32 IP
+        address before considering MAVLink discovery or ``show_man_sysid``.
     """
+    if _setting_enabled(settings.get("show_en_syid_ip")):
+        device_ip_sys_id = _sys_id_from_device_ip(device.get("ip"))
+        if device_ip_sys_id != "":
+            return device_ip_sys_id
     observed_sys_id = _first_configured_value(
         device.get("sys_id"),
         device.get("mavlink_sys_id"),
     )
     if observed_sys_id != "":
         return observed_sys_id
-    if _setting_enabled(settings.get("show_en_syid_ip")):
-        static_ip_sys_id = _sys_id_from_static_ip(settings.get("ip_sta"))
-        if static_ip_sys_id != "":
-            return static_ip_sys_id
     return _first_configured_value(settings.get("show_man_sysid"))
 
 

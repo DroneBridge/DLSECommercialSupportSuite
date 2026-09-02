@@ -97,7 +97,7 @@ Item {
                             text: "STANDALONE MODE"
                             color: theme.accent
                             font.family: theme.bodyFont
-                            font.pixelSize: 10
+                            font.pixelSize: theme.smallTextSize
                             font.bold: true
                         }
                     }
@@ -121,7 +121,7 @@ Item {
                     text: "Version: " + fleetController.suiteVersion
                     color: theme.mutedText
                     font.family: theme.dataFont
-                    font.pixelSize: 9
+                    font.pixelSize: theme.smallTextSize
                 }
 
                 AppTextField {
@@ -166,7 +166,7 @@ Item {
                         text: "FLEET MANAGER"
                         color: theme.primaryText
                         font.family: theme.bodyFont
-                        font.pixelSize: 11
+                        font.pixelSize: theme.bodyTextSize
                         font.bold: true
                     }
                 }
@@ -181,7 +181,7 @@ Item {
                         text: "NETWORK MANAGER"
                         color: theme.primaryText
                         font.family: theme.bodyFont
-                        font.pixelSize: 11
+                        font.pixelSize: theme.bodyTextSize
                         font.bold: true
                     }
                 }
@@ -664,7 +664,7 @@ Item {
                                                          ? (mainScreen.sortAscending ? "  ↑" : "  ↓") : "")
                                         color: theme.secondaryText
                                         font.family: theme.dataFont
-                                        font.pixelSize: 9
+                                        font.pixelSize: theme.smallTextSize
                                         font.bold: true
                                         horizontalAlignment: Text.AlignHCenter
                                         verticalAlignment: Text.AlignVCenter
@@ -851,7 +851,7 @@ Item {
                                              : dlseParameterWarning(columnKey, display) ? theme.warning
                                              : theme.primaryText
                                         font.family: "JetBrains Mono"
-                                        font.pixelSize: 10
+                                        font.pixelSize: theme.smallTextSize
                                         verticalAlignment: Text.AlignVCenter
                                         horizontalAlignment: columnKey === "hostname"
                                                              || columnKey === "activation_key"
@@ -934,7 +934,7 @@ Item {
                                     text: mavlinkSysId || "-"
                                     color: theme.primaryText
                                     font.family: theme.dataFont
-                                    font.pixelSize: 14
+                                    font.pixelSize: theme.headingTextSize
                                     font.bold: true
                                     verticalAlignment: Text.AlignVCenter
                                     horizontalAlignment: Text.AlignHCenter
@@ -947,7 +947,7 @@ Item {
                                     text: compactIp
                                     color: theme.secondaryText
                                     font.family: theme.dataFont
-                                    font.pixelSize: 13
+                                    font.pixelSize: theme.bodyTextSize
                                     font.bold: true
                                     verticalAlignment: Text.AlignVCenter
                                     horizontalAlignment: Text.AlignHCenter
@@ -968,7 +968,7 @@ Item {
                         text: fleetController.scanning ? "Scanning for DLSE devices..." : "No devices detected"
                         color: theme.primaryText
                         font.family: theme.bodyFont
-                        font.pixelSize: 16
+                        font.pixelSize: theme.headingTextSize
                         font.bold: true
                     }
 
@@ -979,7 +979,7 @@ Item {
                               : "Start scanning or adjust the discovery settings."
                         color: theme.secondaryText
                         font.family: theme.bodyFont
-                        font.pixelSize: 12
+                        font.pixelSize: theme.bodyTextSize
                     }
                 }
             }
@@ -1062,7 +1062,7 @@ Item {
                     contentItem: Text {
                         text: expandInspectorButton.text
                         color: theme.secondaryText
-                        font.pixelSize: 20
+                        font.pixelSize: theme.iconGlyphSize
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignTop
                         topPadding: 8
@@ -1092,7 +1092,7 @@ Item {
                     textFormat: Text.StyledText
                     color: theme.primaryText
                     font.family: theme.dataFont
-                    font.pixelSize: 9
+                    font.pixelSize: theme.smallTextSize
                     font.bold: true
                 }
 
@@ -1107,7 +1107,7 @@ Item {
                     textFormat: Text.StyledText
                     color: theme.primaryText
                     font.family: theme.dataFont
-                    font.pixelSize: 9
+                    font.pixelSize: theme.smallTextSize
                     font.bold: true
                 }
 
@@ -1123,7 +1123,7 @@ Item {
                     textFormat: Text.StyledText
                     color: theme.primaryText
                     font.family: theme.dataFont
-                    font.pixelSize: 8
+                    font.pixelSize: theme.smallTextSize
                     font.bold: true
                 }
 
@@ -1139,7 +1139,7 @@ Item {
                     textFormat: Text.StyledText
                     color: theme.primaryText
                     font.family: theme.dataFont
-                    font.pixelSize: 8
+                    font.pixelSize: theme.smallTextSize
                     font.bold: true
                 }
 
@@ -1154,7 +1154,7 @@ Item {
                     textFormat: Text.StyledText
                     color: theme.primaryText
                     font.family: theme.dataFont
-                    font.pixelSize: 8
+                    font.pixelSize: theme.smallTextSize
                     font.bold: true
                 }
 
@@ -1170,7 +1170,7 @@ Item {
                     textFormat: Text.StyledText
                     color: theme.primaryText
                     font.family: theme.dataFont
-                    font.pixelSize: 8
+                    font.pixelSize: theme.smallTextSize
                     font.bold: true
                 }
             }

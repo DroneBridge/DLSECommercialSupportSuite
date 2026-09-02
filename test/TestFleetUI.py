@@ -1,6 +1,7 @@
 """Offscreen Qt Quick tests for the QML Fleet Manager shell."""
 
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -431,12 +432,38 @@ class TestFleetUI(unittest.TestCase):
         ]
 
         self.assertIn('font.family: "JetBrains Mono"', table_block)
-        self.assertIn("font.pixelSize: 10", table_block)
+        self.assertIn("font.pixelSize: theme.smallTextSize", table_block)
         self.assertIn('color: selected ? "#12304d"', table_block)
         self.assertIn('identity === fleetController.inspectedIdentity ? "#0f253a"', table_block)
         self.assertIn(": theme.background", table_block)
         self.assertNotIn("row %", table_block)
         self.assertNotIn("#091a2a", table_block)
+
+    def test_readable_text_uses_three_theme_font_sizes(self):
+        """All QML text sizes use the three semantic typography tokens."""
+        theme_source = (self.QML_ROOT / "Theme.qml").read_text(encoding="utf-8")
+        expected_sizes = {
+            "smallTextSize": 10,
+            "bodyTextSize": 12,
+            "headingTextSize": 16,
+        }
+        for token, size in expected_sizes.items():
+            self.assertIn(f"readonly property int {token}: {size}", theme_source)
+
+        allowed_tokens = {
+            f"theme.{token}" for token in expected_sizes
+        } | {
+            "theme.checkIconGlyphSize",
+            "theme.smallIconGlyphSize",
+            "theme.iconGlyphSize",
+        }
+        for qml_path in self.QML_ROOT.glob("*.qml"):
+            source = qml_path.read_text(encoding="utf-8")
+            assignments = re.findall(r"font\.pixelSize:\s*([^\s;}]+)", source)
+            self.assertTrue(
+                set(assignments).issubset(allowed_tokens),
+                f"Unexpected font size in {qml_path.name}: {assignments}",
+            )
 
     def test_table_inspection_highlight_differs_from_selection(self):
         """Clicked inspection rows use a highlight distinct from selected rows."""
@@ -1257,6 +1284,84 @@ class TestFleetUI(unittest.TestCase):
         self.assertEqual("192.168.20.1", record.ip)
         self.assertEqual("255.255.255.0", record.settings["ip_sta_netmsk"])
         self.assertIsNotNone(record.offline_grace_until)
+
+    @patch("ui.controller.SystemInfoRefreshWorker")
+    def test_ota_and_activation_refresh_only_devices_with_results(self, refresh_worker):
+        """OTA and activation refresh workers receive only processed result identities."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(identity="A", ip="10.0.0.2", activation_key="A"),
+            DeviceRecord(identity="B", ip="10.0.0.3", activation_key="B"),
+            DeviceRecord(
+                identity="SKIPPED",
+                ip="10.0.0.4",
+                activation_key="SKIPPED",
+            ),
+        ])
+        worker = Mock()
+        refresh_worker.return_value = worker
+
+        for kind in ("ota", "activation"):
+            self.controller._active_worker = Mock()
+            self.controller._active_operation = kind
+            self.controller._active_targets = {"A", "B", "SKIPPED"}
+            self.controller._operation_finished(
+                kind,
+                [
+                    {"identity": "A", "success": True},
+                    {"identity": "B", "success": False, "message": "failed"},
+                ],
+            )
+
+        self.assertEqual(2, refresh_worker.call_count)
+        for call in refresh_worker.call_args_list:
+            self.assertEqual(
+                ["A", "B"],
+                [record.identity for record in call.args[0]],
+            )
+
+    @patch("ui.controller.SystemInfoRefreshWorker")
+    def test_non_ota_operations_do_not_refresh_system_info(self, refresh_worker):
+        """Operations unrelated to OTA or activation do not request system info."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(identity="A", ip="10.0.0.2", activation_key="A"),
+        ])
+        self.controller._active_worker = Mock()
+        self.controller._active_operation = "settings"
+        self.controller._active_targets = {"A"}
+
+        self.controller._operation_finished(
+            "settings",
+            [{"identity": "A", "success": True}],
+        )
+
+        refresh_worker.assert_not_called()
+
+    def test_system_info_refresh_updates_inspected_device_status(self):
+        """A successful UI info refresh updates the inspected-device property."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="A",
+                ip="10.0.0.2",
+                activation_key="A",
+                activation_status="EVALUATION",
+            )
+        ])
+        self.controller.inspectDevice("A")
+
+        self.controller._system_info_refresh_progress(
+            {
+                "identity": "A",
+                "success": True,
+                "system_info": {"license_type": "ACTIVATED"},
+            },
+            self.controller._fleet_generation,
+        )
+
+        self.assertEqual("ACTIVATED", self.controller.selectedDevice["activationStatus"])
+        self.assertEqual(
+            "ACTIVATED",
+            self.controller.source_model.record_by_identity("A").activation_status,
+        )
 
     def test_settings_preflight_rejects_invalid_network_values(self):
         """High-risk settings fail validation before worker creation."""

@@ -9,7 +9,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
 from PySide6.QtCore import QUrl
-from PySide6.QtGui import QFontDatabase, QGuiApplication, QIcon
+from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication, QIcon
 from PySide6.QtQml import QQmlApplicationEngine
 
 from ui.controller import FleetController
@@ -23,6 +23,7 @@ MATERIAL_FONT = (
     / "Material_Symbols_Outlined"
     / "MaterialSymbolsOutlined[FILL,GRAD,opsz,wght].ttf"
 )
+DEFAULT_FONT_PIXEL_SIZE = 12
 
 
 def _initialize_webengine() -> None:
@@ -40,6 +41,18 @@ def _load_fonts() -> None:
         QFontDatabase.addApplicationFont(str(MATERIAL_FONT))
 
 
+def _set_default_font(app: QGuiApplication) -> None:
+    """Set ``app`` to the body size used by QML text without an override.
+
+    The application is updated in place and the function does not return a
+    value. Qt retains responsibility for scaling this logical pixel size for
+    the active display.
+    """
+    default_font = QFont(app.font())
+    default_font.setPixelSize(DEFAULT_FONT_PIXEL_SIZE)
+    app.setFont(default_font)
+
+
 def create_engine() -> tuple[QQmlApplicationEngine, FleetController]:
     """Create the QML engine and expose stable controller/model properties."""
     engine = QQmlApplicationEngine()
@@ -54,7 +67,7 @@ def create_engine() -> tuple[QQmlApplicationEngine, FleetController]:
 
 
 def main() -> int:
-    """Run the cross-platform Qt Quick application."""
+    """Run the cross-platform Qt Quick application and return its exit code."""
     os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
     _initialize_webengine()
     app = QGuiApplication(sys.argv)
@@ -65,6 +78,7 @@ def main() -> int:
     if icon_path.is_file():
         app.setWindowIcon(QIcon(str(icon_path)))
     _load_fonts()
+    _set_default_font(app)
     engine, controller = create_engine()
     if not engine.rootObjects():
         return 1

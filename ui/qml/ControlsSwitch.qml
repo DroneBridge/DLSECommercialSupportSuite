@@ -4,6 +4,7 @@ import DesignTokens as Tokens
 import QtQml
 
 T.Switch {
+    Theme { id: theme }
     enum Status { Status_Default, Status_Disabled, Status_Hovered, Status_Pressed}
     enum Check { Check_Off, Check_On}
 
@@ -74,7 +75,7 @@ T.Switch {
                 font.capitalization: Font.AllUppercase
                 font.family: "JetBrains Mono"
                 font.letterSpacing: -0.70
-                font.pixelSize: 10
+                font.pixelSize: theme.smallTextSize
                 font.weight: Font.Bold
                 horizontalAlignment: Text.AlignLeft
                 text: "List"
@@ -128,7 +129,7 @@ T.Switch {
                 font.capitalization: Font.AllUppercase
                 font.family: "JetBrains Mono"
                 font.letterSpacing: -0.70
-                font.pixelSize: 10
+                font.pixelSize: theme.smallTextSize
                 font.weight: Font.Bold
                 horizontalAlignment: Text.AlignLeft
                 text: "Matrix"

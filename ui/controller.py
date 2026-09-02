@@ -46,6 +46,7 @@ from ui.workers import (
     SettingsWorker,
     StatsPollingWorker,
     StaticIpAssignmentWorker,
+    SystemInfoRefreshWorker,
     SysIdAlignmentWorker,
 )
 
@@ -94,6 +95,7 @@ class FleetController(QObject):
         self._discovery_status = "STOPPED"
         self._stats_poll_running = False
         self._stats_worker: StatsPollingWorker | None = None
+        self._system_info_refresh_worker: SystemInfoRefreshWorker | None = None
         self._stats_round_started_at = 0.0
         self._stats_polling_status = (
             "WAITING" if self._scan_values()["stats_enabled"] else "DISABLED"
@@ -130,7 +132,7 @@ class FleetController(QObject):
         if self._scan_values()["stats_enabled"]:
             self.stats_timer.start(self._scan_values()["stats_interval"] * 1000)
         self.license_timer = QTimer(self)
-        self.license_timer.setInterval(10_000)
+        self.license_timer.setInterval(30_000)
         self.license_timer.timeout.connect(self.checkLicenseServer)
         self.license_timer.start()
         QTimer.singleShot(250, self.checkLicenseServer)
@@ -1457,6 +1459,100 @@ class FleetController(QObject):
         self.stateChanged.emit()
         self.toastRequested.emit("error", self._sanitize_error(message))
 
+    def _start_system_info_refresh(self, records: list[DeviceRecord]) -> None:
+        """
+        Start a best-effort static-info refresh for completed OTA/activation records.
+
+        :param records: Devices that emitted an actual operation result.
+        :return: None. Empty device lists do not create a worker.
+        """
+        if not records:
+            return
+        generation = self._fleet_generation
+        worker = SystemInfoRefreshWorker(
+            records,
+            workers=self._scan_values()["workers"],
+        )
+        self._system_info_refresh_worker = worker
+        worker.signals.progress.connect(
+            lambda payload, active_generation=generation:
+                self._system_info_refresh_progress(payload, active_generation)
+        )
+        worker.signals.finished.connect(
+            lambda _results, active_generation=generation:
+                self._system_info_refresh_finished(active_generation)
+        )
+        worker.signals.error.connect(
+            lambda message, active_generation=generation, refresh_records=list(records):
+                self._system_info_refresh_failed(
+                    message,
+                    active_generation,
+                    refresh_records,
+                )
+        )
+        self.pool.start(worker)
+
+    def _system_info_refresh_progress(self, payload: Any, generation: int) -> None:
+        """
+        Apply one UI-owned system-info refresh result to the current fleet.
+
+        :param payload: Worker result containing identity, IP, and system info.
+        :param generation: Fleet generation captured when the refresh started.
+        :return: None. Stale or unresolvable results are ignored safely.
+        """
+        if generation != self._fleet_generation or not isinstance(payload, dict):
+            return
+        identity = str(payload.get("identity") or "")
+        if self.source_model.record_by_identity(identity) is None:
+            identity = self._identity_for_ip(str(payload.get("ip") or ""))
+        if not identity:
+            return
+        self.source_model.apply_system_info_result(
+            identity,
+            bool(payload.get("success")),
+            payload.get("system_info")
+            if isinstance(payload.get("system_info"), dict)
+            else None,
+            self._sanitize_error(
+                str(payload.get("error") or "System info request failed")
+            ),
+        )
+
+    def _system_info_refresh_finished(self, generation: int) -> None:
+        """
+        Release the UI-owned info-refresh worker reference after completion.
+
+        :param generation: Fleet generation captured when the refresh started.
+        :return: None. Stale completions only release the worker reference.
+        """
+        if generation == self._fleet_generation:
+            self._system_info_refresh_worker = None
+
+    def _system_info_refresh_failed(
+        self,
+        message: str,
+        generation: int,
+        records: list[DeviceRecord],
+    ) -> None:
+        """
+        Preserve device values while recording a worker-level refresh failure.
+
+        :param message: Failure detail to sanitize before storing.
+        :param generation: Fleet generation captured when the refresh started.
+        :param records: Snapshot of devices submitted to the worker.
+        :return: None. Stale failures are ignored.
+        """
+        if generation != self._fleet_generation:
+            return
+        error = self._sanitize_error(message)
+        for record in records:
+            self.source_model.apply_system_info_result(
+                record.identity,
+                False,
+                error=error,
+            )
+        self._system_info_refresh_worker = None
+
     def _schedule_next_stats_round(self) -> None:
         """
         Schedule the next round at least two seconds after the prior start.
@@ -1505,6 +1601,7 @@ class FleetController(QObject):
     def _operation_finished(self, kind: str, results: Any) -> None:
         """Summarize results, update reboot grace, and notify QML."""
         items = results if isinstance(results, list) else [results]
+        info_refresh_records = self._system_info_refresh_records(kind, items)
         successes = 0
         failed: set[str] = set(self._failed_identities)
         for item in items:
@@ -1560,6 +1657,7 @@ class FleetController(QObject):
             self._setting_edits.clear()
             self.inspectorChanged.emit()
         self.stateChanged.emit()
+        self._start_system_info_refresh(info_refresh_records)
         self.resultReady.emit(
             kind.replace("_", " ").title(),
             f"Operation finished: {successes} succeeded, {failures} failed.",
@@ -1683,6 +1781,34 @@ class FleetController(QObject):
                 return self._identity_for_ip(str(getattr(result, "device_ip", "")))
             return ""
         return self._identity_for_ip(str(getattr(item, "device_ip", "")))
+
+    def _system_info_refresh_records(
+        self,
+        kind: str,
+        items: list[Any],
+    ) -> list[DeviceRecord]:
+        """
+        Resolve processed OTA or activation results to current device records.
+
+        :param kind: Completed operation kind.
+        :param items: Per-device results emitted by the operation worker.
+        :return: Unique records that should receive a post-operation info request.
+            Skipped or never-started devices are absent because they emit no result.
+        """
+        if kind not in {"ota", "activation"}:
+            return []
+        records: list[DeviceRecord] = []
+        seen: set[str] = set()
+        for item in items:
+            identity = self._result_identity(item)
+            if not identity or identity in seen:
+                continue
+            record = self.source_model.record_by_identity(identity)
+            if record is None:
+                continue
+            seen.add(identity)
+            records.append(record)
+        return records
 
     @staticmethod
     def _result_success(item: Any) -> bool:

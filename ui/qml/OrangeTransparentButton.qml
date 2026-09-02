@@ -2,6 +2,7 @@ import QtQuick
 import DesignTokens as Tokens
 
 Rectangle {
+    Theme { id: theme }
     enum Eigenschaft_1 { Eigenschaft_1_Eigenschaft4, Eigenschaft_1_Variante2, Eigenschaft_1_Variante3}
 
     id: orangeTransparentButton
@@ -92,7 +93,7 @@ Rectangle {
         color: "#ff8e00"
         font.capitalization: Font.AllUppercase
         font.family: "Geist"
-        font.pixelSize: 12
+        font.pixelSize: theme.bodyTextSize
         font.weight: Font.Bold
         horizontalAlignment: Text.AlignHCenter
         text: "Apply Changes"

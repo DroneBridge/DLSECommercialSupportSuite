@@ -9,7 +9,7 @@ TextField {
     selectionColor: theme.accent
     selectedTextColor: theme.background
     font.family: theme.bodyFont
-    font.pixelSize: 12
+    font.pixelSize: theme.bodyTextSize
     leftPadding: 10
     rightPadding: 10
 

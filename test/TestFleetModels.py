@@ -44,6 +44,45 @@ class TestFleetModels(unittest.TestCase):
         self.assertEqual(1, model.rowCount())
         self.assertFalse(model.record_at(0).online)
 
+    def test_system_info_refresh_updates_activation_status_and_preserves_it_on_failure(self):
+        """A post-operation info result updates status while failures retain prior values."""
+        model = DeviceTableModel()
+        model.upsert_many([
+            DeviceRecord(
+                identity="KEY",
+                ip="192.168.1.42",
+                activation_key="KEY",
+                activation_status="EVALUATION",
+                firmware_version="1.0.0",
+            )
+        ])
+
+        model.apply_system_info_result(
+            "KEY",
+            True,
+            {
+                "license_type": "ACTIVATED",
+                "major_version": 1,
+                "minor_version": 2,
+                "patch_version": 3,
+                "maturity_version": "release",
+            },
+        )
+
+        record = model.record_by_identity("KEY")
+        self.assertEqual("ACTIVATED", record.activation_status)
+        self.assertEqual("1.2.3-release", record.firmware_version)
+        self.assertEqual("ACTIVATED", record.system_info["license_type"])
+
+        model.apply_system_info_result(
+            "KEY",
+            False,
+            error="request timed out",
+        )
+
+        self.assertEqual("ACTIVATED", record.activation_status)
+        self.assertEqual("request timed out", record.errors["system_info"])
+
     def test_stats_failure_threshold_is_configurable(self):
         """The configured attempt threshold controls the offline transition."""
         model = DeviceTableModel()
@@ -365,8 +404,8 @@ class TestFleetModels(unittest.TestCase):
         self.assertEqual("255", known.fc_sys_id)
         self.assertEqual("unknown", unknown.fc_sys_id)
 
-    def test_rest_record_uses_static_ip_sys_id_when_enabled(self):
-        """REST discovery derives the configured sys ID from ip_sta when enabled."""
+    def test_rest_record_uses_discovered_ip_sys_id_when_enabled(self):
+        """IP-based SYS IDs use the current ESP32 address, not static settings."""
         record = record_from_discovery(
             {
                 "ip": "192.168.1.88",
@@ -379,7 +418,21 @@ class TestFleetModels(unittest.TestCase):
             "rest",
         )
 
-        self.assertEqual("42", record.mavlink_sys_id)
+        self.assertEqual("88", record.mavlink_sys_id)
+
+        dynamic_record = record_from_discovery(
+            {
+                "ip": "192.168.1.89",
+                "settings": {
+                    "show_en_syid_ip": 1,
+                    "ip_sta": "",
+                    "show_man_sysid": 7,
+                },
+            },
+            "rest",
+        )
+
+        self.assertEqual("89", dynamic_record.mavlink_sys_id)
 
     def test_rest_record_preserves_manual_zero_sys_id_when_ip_sys_id_disabled(self):
         """Manual MAVLink system ID zero is not dropped by fallback handling."""
@@ -397,8 +450,8 @@ class TestFleetModels(unittest.TestCase):
 
         self.assertEqual("0", record.mavlink_sys_id)
 
-    def test_mavlink_discovery_sys_id_takes_precedence_over_settings(self):
-        """Observed MAVLink sys IDs remain preferred when discovery supplies them."""
+    def test_ip_based_sys_id_takes_precedence_over_mavlink_discovery(self):
+        """Configured IP-based SYS IDs use the ESP32 IP despite a discovery reply."""
         record = record_from_discovery(
             {
                 "ip": "192.168.1.88",
@@ -412,7 +465,7 @@ class TestFleetModels(unittest.TestCase):
             "mavlink",
         )
 
-        self.assertEqual("99", record.mavlink_sys_id)
+        self.assertEqual("88", record.mavlink_sys_id)
 
     def test_rest_settings_columns_are_available_with_requested_labels(self):
         """REST API settings are exposed as configurable table columns."""

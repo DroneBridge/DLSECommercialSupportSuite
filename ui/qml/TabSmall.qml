@@ -1,6 +1,7 @@
 import QtQuick
 
 Rectangle {
+    Theme { id: theme }
     enum Eigenschaft_1 { Eigenschaft_1_Standard, Eigenschaft_1_Variante2, Eigenschaft_1_Variante3}
 
     id: tabSmall
@@ -101,7 +102,7 @@ Rectangle {
         color: "#deceb9"
         font.capitalization: Font.AllUppercase
         font.family: "JetBrains Mono"
-        font.pixelSize: 11
+        font.pixelSize: theme.bodyTextSize
         font.weight: Font.Bold
         horizontalAlignment: Text.AlignHCenter
         text: "Settings"

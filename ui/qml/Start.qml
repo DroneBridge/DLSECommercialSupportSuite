@@ -26,7 +26,7 @@ Item {
         text: "DroneBridge DLSE Commercial Support Suite"
         color: theme.text
         font.family: theme.bodyFont
-        font.pixelSize: 12
+        font.pixelSize: theme.bodyTextSize
     }
 
     ColumnLayout {
@@ -49,7 +49,7 @@ Item {
             text: "How to Connect"
             color: "#f0f0f0"
             font.family: theme.bodyFont
-            font.pixelSize: 24
+            font.pixelSize: theme.headingTextSize
             font.bold: true
         }
 
@@ -58,7 +58,7 @@ Item {
             text: "Choose how you want to connect to your drone fleet"
             color: "#f0f0f0"
             font.family: theme.bodyFont
-            font.pixelSize: 12
+            font.pixelSize: theme.bodyTextSize
         }
 
         RowLayout {
@@ -105,7 +105,7 @@ Item {
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.Wrap
             font.family: theme.bodyFont
-            font.pixelSize: 11
+            font.pixelSize: theme.bodyTextSize
         }
     }
 
@@ -117,6 +117,6 @@ Item {
         color: "#ffffff"
         opacity: 0.7
         font.family: theme.bodyFont
-        font.pixelSize: 10
+        font.pixelSize: theme.smallTextSize
     }
 }

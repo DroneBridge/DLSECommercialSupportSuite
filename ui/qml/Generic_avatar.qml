@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Shapes
 
 Rectangle {
+    Theme { id: theme }
     enum Style { Style_Check, Style_Monogram, Style_Avatar}
 
     id: generic_avatar
@@ -192,7 +193,7 @@ Rectangle {
         color: "#4f378a"
         font.family: "Roboto"
         font.letterSpacing: 0.10
-        font.pixelSize: 16
+        font.pixelSize: theme.headingTextSize
         font.weight: Font.Medium
         horizontalAlignment: Text.AlignHCenter
         lineHeight: 24

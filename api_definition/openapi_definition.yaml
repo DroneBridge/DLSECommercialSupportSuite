@@ -960,8 +960,9 @@ components:
         show_en_syid_ip:
           type: integer
           description: >
-            Derive the MAVLink system ID from the last octet of the configured
-            static IPv4 address instead of `show_man_sysid`.
+            Derive the MAVLink system ID from the last octet of the ESP32's
+            current IPv4 address, including dynamically assigned addresses,
+            instead of `show_man_sysid`.
           enum: [0, 1]
           default: 1
 

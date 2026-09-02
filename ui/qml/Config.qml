@@ -39,7 +39,7 @@ Rectangle {
                     contentItem: Text {
                         text: collapseButton.text
                         color: theme.secondaryText
-                        font.pixelSize: 20
+                        font.pixelSize: theme.iconGlyphSize
                         verticalAlignment: Text.AlignVCenter
                         horizontalAlignment: Text.AlignHCenter
                     }
@@ -53,7 +53,7 @@ Rectangle {
                           : "ESP32 Configuration"
                     color: theme.secondaryText
                     font.family: theme.dataFont
-                    font.pixelSize: 10
+                    font.pixelSize: theme.smallTextSize
                     elide: Text.ElideRight
                 }
             }
@@ -75,7 +75,7 @@ Rectangle {
                         text: tabControl.text
                         color: tabControl.checked ? theme.primaryText : theme.secondaryText
                         font.family: theme.dataFont
-                        font.pixelSize: 9
+                        font.pixelSize: theme.smallTextSize
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
                     }
@@ -111,7 +111,7 @@ Rectangle {
                         color: theme.secondaryText
                         wrapMode: Text.Wrap
                         font.family: theme.bodyFont
-                        font.pixelSize: 12
+                        font.pixelSize: theme.bodyTextSize
                     }
 
                     Rectangle {
@@ -131,7 +131,7 @@ Rectangle {
                                 text: "PARAMETER"
                                 color: theme.secondaryText
                                 font.family: theme.dataFont
-                                font.pixelSize: 9
+                                font.pixelSize: theme.smallTextSize
                                 font.bold: true
                                 verticalAlignment: Text.AlignVCenter
                             }
@@ -141,7 +141,7 @@ Rectangle {
                                 text: "VALUE"
                                 color: theme.secondaryText
                                 font.family: theme.dataFont
-                                font.pixelSize: 9
+                                font.pixelSize: theme.smallTextSize
                                 font.bold: true
                                 verticalAlignment: Text.AlignVCenter
                             }
@@ -183,7 +183,7 @@ Rectangle {
                                     text: modelData.label + (modelData.dirty ? "  *" : "")
                                     color: modelData.dirty ? theme.accent : theme.secondaryText
                                     font.family: theme.dataFont
-                                    font.pixelSize: 10
+                                    font.pixelSize: theme.smallTextSize
                                     verticalAlignment: Text.AlignVCenter
                                     elide: Text.ElideRight
                                 }
@@ -263,7 +263,7 @@ Rectangle {
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.Wrap
                     font.family: theme.bodyFont
-                    font.pixelSize: 12
+                    font.pixelSize: theme.bodyTextSize
                 }
             }
 
@@ -291,7 +291,7 @@ Rectangle {
                             text: modelData.group + " / " + modelData.key
                             color: theme.secondaryText
                             font.family: theme.dataFont
-                            font.pixelSize: 8
+                            font.pixelSize: theme.smallTextSize
                             elide: Text.ElideRight
                             width: parent.width
                         }
@@ -300,7 +300,7 @@ Rectangle {
                             text: modelData.value
                             color: theme.primaryText
                             font.family: theme.dataFont
-                            font.pixelSize: 10
+                            font.pixelSize: theme.smallTextSize
                             elide: Text.ElideRight
                             width: parent.width
                         }

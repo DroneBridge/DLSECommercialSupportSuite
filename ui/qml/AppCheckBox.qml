@@ -24,7 +24,7 @@ CheckBox {
             visible: control.checked
             text: "✓"
             color: theme.background
-            font.pixelSize: 13
+            font.pixelSize: theme.checkIconGlyphSize
             font.bold: true
         }
     }
@@ -34,7 +34,7 @@ CheckBox {
         text: control.text
         color: control.enabled ? theme.secondaryText : theme.mutedText
         font.family: theme.dataFont
-        font.pixelSize: 10
+        font.pixelSize: theme.smallTextSize
         verticalAlignment: Text.AlignVCenter
     }
 }

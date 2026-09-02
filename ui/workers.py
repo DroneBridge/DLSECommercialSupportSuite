@@ -265,6 +265,83 @@ class StatsPollingWorker(QRunnable):
             session.close()
 
 
+class SystemInfoRefreshWorker(QRunnable):
+    """Refresh static system information for a completed UI operation."""
+
+    def __init__(self, records: list[DeviceRecord], timeout: float = 5.0,
+                 workers: int = 20) -> None:
+        """
+        Create a bounded post-operation ``/api/system/info`` refresh.
+
+        :param records: Devices whose OTA or activation operation emitted a result.
+        :param timeout: Per-device HTTP timeout in seconds.
+        :param workers: Maximum simultaneous refresh requests.
+        """
+        super().__init__()
+        self.signals = WorkerSignals()
+        self.records = list(records)
+        self.timeout = max(0.1, min(timeout, 30.0))
+        self.workers = max(1, min(workers, 64))
+
+    @Slot()
+    def run(self) -> None:
+        """
+        Refresh each supplied device and emit one result per attempted request.
+
+        :return: None. Request failures become per-device failure payloads;
+            unexpected executor failures emit the worker-level ``error`` signal.
+        """
+        results: list[dict[str, Any]] = []
+        try:
+            with ThreadPoolExecutor(max_workers=self.workers) as executor:
+                futures = {
+                    executor.submit(self._refresh_one, record): record
+                    for record in self.records
+                }
+                for future in as_completed(futures):
+                    record = futures[future]
+                    try:
+                        system_info = future.result()
+                        payload = {
+                            "identity": record.identity,
+                            "ip": record.ip,
+                            "success": system_info is not None,
+                            "system_info": system_info,
+                            "error": "" if system_info is not None else "System info request failed",
+                        }
+                    except Exception as exc:
+                        payload = {
+                            "identity": record.identity,
+                            "ip": record.ip,
+                            "success": False,
+                            "system_info": None,
+                            "error": str(exc),
+                        }
+                    results.append(payload)
+                    self.signals.progress.emit(payload)
+            self.signals.finished.emit(results)
+        except Exception as exc:
+            self.signals.error.emit(str(exc))
+
+    def _refresh_one(self, record: DeviceRecord) -> dict[str, Any] | None:
+        """
+        Fetch one device's static information using the shared REST helper.
+
+        :param record: Device whose system information should be refreshed.
+        :return: Parsed ``/api/system/info`` response, or ``None`` on failure.
+        """
+        session = db_api_create_request_session()
+        try:
+            return db_api_get_json(
+                session,
+                record.ip,
+                "/api/system/info",
+                timeout=self.timeout,
+            )
+        finally:
+            session.close()
+
+
 class LicenseStatusWorker(FunctionWorker):
     """Check license-server availability."""
 

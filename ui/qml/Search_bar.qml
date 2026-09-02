@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Shapes
 
 Rectangle {
+    Theme { id: theme }
     enum State_1 { State_1_Enabled, State_1_Hovered, State_1_Pressed}
     enum Show_avatar { Show_avatar_False, Show_avatar_True}
 
@@ -255,7 +256,7 @@ Rectangle {
                 color: "#49454f"
                 font.family: "Roboto"
                 font.letterSpacing: 0.50
-                font.pixelSize: 16
+                font.pixelSize: theme.headingTextSize
                 font.weight: Font.Normal
                 horizontalAlignment: Text.AlignLeft
                 lineHeight: 24
