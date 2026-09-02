@@ -254,7 +254,7 @@ Rectangle {
                 width: 141
 
                 color: "#49454f"
-                font.family: "Roboto"
+                font.family: theme.bodyFont
                 font.letterSpacing: 0.50
                 font.pixelSize: theme.headingTextSize
                 font.weight: Font.Normal

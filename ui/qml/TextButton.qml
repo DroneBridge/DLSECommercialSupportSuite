@@ -53,7 +53,7 @@ Rectangle {
 
         color: "#e2d5c8"
         font.capitalization: Font.AllUppercase
-        font.family: "JetBrains Mono"
+        font.family: theme.dataFont
         font.pixelSize: theme.bodyTextSize
         font.underline: false
         font.weight: Font.Bold

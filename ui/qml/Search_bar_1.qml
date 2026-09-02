@@ -54,7 +54,6 @@ Rectangle {
         show_leading_icon: false
         state_layerHeight: 30
         supporting_textColor: "#deceb9"
-        supporting_textFontFamily: "Geist"
         supporting_textFontLetterSpacing: 0
         supporting_textFontPixelSize: 12
         supporting_textHeight: 16

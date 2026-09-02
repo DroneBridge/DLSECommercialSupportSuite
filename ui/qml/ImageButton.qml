@@ -100,7 +100,7 @@ Rectangle {
         width: 129
 
         color: "#e2d5c8"
-        font.family: "Geist"
+        font.family: theme.bodyFont
         font.pixelSize: theme.bodyTextSize
         font.weight: Font.DemiBold
         horizontalAlignment: Text.AlignLeft

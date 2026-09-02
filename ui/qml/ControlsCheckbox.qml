@@ -187,7 +187,7 @@ Rectangle {
 
         color: "#deceb9"
         font.capitalization: Font.AllUppercase
-        font.family: "JetBrains Mono"
+        font.family: theme.dataFont
         font.letterSpacing: -0.70
         font.pixelSize: theme.smallTextSize
         font.weight: Font.Bold

@@ -64,6 +64,450 @@ DEFAULT_INSPECTOR_WIDTH = 355
 MIN_INSPECTOR_WIDTH = 300
 MAX_INSPECTOR_WIDTH = 640
 
+KNOWN_SYSTEM_METRICS = {
+    "idf_version",
+    "db_build_version",
+    "major_version",
+    "minor_version",
+    "patch_version",
+    "maturity_version",
+    "license_type",
+    "expiration_date",
+    "activation_key",
+    "key",
+    "esp_chip_model",
+    "has_rf_switch",
+    "esp_mac",
+    "serial_via_JTAG",
+    "hostname",
+}
+KNOWN_RUNTIME_METRICS = {
+    "read_bytes",
+    "serial_bytes_sent",
+    "serial_mav_msgs_received",
+    "serial_mav_msgs_lost",
+    "tcp_connected",
+    "udp_connected",
+    "udp_clients",
+    "current_client_ip",
+    "esp_rssi",
+    "sta_rssi",
+    "connected_sta",
+    "fc_pw_state",
+    "fc_armed_state",
+    "fc_sysid",
+    "battery_voltage",
+    "battery_current",
+    "cpu_load",
+}
+
+
+def _metric_item(
+    key: str,
+    label: str,
+    value: str,
+    *,
+    tone: str = "neutral",
+    kind: str = "value",
+    wide: bool = False,
+) -> dict[str, Any]:
+    """Build one stable display item for the QML metrics card delegate."""
+    return {
+        "key": key,
+        "label": label,
+        "value": value,
+        "tone": tone,
+        "kind": kind,
+        "wide": wide,
+    }
+
+
+def _number(value: Any) -> float | None:
+    """Return a finite numeric value while rejecting booleans and malformed input."""
+    if isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _format_count(value: Any) -> str:
+    """Format an integer-like counter with separators or mark it unavailable."""
+    number = _number(value)
+    if number is None or number < 0:
+        return "Unavailable"
+    return f"{int(number):,}" if number.is_integer() else f"{number:,.2f}"
+
+
+def _format_bytes(value: Any, *, per_second: bool = False) -> str:
+    """Format a non-negative byte value using compact binary units."""
+    number = _number(value)
+    if number is None or number < 0:
+        return "Unavailable"
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    unit_index = 0
+    while number >= 1024 and unit_index < len(units) - 1:
+        number /= 1024
+        unit_index += 1
+    precision = 0 if unit_index == 0 else 2
+    suffix = "/s" if per_second else ""
+    return f"{number:,.{precision}f} {units[unit_index]}{suffix}"
+
+
+def _format_measurement(value: Any, unit: str) -> str:
+    """Format a finite measurement with two decimals and its display unit."""
+    number = _number(value)
+    if number is None:
+        return "Unavailable"
+    return f"{number:,.2f} {unit}"
+
+
+def _format_unknown(value: Any) -> str:
+    """Render an unrecognized scalar or collection without losing its contents."""
+    if value in (None, ""):
+        return "Unavailable"
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
+
+
+def _status_item(
+    key: str,
+    label: str,
+    value: str,
+    tone: str,
+) -> dict[str, Any]:
+    """Build a status-badge metric item with the requested semantic tone."""
+    return _metric_item(key, label, value, tone=tone, kind="status")
+
+
+def _binary_status(
+    key: str,
+    label: str,
+    raw_value: Any,
+    enabled_text: str = "Enabled",
+    disabled_text: str = "Disabled",
+) -> dict[str, Any]:
+    """Map a strict REST integer boolean to a status-badge metric item."""
+    if raw_value in (None, ""):
+        return _status_item(key, label, "Unavailable", "muted")
+    number = _number(raw_value)
+    if number == 1:
+        return _status_item(key, label, enabled_text, "success")
+    if number == 0:
+        return _status_item(key, label, disabled_text, "muted")
+    return _status_item(key, label, f"Unknown ({raw_value})", "muted")
+
+
+def _connection_count_item(key: str, label: str, value: Any) -> dict[str, Any]:
+    """Format an active connection count and highlight nonzero connectivity."""
+    number = _number(value)
+    if number is None or number < 0:
+        return _status_item(key, label, "Unavailable", "muted")
+    count = int(number)
+    return _status_item(key, label, str(count), "success" if count else "muted")
+
+
+def _rssi_item(value: Any) -> dict[str, Any]:
+    """Format Wi-Fi RSSI and assign good, fair, or weak signal coloring."""
+    rssi = _number(value)
+    if rssi is None:
+        return _status_item("esp_rssi", "Wi-Fi signal", "Unavailable", "muted")
+    tone = "success" if rssi >= -67 else "warning" if rssi >= -75 else "error"
+    return _status_item("esp_rssi", "Wi-Fi signal", f"{rssi:g} dBm", tone)
+
+
+def _client_list(value: Any) -> str:
+    """Format a client collection as a readable multi-line value."""
+    if value is None:
+        return "Unavailable"
+    if not isinstance(value, (list, tuple)) or not value:
+        return "None"
+    lines = []
+    for client in value:
+        if isinstance(client, dict):
+            address = client.get("sta_mac") or client.get("ip") or "Unknown client"
+            rssi = _number(client.get("sta_rssi"))
+            lines.append(f"{address} ({rssi:g} dBm)" if rssi is not None else str(address))
+        else:
+            lines.append(str(client))
+    return "\n".join(lines)
+
+
+def _power_item(value: Any) -> dict[str, Any]:
+    """Translate the flight-controller power-state API values."""
+    if value in (None, ""):
+        return _status_item("fc_pw_state", "Power", "Unavailable", "muted")
+    number = _number(value)
+    if number == 1:
+        return _status_item("fc_pw_state", "Power", "Powered", "success")
+    if number == 0:
+        return _status_item("fc_pw_state", "Power", "Unpowered", "warning")
+    if number == -1:
+        return _status_item("fc_pw_state", "Power", "Disabled", "muted")
+    return _status_item("fc_pw_state", "Power", f"Unknown ({value})", "muted")
+
+
+def _armed_item(value: Any) -> dict[str, Any]:
+    """Translate the flight-controller armed-state API values."""
+    if value in (None, ""):
+        return _status_item(
+            "fc_armed_state",
+            "Armed state",
+            "Unavailable",
+            "muted",
+        )
+    number = _number(value)
+    if number == 1:
+        return _status_item("fc_armed_state", "Armed state", "Armed", "warning")
+    if number == 0:
+        return _status_item("fc_armed_state", "Armed state", "Disarmed", "success")
+    if number is not None and number < 0:
+        return _status_item("fc_armed_state", "Armed state", "Not received", "muted")
+    return _status_item("fc_armed_state", "Armed state", f"Unknown ({value})", "muted")
+
+
+def _system_id(value: Any) -> str:
+    """Format a valid MAVLink system ID or its not-received state."""
+    if value in (None, ""):
+        return "Unavailable"
+    number = _number(value)
+    if number is not None and number.is_integer() and 1 <= number <= 255:
+        return str(int(number))
+    return "Not received" if number == -1 else f"Unknown ({value})"
+
+
+def _loss_value(received_value: Any, lost_value: Any) -> str:
+    """Format lost MAVLink messages as an absolute count and percentage."""
+    received = _number(received_value)
+    lost = _number(lost_value)
+    if received is None or lost is None or received < 0 or lost < 0:
+        return "Unavailable"
+    total = received + lost
+    percentage = 0.0 if total == 0 else lost / total * 100
+    return f"{int(lost):,} ({percentage:.2f}%)"
+
+
+def _firmware_display(record: DeviceRecord, info: dict[str, Any]) -> str:
+    """Combine semantic firmware components into one readable version label."""
+    parts = [
+        _number(info.get("major_version")),
+        _number(info.get("minor_version")),
+        _number(info.get("patch_version")),
+    ]
+    if all(part is not None and part.is_integer() for part in parts):
+        version = ".".join(str(int(part)) for part in parts)
+        maturity = str(info.get("maturity_version") or "").strip()
+        return f"{version} {maturity}".strip()
+    return record.firmware_version or "Unavailable"
+
+
+def _chip_display(record: DeviceRecord, info: dict[str, Any]) -> str:
+    """Return a user-facing ESP32 model name from known API chip identifiers."""
+    chip_id = _number(info.get("esp_chip_model"))
+    names = {5: "ESP32-C3", 13: "ESP32-C6", 23: "ESP32-C5"}
+    if chip_id is not None and chip_id.is_integer() and int(chip_id) in names:
+        return names[int(chip_id)]
+    return record.chip.replace("ESP32C", "ESP32-C") if record.chip else "Unavailable"
+
+
+def _metric_groups(record: DeviceRecord) -> list[dict[str, Any]]:
+    """Create the ordered grouped metrics dashboard model for one device."""
+    stats = record.stats
+    info = record.system_info
+    rate_unavailable = "Unavailable" if not record.online else "Calculating…"
+    read_rate = record.stats_rates.get("read_bytes")
+    sent_rate = record.stats_rates.get("serial_bytes_sent")
+
+    online = _status_item(
+        "online",
+        "Status",
+        "Online" if record.online else "Offline",
+        "success" if record.online else "error",
+    )
+    connection_items = [
+        online,
+        _metric_item("ip", "Device IP", record.ip or "Unavailable"),
+        _metric_item("hostname", "Hostname", record.hostname or "Unavailable"),
+        _metric_item("source", "Discovered via", record.source or "Unavailable"),
+        _connection_count_item("tcp_connected", "TCP clients", stats.get("tcp_connected")),
+        _connection_count_item("udp_connected", "UDP destinations", stats.get("udp_connected")),
+        _metric_item(
+            "current_client_ip",
+            "Client IP",
+            str(stats.get("current_client_ip") or "Unavailable"),
+        ),
+        _rssi_item(stats.get("esp_rssi", stats.get("sta_rssi"))),
+        _metric_item(
+            "udp_clients",
+            "UDP clients",
+            _client_list(stats.get("udp_clients")),
+            wide=True,
+        ),
+    ]
+    if "connected_sta" in stats:
+        connection_items.append(
+            _metric_item(
+                "connected_sta",
+                "Connected stations",
+                _client_list(stats.get("connected_sta")),
+                wide=True,
+            )
+        )
+
+    serial_items = [
+        _metric_item("read_bytes", "FC → ESP32 total", _format_bytes(stats.get("read_bytes"))),
+        _metric_item(
+            "read_rate",
+            "FC → ESP32 rate",
+            _format_bytes(read_rate, per_second=True)
+            if read_rate is not None and record.online
+            else rate_unavailable,
+        ),
+        _metric_item(
+            "serial_bytes_sent",
+            "ESP32 → FC total",
+            _format_bytes(stats.get("serial_bytes_sent")),
+        ),
+        _metric_item(
+            "sent_rate",
+            "ESP32 → FC rate",
+            _format_bytes(sent_rate, per_second=True)
+            if sent_rate is not None and record.online
+            else rate_unavailable,
+        ),
+        _metric_item(
+            "serial_mav_msgs_received",
+            "Messages received",
+            _format_count(stats.get("serial_mav_msgs_received")),
+        ),
+        _metric_item(
+            "serial_mav_msgs_lost",
+            "Messages lost",
+            _loss_value(
+                stats.get("serial_mav_msgs_received"),
+                stats.get("serial_mav_msgs_lost"),
+            ),
+            tone="error" if (_number(stats.get("serial_mav_msgs_lost")) or 0) > 0 else "neutral",
+        ),
+    ]
+
+    voltage = _number(stats.get("battery_voltage"))
+    battery_voltage = (
+        "Unavailable"
+        if voltage is None or voltage == 65535
+        else _format_measurement(voltage, "V")
+    )
+    flight_items = [
+        _power_item(stats.get("fc_pw_state")),
+        _armed_item(stats.get("fc_armed_state")),
+        _metric_item("fc_sysid", "MAVLink system ID", _system_id(stats.get("fc_sysid"))),
+        _metric_item("battery_voltage", "Battery voltage", battery_voltage),
+        _metric_item(
+            "battery_current",
+            "Battery current",
+            _format_measurement(stats.get("battery_current"), "A"),
+        ),
+    ]
+
+    cpu = _number(stats.get("cpu_load"))
+    cpu_percent = cpu / 100 if cpu is not None and cpu >= 0 else None
+    cpu_tone = "muted"
+    if cpu_percent is not None:
+        cpu_tone = "error" if cpu_percent >= 85 else "warning" if cpu_percent >= 70 else "success"
+    health_items = [
+        _status_item(
+            "cpu_load",
+            "CPU load",
+            f"{cpu_percent:.2f}%" if cpu_percent is not None else "Unavailable",
+            cpu_tone,
+        )
+    ]
+
+    chip_name = _chip_display(record, info)
+    firmware_items = [
+        _metric_item(
+            "firmware",
+            "Firmware",
+            _firmware_display(record, info),
+            wide=True,
+        ),
+        _metric_item("db_build_version", "Build", record.dronebridge_version or "Unavailable"),
+        _metric_item("idf_version", "ESP-IDF", str(info.get("idf_version") or "Unavailable")),
+        _metric_item("esp_chip_model", "Chip", chip_name),
+        _binary_status("has_rf_switch", "RF switch", info.get("has_rf_switch")),
+        _binary_status("serial_via_JTAG", "Serial via JTAG", info.get("serial_via_JTAG")),
+        _metric_item(
+            "esp_mac",
+            "MAC address",
+            str(info.get("esp_mac") or record.mac or "Unavailable"),
+            wide=True,
+        ),
+    ]
+
+    license_type = str(info.get("license_type") or record.activation_status or "Unavailable")
+    license_tone = (
+        "success"
+        if license_type.upper() == "ACTIVATED"
+        else "warning"
+        if license_type.upper() == "EVALUATION"
+        else "muted"
+    )
+    license_items = [
+        _status_item("license_type", "License type", license_type, license_tone),
+        _metric_item(
+            "expiration_date",
+            "Expires",
+            str(info.get("expiration_date") or "Unavailable"),
+        ),
+        _metric_item(
+            "activation_key",
+            "Activation key",
+            str(
+                info.get("activation_key")
+                or info.get("key")
+                or record.activation_key
+                or "Unavailable"
+            ),
+            wide=True,
+        ),
+    ]
+
+    groups = [
+        {"id": "connection", "title": "CONNECTION", "items": connection_items},
+        {"id": "serial", "title": "SERIAL & MAVLINK", "items": serial_items},
+        {"id": "flight_controller", "title": "FLIGHT CONTROLLER", "items": flight_items},
+        {"id": "health", "title": "DEVICE HEALTH", "items": health_items},
+        {"id": "firmware", "title": "FIRMWARE & HARDWARE", "items": firmware_items},
+        {"id": "license", "title": "LICENSE", "items": license_items},
+    ]
+
+    other_items = [
+        _metric_item(
+            f"system.{key}",
+            f"System · {str(key).replace('_', ' ').title()}",
+            _format_unknown(value),
+            wide=isinstance(value, (dict, list, tuple)),
+        )
+        for key, value in sorted(info.items())
+        if key not in KNOWN_SYSTEM_METRICS
+    ]
+    other_items.extend(
+        _metric_item(
+            f"runtime.{key}",
+            f"Runtime · {str(key).replace('_', ' ').title()}",
+            _format_unknown(value),
+            wide=isinstance(value, (dict, list, tuple)),
+        )
+        for key, value in sorted(stats.items())
+        if key not in KNOWN_RUNTIME_METRICS
+    )
+    if other_items:
+        groups.append({"id": "other", "title": "OTHER", "items": other_items})
+    return groups
+
 
 class FleetController(QObject):
     """Coordinate QML state, persisted preferences, and background workflows."""
@@ -132,7 +576,7 @@ class FleetController(QObject):
         if self._scan_values()["stats_enabled"]:
             self.stats_timer.start(self._scan_values()["stats_interval"] * 1000)
         self.license_timer = QTimer(self)
-        self.license_timer.setInterval(30_000)
+        self.license_timer.setInterval(10_000)
         self.license_timer.timeout.connect(self.checkLicenseServer)
         self.license_timer.start()
         QTimer.singleShot(250, self.checkLicenseServer)
@@ -350,34 +794,11 @@ class FleetController(QObject):
 
     @Property("QVariantList", notify=inspectorChanged)
     def metrics(self) -> list[dict[str, Any]]:
-        """Return system and runtime details for the inspector metrics tab."""
+        """Return grouped, display-ready device metrics for the inspector."""
         record = self._inspected_record()
         if record is None:
             return []
-        base = {
-            "IP": record.ip,
-            "Hostname": record.hostname,
-            "MAC": record.mac,
-            "Activation key": record.activation_key,
-            "License": record.activation_status,
-            "Firmware": record.firmware_version,
-            "Build Version": record.dronebridge_version,
-            "Online": record.online,
-            "Discovery source": record.source,
-        }
-        rows = [
-            {"group": "Device", "key": key, "value": str(value)}
-            for key, value in base.items()
-        ]
-        rows.extend(
-            {"group": "System", "key": str(key), "value": str(value)}
-            for key, value in sorted(record.system_info.items())
-        )
-        rows.extend(
-            {"group": "Statistics", "key": str(key), "value": str(value)}
-            for key, value in sorted(record.stats.items())
-        )
-        return rows
+        return _metric_groups(record)
 
     @Property(str, notify=webUrlChanged)
     def webUrl(self) -> str:

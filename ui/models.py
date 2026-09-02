@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from time import monotonic
 from typing import Any
 
 from PySide6.QtCore import (
@@ -57,6 +58,8 @@ class DeviceRecord:
     system_info: dict[str, Any] = field(default_factory=dict)
     settings: dict[str, Any] = field(default_factory=dict)
     stats: dict[str, Any] = field(default_factory=dict)
+    stats_rates: dict[str, float | None] = field(default_factory=dict)
+    stats_sampled_at: float | None = None
     errors: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -142,11 +145,11 @@ class DeviceTableModel(QAbstractTableModel):
         ("dlse_mavlink_sys_id_based_on_ip", "DLSE MAVLINK\nSYS ID BASED ON IP", 154),
         ("activation_key", "ACTIVATION KEY", 210),
         ("mac", "MAC", 138),
-        ("online", "ONLINE", 86),
+        ("online", "ESP\nONLINE", 86),
         ("operation", "OPERATION", 150),
         ("operation_progress", "PROGRESS", 106),
     ]
-    DEFAULT_COLUMN_KEYS = tuple(column[0] for column in COLUMNS[:10])
+    DEFAULT_COLUMN_KEYS = tuple(column[0] for column in COLUMNS[:11])
 
     IdentityRole = Qt.UserRole + 1
     IpRole = Qt.UserRole + 2
@@ -382,6 +385,7 @@ class DeviceTableModel(QAbstractTableModel):
         stats: dict[str, Any] | None = None,
         error: str = "",
         failure_threshold: int = 3,
+        sampled_at: float | None = None,
     ) -> None:
         """
         Apply one stats attempt and update the device's online health.
@@ -391,6 +395,8 @@ class DeviceTableModel(QAbstractTableModel):
         :param stats: Latest runtime statistics for a successful request.
         :param error: Sanitized failure detail stored for inspector diagnostics.
         :param failure_threshold: Consecutive counted failures required offline.
+        :param sampled_at: Optional monotonic sample time used by deterministic
+            callers and tests. The current monotonic time is used when omitted.
         :return: None. Unknown identities are ignored; reaching the configured
             failure threshold marks a device offline while success restores it.
         """
@@ -398,7 +404,18 @@ class DeviceTableModel(QAbstractTableModel):
         if record is None:
             return
         if success and isinstance(stats, dict):
-            record.stats = stats
+            current_sample_time = monotonic() if sampled_at is None else sampled_at
+            elapsed = (
+                current_sample_time - record.stats_sampled_at
+                if record.stats_sampled_at is not None
+                else None
+            )
+            record.stats_rates = {
+                key: _counter_rate(record.stats, stats, key, elapsed)
+                for key in ("read_bytes", "serial_bytes_sent")
+            }
+            record.stats = dict(stats)
+            record.stats_sampled_at = current_sample_time
             record.last_seen = datetime.now()
             record.consecutive_stats_failures = 0
             record.offline_grace_until = None
@@ -964,6 +981,37 @@ def _format_fc_sys_id(value: Any) -> str:
     except (TypeError, ValueError):
         return "unknown"
     return str(sys_id) if 1 <= sys_id <= 255 else "unknown"
+
+
+def _counter_rate(
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    key: str,
+    elapsed: float | None,
+) -> float | None:
+    """
+    Calculate a non-negative counter delta per second.
+
+    :param previous: Previous successful runtime statistics payload.
+    :param current: Current successful runtime statistics payload.
+    :param key: Counter field to compare between payloads.
+    :param elapsed: Monotonic seconds between successful samples.
+    :return: Counter units per second, or ``None`` until two valid increasing
+        samples exist. A decreasing counter is treated as a device reset.
+    """
+    if elapsed is None or elapsed <= 0 or key not in previous or key not in current:
+        return None
+    old_value = previous[key]
+    new_value = current[key]
+    if isinstance(old_value, bool) or isinstance(new_value, bool):
+        return None
+    try:
+        delta = float(new_value) - float(old_value)
+    except (TypeError, ValueError):
+        return None
+    if delta < 0:
+        return None
+    return delta / elapsed
 
 
 def _format_chip(chip_id: Any) -> str:

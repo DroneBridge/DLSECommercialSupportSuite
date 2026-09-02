@@ -8,6 +8,7 @@ Button {
     property string iconSource: ""
     property bool emphasized: false
     property bool quiet: false
+    property bool textBold: true
     property color accentColor: theme.accent
     readonly property color foregroundColor: !enabled
                                              ? theme.mutedText
@@ -58,7 +59,7 @@ Button {
             color: control.foregroundColor
             font.family: theme.bodyFont
             font.pixelSize: theme.bodyTextSize
-            font.bold: true
+            font.bold: control.textBold
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight

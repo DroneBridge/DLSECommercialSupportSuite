@@ -65,7 +65,7 @@ Rectangle {
         width: 238
 
         color: "#deceb9"
-        font.family: "JetBrains Mono"
+        font.family: theme.dataFont
         font.pixelSize: theme.bodyTextSize
         font.weight: Font.Normal
         horizontalAlignment: Text.AlignLeft

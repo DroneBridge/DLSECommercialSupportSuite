@@ -23,7 +23,11 @@ MATERIAL_FONT = (
     / "Material_Symbols_Outlined"
     / "MaterialSymbolsOutlined[FILL,GRAD,opsz,wght].ttf"
 )
-DEFAULT_FONT_PIXEL_SIZE = 12
+GEIST_FONT_ROOT = RESOURCE_ROOT / "fonts" / "Geist"
+GEIST_FONT = GEIST_FONT_ROOT / "Geist[wght].ttf"
+GEIST_MONO_FONT = GEIST_FONT_ROOT / "GeistMono[wght].ttf"
+BUNDLED_FONTS = (MATERIAL_FONT, GEIST_FONT, GEIST_MONO_FONT)
+DEFAULT_FONT_PIXEL_SIZE = 13
 
 
 def _initialize_webengine() -> None:
@@ -36,9 +40,14 @@ def _initialize_webengine() -> None:
 
 
 def _load_fonts() -> None:
-    """Register bundled fonts without downloading runtime resources."""
-    if MATERIAL_FONT.is_file():
-        QFontDatabase.addApplicationFont(str(MATERIAL_FONT))
+    """Register each available bundled font with Qt.
+
+    Missing files and fonts rejected by Qt are skipped. The function performs
+    no network access and returns no value.
+    """
+    for font_path in BUNDLED_FONTS:
+        if font_path.is_file():
+            QFontDatabase.addApplicationFont(str(font_path))
 
 
 def _set_default_font(app: QGuiApplication) -> None:

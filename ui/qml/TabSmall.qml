@@ -101,7 +101,7 @@ Rectangle {
 
         color: "#deceb9"
         font.capitalization: Font.AllUppercase
-        font.family: "JetBrains Mono"
+        font.family: theme.dataFont
         font.pixelSize: theme.bodyTextSize
         font.weight: Font.Bold
         horizontalAlignment: Text.AlignHCenter

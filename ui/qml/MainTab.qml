@@ -85,7 +85,7 @@ Rectangle {
 
             color: "#e2d5c8"
             font.capitalization: Font.AllUppercase
-            font.family: "Geist"
+            font.family: theme.bodyFont
             font.pixelSize: theme.bodyTextSize
             font.weight: Font.Bold
             horizontalAlignment: Text.AlignHCenter

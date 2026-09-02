@@ -94,6 +94,8 @@ The matrix view uses compact inspection cards optimized for high-density fleets.
 
 The right-side ESP32 configuration panel can be resized by dragging its left edge. Double-click the resize handle to restore the default width. The chosen panel width is persisted across sessions.
 
+The inspector's **Metrics** tab groups connection, serial/MAVLink, flight-controller, health, firmware/hardware, and license information into cards. Byte and message counters remain cumulative since boot. Directional serial throughput is calculated from the two latest successful stats polls using their actual elapsed time; it displays as `Calculating...` until a valid pair is available and resets its baseline when a device counter decreases. MAVLink loss is shown as both an absolute count and a percentage. Firmware fields unknown to this application remain visible in the **Other** card.
+
 Settings values in the right-side panel, including Wi-Fi password fields, are shown as readable text so operators can verify device configuration before applying changes. License-server tokens are still session-only and are not persisted.
 
 License activation requires a DroneBridge license server token. The UI preloads the token from `DRONEBRIDGE_SECRET_TOKEN`, or accepts it for the current session. Tokens are never persisted. Regular activated licenses use the existing permanent-license behavior, and evaluation licenses request a fixed 60-day validity. License-server availability is checked every ten seconds.
@@ -128,7 +130,9 @@ OTA updates accept a DroneBridge account release, a validated local release fold
 
 Before network operations, make sure the ESP32s are reachable, configured UDP ports match, and Skybrush Live is stopped when MAVLink ports are required. Test activation, settings, reboot, and OTA operations on a small hardware batch before using them on a production fleet. Hardware workflows were not exercised by the automated test suite.
 
-The Web Interface inspector uses Qt WebEngine Quick and is instantiated only after an online device is selected and the tab is opened. Linux deployments must provide the normal Qt runtime system libraries and at least one usable system font. All application icons and design assets are bundled; the UI performs no runtime asset downloads.
+The default automated test run skips checks that require a physical ESP32 or the production license server. Set `DLSE_RUN_HARDWARE_TESTS=1` only with a test ESP32 connected, optionally selecting its port with `DLSE_TEST_SERIAL_PORT` (default `COM18`). Set `DLSE_RUN_NETWORK_TESTS=1` to include the live license-server availability check.
+
+The Web Interface inspector uses Qt WebEngine Quick and is instantiated only after an online device is selected and the tab is opened. Linux deployments must provide the normal Qt runtime system libraries. Geist and Geist Mono are bundled under the SIL Open Font License 1.1, together with the application icons and other design assets, so the UI performs no runtime asset downloads.
 
 ## Automated DLSE Batch Installation
 <img alt="Gemini_Generated_Image_kvejvukvejvukvej" src="https://github.com/user-attachments/assets/a069d8a4-fb42-4b4c-b2d6-70a67f0ac5ed" />

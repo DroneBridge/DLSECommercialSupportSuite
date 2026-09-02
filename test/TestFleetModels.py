@@ -128,10 +128,90 @@ class TestFleetModels(unittest.TestCase):
         self.assertEqual("15.8", updated.battery_voltage)
         self.assertEqual("3", updated.fc_sys_id)
 
+    def test_stats_poll_calculates_directional_rates_and_resets_baseline(self):
+        """Successful counter samples produce rates and tolerate device resets."""
+        model = DeviceTableModel()
+        model.upsert_many([
+            DeviceRecord(
+                identity="KEY",
+                ip="192.168.1.42",
+                activation_key="KEY",
+            )
+        ])
+
+        model.apply_stats_result(
+            "KEY",
+            True,
+            {"read_bytes": 1000, "serial_bytes_sent": 500},
+            sampled_at=10.0,
+        )
+        record = model.record_at(0)
+        self.assertIsNone(record.stats_rates["read_bytes"])
+        self.assertIsNone(record.stats_rates["serial_bytes_sent"])
+
+        model.apply_stats_result(
+            "KEY",
+            True,
+            {"read_bytes": 3048, "serial_bytes_sent": 1524},
+            sampled_at=12.0,
+        )
+        self.assertEqual(1024.0, record.stats_rates["read_bytes"])
+        self.assertEqual(512.0, record.stats_rates["serial_bytes_sent"])
+
+        model.apply_stats_result(
+            "KEY",
+            True,
+            {"read_bytes": 10, "serial_bytes_sent": 5},
+            sampled_at=14.0,
+        )
+        self.assertIsNone(record.stats_rates["read_bytes"])
+        self.assertIsNone(record.stats_rates["serial_bytes_sent"])
+
+        model.apply_stats_result(
+            "KEY",
+            True,
+            {"read_bytes": 522, "serial_bytes_sent": 261},
+            sampled_at=16.0,
+        )
+        self.assertEqual(256.0, record.stats_rates["read_bytes"])
+        self.assertEqual(128.0, record.stats_rates["serial_bytes_sent"])
+
+    def test_stats_poll_rejects_invalid_rate_samples(self):
+        """Missing, malformed, boolean, and zero-time counters have no rate."""
+        model = DeviceTableModel()
+        model.upsert_many([
+            DeviceRecord(
+                identity="KEY",
+                ip="192.168.1.42",
+                activation_key="KEY",
+            )
+        ])
+        model.apply_stats_result(
+            "KEY",
+            True,
+            {"read_bytes": 10, "serial_bytes_sent": 5},
+            sampled_at=10.0,
+        )
+        model.apply_stats_result(
+            "KEY",
+            True,
+            {"read_bytes": True, "serial_bytes_sent": "bad"},
+            sampled_at=10.0,
+        )
+        record = model.record_at(0)
+        self.assertIsNone(record.stats_rates["read_bytes"])
+        self.assertIsNone(record.stats_rates["serial_bytes_sent"])
+
     def test_fc_mavlink_sys_id_uses_the_stats_api_contract(self):
         """Only API values 1 through 255 produce a visible FC MAVLink SYS ID."""
         model = DeviceTableModel()
-        model.upsert_many([DeviceRecord(identity="KEY", ip="192.168.1.42")])
+        model.upsert_many([
+            DeviceRecord(
+                identity="KEY",
+                ip="192.168.1.42",
+                activation_key="KEY",
+            )
+        ])
 
         for raw_value, expected in (
             (-1, "unknown"),
@@ -388,6 +468,13 @@ class TestFleetModels(unittest.TestCase):
             DeviceTableModel.DEFAULT_COLUMN_KEYS[
                 DeviceTableModel.DEFAULT_COLUMN_KEYS.index("mavlink_sys_id") + 1
             ],
+        )
+
+    def test_online_column_identifies_the_esp32(self):
+        """The online column title distinguishes ESP32 health from FC status."""
+        self.assertEqual(
+            "ESP\nONLINE",
+            DeviceTableModel.column_definition("online")[1],
         )
 
     def test_rest_record_formats_fc_mavlink_sys_id(self):

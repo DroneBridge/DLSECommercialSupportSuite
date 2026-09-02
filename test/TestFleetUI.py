@@ -12,13 +12,13 @@ os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
 from PySide6.QtCore import QMetaObject, QPoint, QPointF, QSettings, Qt, QUrl
-from PySide6.QtGui import QColor, QGuiApplication
+from PySide6.QtGui import QColor, QFontDatabase, QGuiApplication
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtQml import QQmlComponent
 from PySide6.QtTest import QTest
 
 from DroneBridgeCommercialSupportSuite import DBDLSERelease
-from ui.app import create_engine
+from ui.app import GEIST_FONT, GEIST_FONT_ROOT, GEIST_MONO_FONT, _load_fonts, create_engine
 from ui.controller import (
     DEFAULT_BULK_EXCLUSIONS,
     DEFAULT_INSPECTOR_WIDTH,
@@ -169,7 +169,7 @@ class TestFleetUI(unittest.TestCase):
             'fill="#e2d5c8"',
             (self.QML_ROOT.parent / "resources" / "images" / "settings_24dp.svg").read_text(encoding="utf-8"),
         )
-        self.assertEqual(154, scan_button.width())
+        self.assertEqual(162, scan_button.width())
         self.assertEqual(30, scan_button.height())
         self.assertEqual(36, scan_settings.width())
         self.assertEqual(30, scan_settings.height())
@@ -188,7 +188,7 @@ class TestFleetUI(unittest.TestCase):
         self.assertTrue(self.controller.scanning)
         self.controller.pool.start.assert_called_once()
         self.assertEqual(2, scan_button.property("eigenschaft_2"))
-        self.assertEqual("Scanning ...", scan_button.property("labelText"))
+        self.assertEqual("Stop Scanning", scan_button.property("labelText"))
 
     def test_scan_settings_exported_button_opens_dialog(self):
         """Clicking the exported settings segment opens scan settings."""
@@ -209,7 +209,7 @@ class TestFleetUI(unittest.TestCase):
         """Fleet operations render with the exported button frame controls."""
         self._enter_main_screen()
         expected = {
-            "rebootButton": ("Reboot Devices", 150, 100, False),
+            "rebootButton": ("Reboot Devices", 158, 108, False),
             "assignStaticIpButton": ("Assign Static IPs", 170, 130, False),
             "alignSysIdsButton": ("Align SYS IDs", 150, 100, False),
             "otaFirmwareButton": ("OTA Firmware Upgrade", 208, 158, False),
@@ -365,7 +365,7 @@ class TestFleetUI(unittest.TestCase):
         view_switch = self.root.findChild(QQuickItem, "viewModeSwitch")
 
         self.assertIsNotNone(view_switch)
-        self.assertEqual(128, view_switch.width())
+        self.assertEqual(144, view_switch.width())
         self.assertEqual(24, view_switch.height())
         self.assertEqual(0, main_screen.property("viewMode"))
 
@@ -431,7 +431,7 @@ class TestFleetUI(unittest.TestCase):
             source.index("GridView {")
         ]
 
-        self.assertIn('font.family: "JetBrains Mono"', table_block)
+        self.assertIn("font.family: theme.dataFont", table_block)
         self.assertIn("font.pixelSize: theme.smallTextSize", table_block)
         self.assertIn('color: selected ? "#12304d"', table_block)
         self.assertIn('identity === fleetController.inspectedIdentity ? "#0f253a"', table_block)
@@ -443,9 +443,9 @@ class TestFleetUI(unittest.TestCase):
         """All QML text sizes use the three semantic typography tokens."""
         theme_source = (self.QML_ROOT / "Theme.qml").read_text(encoding="utf-8")
         expected_sizes = {
-            "smallTextSize": 10,
-            "bodyTextSize": 12,
-            "headingTextSize": 16,
+            "smallTextSize": 11,
+            "bodyTextSize": 13,
+            "headingTextSize": 17,
         }
         for token, size in expected_sizes.items():
             self.assertIn(f"readonly property int {token}: {size}", theme_source)
@@ -464,6 +464,19 @@ class TestFleetUI(unittest.TestCase):
                 set(assignments).issubset(allowed_tokens),
                 f"Unexpected font size in {qml_path.name}: {assignments}",
             )
+
+    def test_geist_fonts_and_license_are_bundled(self):
+        """Bundled typography assets register both named theme families."""
+        license_path = GEIST_FONT_ROOT / "OFL.txt"
+        self.assertTrue(GEIST_FONT.is_file())
+        self.assertTrue(GEIST_MONO_FONT.is_file())
+        self.assertIn("SIL OPEN FONT LICENSE", license_path.read_text(encoding="utf-8"))
+
+        _load_fonts()
+
+        families = set(QFontDatabase.families())
+        self.assertIn("Geist", families)
+        self.assertIn("Geist Mono", families)
 
     def test_table_inspection_highlight_differs_from_selection(self):
         """Clicked inspection rows use a highlight distinct from selected rows."""
@@ -506,6 +519,161 @@ class TestFleetUI(unittest.TestCase):
         self.assertIn("echoMode: TextInput.Normal", source)
         self.assertNotIn("TextInput.Password", source)
         self.assertNotIn("id: settingsList", source)
+
+    def test_settings_empty_state_is_centered_in_the_tab(self):
+        """The placeholder is centered while Settings actions remain at the bottom."""
+        self._enter_main_screen()
+        empty_state = self.root.findChild(QQuickItem, "settingsEmptyState")
+        apply_button = self.root.findChild(QQuickItem, "configApplySettingsButton")
+        config_panel = self.root.findChild(QQuickItem, "configPanel")
+        self.assertIsNotNone(empty_state)
+        self.assertIsNotNone(apply_button)
+        self.assertTrue(empty_state.isVisible())
+
+        parent = empty_state.parentItem()
+        self.assertAlmostEqual(
+            parent.width() / 2,
+            empty_state.x() + empty_state.width() / 2,
+            delta=1,
+        )
+        self.assertAlmostEqual(
+            parent.height() / 2,
+            empty_state.y() + empty_state.height() / 2,
+            delta=1,
+        )
+        apply_bottom = apply_button.mapToItem(
+            config_panel,
+            QPointF(0, apply_button.height()),
+        ).y()
+        self.assertAlmostEqual(config_panel.height() - 12, apply_bottom, delta=1)
+
+    def test_metrics_are_grouped_formatted_and_forward_compatible(self):
+        """The inspector exposes curated cards plus an unknown-field fallback."""
+        record = DeviceRecord(
+            identity="KEY",
+            ip="192.168.1.42",
+            hostname="dlse-c5",
+            activation_key="KEY",
+            activation_status="EVALUATION",
+            firmware_version="1.0.0-(BETA7) DroneShow Edition",
+            chip="ESP32C5",
+            dronebridge_version="28",
+            mac="D0:CF:13:E3:6D:F4",
+            sources={"REST"},
+            system_info={
+                "idf_version": "v5.5.4",
+                "major_version": 1,
+                "minor_version": 0,
+                "patch_version": 0,
+                "maturity_version": "(BETA7) DroneShow Edition",
+                "license_type": "EVALUATION",
+                "expiration_date": "2026-10-09 20:39:26",
+                "activation_key": "KEY",
+                "esp_chip_model": 23,
+                "has_rf_switch": 1,
+                "serial_via_JTAG": 0,
+                "future_system_value": "supported",
+            },
+            stats={
+                "read_bytes": 1048576,
+                "serial_bytes_sent": 2048,
+                "serial_mav_msgs_received": 99,
+                "serial_mav_msgs_lost": 1,
+                "tcp_connected": 0,
+                "udp_connected": 1,
+                "udp_clients": ["192.168.1.231:14550"],
+                "esp_rssi": -72,
+                "fc_pw_state": -1,
+                "fc_armed_state": -2,
+                "fc_sysid": -1,
+                "battery_voltage": 65535,
+                "battery_current": 0,
+                "cpu_load": 409,
+                "future_runtime_value": [1, 2],
+            },
+            stats_rates={"read_bytes": 1024.0, "serial_bytes_sent": 512.0},
+        )
+        self.controller.source_model.upsert_many([record])
+        self.controller.inspectDevice("KEY")
+
+        groups = self.controller.metrics
+        self.assertEqual(
+            [
+                "connection",
+                "serial",
+                "flight_controller",
+                "health",
+                "firmware",
+                "license",
+                "other",
+            ],
+            [group["id"] for group in groups],
+        )
+        items = {
+            item["key"]: item
+            for group in groups
+            for item in group["items"]
+        }
+        self.assertEqual("1.00 MiB", items["read_bytes"]["value"])
+        self.assertEqual("1.00 KiB/s", items["read_rate"]["value"])
+        self.assertEqual("1 (1.00%)", items["serial_mav_msgs_lost"]["value"])
+        self.assertEqual("4.09%", items["cpu_load"]["value"])
+        self.assertEqual(
+            "1.0.0 (BETA7) DroneShow Edition",
+            items["firmware"]["value"],
+        )
+        self.assertEqual("ESP32-C5", items["esp_chip_model"]["value"])
+        self.assertEqual("Unavailable", items["battery_voltage"]["value"])
+        self.assertEqual("Disabled", items["fc_pw_state"]["value"])
+        self.assertEqual("Not received", items["fc_armed_state"]["value"])
+        self.assertEqual("Not received", items["fc_sysid"]["value"])
+        self.assertEqual("supported", items["system.future_system_value"]["value"])
+        self.assertEqual("[1, 2]", items["runtime.future_runtime_value"]["value"])
+
+    def test_metrics_qml_uses_scrollable_grouped_cards(self):
+        """The Metrics tab renders grouped cards rather than the flat list."""
+        self._enter_main_screen()
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="KEY",
+                ip="192.168.1.42",
+                activation_key="KEY",
+                stats={"read_bytes": 0, "serial_bytes_sent": 0},
+            )
+        ])
+        self.controller.inspectDevice("KEY")
+        tabs = self.root.findChild(QQuickItem, "configTabs")
+        tabs.setProperty("currentIndex", 2)
+        self.controller.inspectorChanged.emit()
+        self.app.processEvents()
+
+        self.assertIsNotNone(self.root.findChild(QQuickItem, "metricsScroll"))
+        metrics_scroll = self.root.findChild(QQuickItem, "metricsScroll")
+        inspector = self.root.findChild(QQuickItem, "inspectorShell")
+        cards = self.root.findChild(QQuickItem, "metricsCards")
+        groups_repeater = self.root.findChild(object, "metricsGroups")
+        self.assertEqual(2, tabs.property("currentIndex"))
+        self.assertTrue(metrics_scroll.isVisible())
+        self.assertEqual(6, groups_repeater.property("count"))
+        for width in (MIN_INSPECTOR_WIDTH, DEFAULT_INSPECTOR_WIDTH, MAX_INSPECTOR_WIDTH):
+            self.controller.setInspectorWidth(width)
+            self.app.processEvents()
+            self.assertEqual(width, round(inspector.width()))
+            self.assertGreater(cards.width(), 0)
+            self.assertLessEqual(cards.width(), inspector.width())
+
+        source = (self.QML_ROOT / "Config.qml").read_text(encoding="utf-8")
+        self.assertIn("model: metricCard.modelData.items", source)
+        self.assertIn("Layout.columnSpan: modelData.wide ? 2 : 1", source)
+        self.assertIn("function statusColor(tone)", source)
+        metric_delegate = source[
+            source.index("id: metricItem"):
+            source.index("function statusColor(tone)")
+        ]
+        self.assertIn("delegate: Item", source)
+        self.assertNotIn("border.", metric_delegate)
+        self.assertNotIn("statusBackground", source)
+        self.assertNotIn("modelData.group + \" / \" + modelData.key", source)
 
     def test_license_server_poll_interval_and_overlap_guard(self):
         """License checks run every ten seconds and cannot overlap."""

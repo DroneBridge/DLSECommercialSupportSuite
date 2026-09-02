@@ -14,7 +14,7 @@ T.Switch {
     property int status_1: ControlsSwitch.Status.Status_Default
 
     height: 24
-    width: 128
+    width: 144
 
     background: Rectangle {
         id: controlsSwitch
@@ -73,7 +73,7 @@ T.Switch {
     
                 color: "#e2d5c8"
                 font.capitalization: Font.AllUppercase
-                font.family: "JetBrains Mono"
+                font.family: theme.dataFont
                 font.letterSpacing: -0.70
                 font.pixelSize: theme.smallTextSize
                 font.weight: Font.Bold
@@ -86,11 +86,11 @@ T.Switch {
         Item {
             id: group_39
     
-            x: 69
+            x: 77
             y: 4
     
             height: 15.99
-            width: 54.63
+            width: 60
     
             Grid_view_1 {
                 id: grid_view_2
@@ -123,14 +123,13 @@ T.Switch {
                 y: 1.21
     
                 height: 13.27
-                width: 38
+                width: 45
     
                 color: "#e2d5c8"
                 font.capitalization: Font.AllUppercase
-                font.family: "JetBrains Mono"
+                font.family: theme.dataFont
                 font.letterSpacing: -0.70
                 font.pixelSize: theme.smallTextSize
-                font.weight: Font.Bold
                 horizontalAlignment: Text.AlignLeft
                 text: "Matrix"
                 textFormat: Text.PlainText
@@ -150,7 +149,7 @@ T.Switch {
             y: 2
     
             height: 20
-            width: 64
+            width: 72
     
             clip: true
             color: "#2e3a47"
@@ -186,7 +185,7 @@ T.Switch {
                 target: controlsSwitch
             }
             PropertyChanges {
-                x: 62
+                x: 70
     
                 target: indicator
             }
@@ -222,7 +221,7 @@ T.Switch {
                 target: controlsSwitch
             }
             PropertyChanges {
-                x: 62
+                x: 70
     
                 target: indicator
             }
@@ -240,7 +239,7 @@ T.Switch {
                 target: controlsSwitch
             }
             PropertyChanges {
-                x: 16
+                x: 18
     
                 target: indicator
             }
@@ -258,7 +257,7 @@ T.Switch {
                 target: controlsSwitch
             }
             PropertyChanges {
-                x: 48
+                x: 54
     
                 target: indicator
             }
@@ -294,7 +293,7 @@ T.Switch {
                 target: controlsSwitch
             }
             PropertyChanges {
-                x: 62
+                x: 70
     
                 target: indicator
             }

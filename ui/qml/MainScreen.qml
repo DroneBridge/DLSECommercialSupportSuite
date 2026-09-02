@@ -172,7 +172,7 @@ Item {
                 }
 
                 Rectangle {
-                    Layout.preferredWidth: 190
+                    Layout.preferredWidth: 198
                     Layout.fillHeight: true
                     color: "transparent"
                     opacity: 0.45
@@ -239,7 +239,7 @@ Item {
 
                     FocusScope {
                         id: scanButtonFocus
-                        width: 154
+                        width: 162
                         height: 30
                         activeFocusOnTab: true
 
@@ -247,7 +247,7 @@ Item {
                             id: scanButton
                             objectName: "scanButton"
                             anchors.fill: parent
-                            labelText: fleetController.scanning ? "Scanning ..." : "Scan for Devices"
+                            labelText: fleetController.scanning ? "Stop Scanning" : "Scan for Devices"
                             eigenschaft_2: fleetController.scanning || scanButtonMouse.pressed
                                            ? Scan_Button.Eigenschaft_1.Eigenschaft_1_Variante3
                                            : (scanButtonMouse.containsMouse || scanButtonFocus.activeFocus
@@ -312,7 +312,7 @@ Item {
 
                 FocusScope {
                     id: rebootButtonFocus
-                    Layout.preferredWidth: 150
+                    Layout.preferredWidth: 158
                     Layout.preferredHeight: 29
                     activeFocusOnTab: enabled
                     enabled: fleetController.detectedCount > 0 && fleetController.activeOperation.length === 0
@@ -323,7 +323,7 @@ Item {
                         objectName: "rebootButton"
                         anchors.fill: parent
                         text_LabelText: "Reboot Devices"
-                        text_LabelWidth: 100
+                        text_LabelWidth: 108
                         keyIconVisible: false
                         eigenschaft_2: rebootMouse.pressed
                                        ? OTA_Button_1.Eigenschaft_1.Eigenschaft_1_Variante3
@@ -599,6 +599,7 @@ Item {
                 AppButton {
                     text: "CONFIGURE COLUMNS"
                     quiet: true
+                    textBold: false
                     onClicked: fleetDialogs.openColumns()
                 }
 
@@ -607,7 +608,7 @@ Item {
                 ControlsSwitch {
                     id: viewModeSwitch
                     objectName: "viewModeSwitch"
-                    Layout.preferredWidth: 128
+                    Layout.preferredWidth: 144
                     Layout.preferredHeight: 24
                     checked: viewMode === 1
                     onClicked: viewMode = checked ? 1 : 0
@@ -850,7 +851,7 @@ Item {
                                         color: columnKey === "rssi" ? "white"
                                              : dlseParameterWarning(columnKey, display) ? theme.warning
                                              : theme.primaryText
-                                        font.family: "JetBrains Mono"
+                                        font.family: theme.dataFont
                                         font.pixelSize: theme.smallTextSize
                                         verticalAlignment: Text.AlignVCenter
                                         horizontalAlignment: columnKey === "hostname"
@@ -1093,7 +1094,6 @@ Item {
                     color: theme.primaryText
                     font.family: theme.dataFont
                     font.pixelSize: theme.smallTextSize
-                    font.bold: true
                 }
 
                 Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: theme.border }
@@ -1108,7 +1108,6 @@ Item {
                     color: theme.primaryText
                     font.family: theme.dataFont
                     font.pixelSize: theme.smallTextSize
-                    font.bold: true
                 }
 
                 Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: theme.border }
@@ -1124,7 +1123,6 @@ Item {
                     color: theme.primaryText
                     font.family: theme.dataFont
                     font.pixelSize: theme.smallTextSize
-                    font.bold: true
                 }
 
                 Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: theme.border }
@@ -1140,14 +1138,13 @@ Item {
                     color: theme.primaryText
                     font.family: theme.dataFont
                     font.pixelSize: theme.smallTextSize
-                    font.bold: true
                 }
 
                 Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: theme.border }
 
                 Text {
                     text: mainScreen.footerText(
-                              "STATUS:",
+                              "SCAN:",
                               fleetController.statusText,
                               fleetController.statusText.indexOf("ERROR") >= 0
                               ? theme.error : theme.primaryText)
@@ -1155,7 +1152,6 @@ Item {
                     color: theme.primaryText
                     font.family: theme.dataFont
                     font.pixelSize: theme.smallTextSize
-                    font.bold: true
                 }
 
                 Item { Layout.fillWidth: true }
@@ -1171,7 +1167,6 @@ Item {
                     color: theme.primaryText
                     font.family: theme.dataFont
                     font.pixelSize: theme.smallTextSize
-                    font.bold: true
                 }
             }
         }

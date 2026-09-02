@@ -4,10 +4,14 @@ Simple test script to verify DBLogger singleton works correctly.
 """
 import unittest
 import os
-from datetime import datetime
+import io
+from unittest.mock import patch
+
 from DroneBridgeCommercialSupportSuite import DBLogger
 
 class LoggerTestCase(unittest.TestCase):
+    """Verify singleton logging and console encoding fallbacks."""
+
     def test_basic_logger(self):
         # Create a test log file
         log_dir = "test_logs"
@@ -39,6 +43,15 @@ class LoggerTestCase(unittest.TestCase):
                 for expected_entry in desired_log_entries:
                     line = f.readline()
                     self.assertEqual(line.endswith(expected_entry + '\n'), True, msg=f"Check if log file contains message: {expected_entry}")
+
+    def test_unicode_console_fallback(self):
+        """Unicode status symbols do not crash on a legacy ASCII console."""
+        output = io.BytesIO()
+        console = io.TextIOWrapper(output, encoding="ascii")
+        with patch("sys.stdout", console):
+            DBLogger._print_console("❌ unavailable")
+            console.flush()
+        self.assertEqual([b"? unavailable"], output.getvalue().splitlines())
 
 
 

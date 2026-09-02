@@ -23,7 +23,7 @@ Rectangle {
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 31
+            Layout.preferredHeight: 40
             color: theme.panel
 
             RowLayout {
@@ -52,8 +52,8 @@ Rectangle {
                           ? "ESP32 Configuration  " + fleetController.selectedDevice.ip
                           : "ESP32 Configuration"
                     color: theme.secondaryText
-                    font.family: theme.dataFont
-                    font.pixelSize: theme.smallTextSize
+                    font.family: theme.bodyFont
+                    font.pixelSize: theme.bodyTextSize
                     elide: Text.ElideRight
                 }
             }
@@ -61,12 +61,13 @@ Rectangle {
 
         TabBar {
             id: tabs
+            objectName: "configTabs"
             Layout.fillWidth: true
             Layout.preferredHeight: 40
             background: Rectangle { color: theme.panel }
 
             Repeater {
-                model: ["SETTINGS", "WEB-INTERFACE", "METRICS"]
+                model: ["Settings", "Web-Interface", "Metrics"]
                 TabButton {
                     id: tabControl
                     required property string modelData
@@ -74,8 +75,8 @@ Rectangle {
                     contentItem: Text {
                         text: tabControl.text
                         color: tabControl.checked ? theme.primaryText : theme.secondaryText
-                        font.family: theme.dataFont
-                        font.pixelSize: theme.smallTextSize
+                        font.family: theme.bodyFont
+                        font.pixelSize: theme.bodyTextSize
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
                     }
@@ -99,20 +100,24 @@ Rectangle {
             currentIndex: tabs.currentIndex
 
             Item {
+                Text {
+                    id: settingsEmptyState
+                    objectName: "settingsEmptyState"
+                    anchors.centerIn: parent
+                    width: parent.width - 40
+                    visible: fleetController.settingsFields.length === 0
+                    text: "Select a detected ESP32 to inspect and edit its settings."
+                    color: theme.secondaryText
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    font.family: theme.bodyFont
+                    font.pixelSize: theme.bodyTextSize
+                }
+
                 ColumnLayout {
                     anchors.fill: parent
                     anchors.margins: 12
                     spacing: 8
-
-                    Text {
-                        Layout.fillWidth: true
-                        visible: fleetController.settingsFields.length === 0
-                        text: "Select a detected ESP32 to inspect and edit its settings."
-                        color: theme.secondaryText
-                        wrapMode: Text.Wrap
-                        font.family: theme.bodyFont
-                        font.pixelSize: theme.bodyTextSize
-                    }
 
                     Rectangle {
                         Layout.fillWidth: true
@@ -153,6 +158,7 @@ Rectangle {
                         objectName: "settingsTable"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
+                        visible: fleetController.settingsFields.length > 0
                         clip: true
                         model: fleetController.settingsFields
                         ScrollBar.vertical: ScrollBar {}
@@ -218,6 +224,12 @@ Rectangle {
                         }
                     }
 
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        visible: fleetController.settingsFields.length === 0
+                    }
+
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 8
@@ -238,6 +250,7 @@ Rectangle {
                     }
 
                     AppButton {
+                        objectName: "configApplySettingsButton"
                         Layout.fillWidth: true
                         text: "APPLY CHANGES"
                         emphasized: true
@@ -267,42 +280,152 @@ Rectangle {
                 }
             }
 
-            ListView {
-                id: metricsList
-                clip: true
-                model: fleetController.metrics
-                ScrollBar.vertical: ScrollBar {}
+            Item {
+                Text {
+                    anchors.centerIn: parent
+                    width: parent.width - 40
+                    visible: fleetController.inspectedIdentity.length === 0
+                    text: "Select a detected ESP32 to inspect its live metrics."
+                    color: theme.secondaryText
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    font.family: theme.bodyFont
+                    font.pixelSize: theme.bodyTextSize
+                }
 
-                delegate: Rectangle {
-                    required property var modelData
-                    required property int index
-                    width: metricsList.width
-                    height: 42
-                    color: index % 2 ? "#091a2a" : theme.background
-                    border.color: theme.border
-                    border.width: 1
+                ScrollView {
+                    id: metricsScroll
+                    objectName: "metricsScroll"
+                    anchors.fill: parent
+                    visible: fleetController.inspectedIdentity.length > 0
+                    clip: true
+                    contentWidth: width
+                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                    ScrollBar.vertical.policy: ScrollBar.AsNeeded
 
                     Column {
-                        anchors.fill: parent
-                        anchors.margins: 6
-                        spacing: 2
+                        id: metricsCards
+                        objectName: "metricsCards"
+                        width: metricsScroll.width
+                        padding: 12
+                        spacing: 10
 
-                        Text {
-                            text: modelData.group + " / " + modelData.key
-                            color: theme.secondaryText
-                            font.family: theme.dataFont
-                            font.pixelSize: theme.smallTextSize
-                            elide: Text.ElideRight
-                            width: parent.width
-                        }
+                        Repeater {
+                            objectName: "metricsGroups"
+                            model: fleetController.metrics
 
-                        Text {
-                            text: modelData.value
-                            color: theme.primaryText
-                            font.family: theme.dataFont
-                            font.pixelSize: theme.smallTextSize
-                            elide: Text.ElideRight
-                            width: parent.width
+                            delegate: Rectangle {
+                                id: metricCard
+                                required property var modelData
+                                objectName: "metricCard_" + modelData.id
+                                width: metricsCards.width - 24
+                                height: metricCardColumn.implicitHeight + 24
+                                radius: 5
+                                color: theme.background
+                                border.color: theme.border
+                                border.width: 1
+
+                                ColumnLayout {
+                                    id: metricCardColumn
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.margins: 12
+                                    spacing: 9
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: metricCard.modelData.title
+                                        color: theme.accent
+                                        font.family: theme.dataFont
+                                        font.pixelSize: theme.smallTextSize
+                                        font.bold: true
+                                        elide: Text.ElideRight
+                                    }
+
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 1
+                                        color: theme.border
+                                    }
+
+                                    GridLayout {
+                                        id: metricGrid
+                                        Layout.fillWidth: true
+                                        columns: 2
+                                        columnSpacing: 8
+                                        rowSpacing: 8
+
+                                        Repeater {
+                                            model: metricCard.modelData.items
+
+                                            delegate: Item {
+                                                id: metricItem
+                                                required property var modelData
+                                                Layout.fillWidth: true
+                                                Layout.columnSpan: modelData.wide ? 2 : 1
+                                                Layout.preferredWidth: modelData.wide
+                                                                       ? metricGrid.width
+                                                                       : (metricGrid.width - metricGrid.columnSpacing) / 2
+                                                Layout.preferredHeight: metricValue.implicitHeight + 22
+
+                                                function statusColor(tone) {
+                                                    if (tone === "success")
+                                                        return theme.success
+                                                    if (tone === "warning")
+                                                        return theme.warning
+                                                    if (tone === "error")
+                                                        return theme.error
+                                                    return theme.secondaryText
+                                                }
+
+                                                Column {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 2
+                                                    spacing: 3
+
+                                                    Text {
+                                                        width: parent.width
+                                                        text: metricItem.modelData.label
+                                                        color: theme.secondaryText
+                                                        font.family: theme.bodyFont
+                                                        font.pixelSize: theme.smallTextSize
+                                                        elide: Text.ElideRight
+                                                    }
+
+                                                    TextEdit {
+                                                        id: metricValue
+                                                        width: parent.width
+                                                        text: metricItem.modelData.value
+                                                        color: metricItem.modelData.tone !== "neutral"
+                                                               ? metricItem.statusColor(metricItem.modelData.tone)
+                                                               : theme.primaryText
+                                                        font.family: theme.dataFont
+                                                        font.pixelSize: theme.smallTextSize
+                                                        font.bold: metricItem.modelData.kind === "status"
+                                                        readOnly: true
+                                                        selectByMouse: true
+                                                        activeFocusOnTab: false
+                                                        selectionColor: theme.accent
+                                                        selectedTextColor: theme.background
+                                                        clip: true
+                                                        wrapMode: metricItem.modelData.wide
+                                                                  ? TextEdit.WrapAnywhere
+                                                                  : TextEdit.NoWrap
+                                                    }
+                                                }
+
+                                                ToolTip.visible: metricHover.containsMouse
+                                                                 && !metricItem.modelData.wide
+                                                ToolTip.text: metricItem.modelData.value
+                                                ToolTip.delay: 500
+
+                                                HoverHandler { id: metricHover }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

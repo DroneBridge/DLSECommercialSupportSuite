@@ -92,10 +92,16 @@ class DBLogger:
         return self._log_file
 
     def log(self, message):
-        """Log a message with timestamp to console and file."""
+        """
+        Log one timestamped message to the console and active UTF-8 log file.
+
+        :param message: Value to convert to text and record.
+        :return: None. Console encoding failures are replaced for display while
+            the original Unicode message is retained in the log file.
+        """
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         full_message = f"[{timestamp}] {message}"
-        print(full_message)
+        self._print_console(full_message)
         if self._log_file is None:
             self.create_log_file("logs")
         if self._log_file:
@@ -103,9 +109,25 @@ class DBLogger:
                 with open(self._log_file, "a", encoding='utf-8') as f:
                     f.write(full_message + "\n")
             except Exception as e:
-                print(f"Error writing to log file: {e}")
+                self._print_console(f"Error writing to log file: {e}")
         else:
-            print("Cannot log. No log file created by DBLogger")
+            self._print_console("Cannot log. No log file created by DBLogger")
+
+    @staticmethod
+    def _print_console(message: str) -> None:
+        """
+        Print text safely when the active Windows console lacks Unicode support.
+
+        :param message: Unicode text intended for standard output.
+        :return: None. Unsupported characters are replaced only in console
+            output; callers retain the original text for file logging.
+        """
+        try:
+            print(message)
+        except UnicodeEncodeError:
+            encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+            safe_message = message.encode(encoding, errors="replace").decode(encoding)
+            print(safe_message)
 
 
 class DBLicenseType(Enum):
