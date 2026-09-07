@@ -78,6 +78,8 @@ Scan settings persist across sessions and include the IPv4 subnet, MAVLink ports
 
 The same dialog has an independent **System Stats Polling** section for `GET /api/system/stats`. Background polling is enabled by default with a two-second target interval, one-second per-request timeout, 20 concurrent requests, and an offline threshold of three consecutive failures. The supported ranges are 1–3600 seconds, 0.1–30 seconds, 1–64 workers, and 1–20 failures. Polling uses no automatic retries. A successful response updates cached statistics and marks the device online.
 
+After **Apply Changes** or bulk **Apply Settings** succeeds, the Fleet Manager waits three seconds for the ESP32s to reboot and then refreshes `GET /api/settings` for every affected device. The refreshed values update the table and inspector without requiring a network-wide scan. Devices whose settings request failed are not treated as refreshed; a failed follow-up request preserves the last cached settings and records a diagnostic.
+
 Disabling stats polling cancels queued requests, ignores late results from that polling generation, and preserves cached statistics and the last known online/offline status. Re-enabling it starts a round immediately. Device discovery continues independently.
 
 For large fleets, two seconds is a target rather than a guaranteed per-device interval. Polling rounds never overlap, and only the configured number of HTTP requests are active at once (default 20, maximum 64). If a round takes longer than two seconds, the next round waits for it to finish. For example, 2,000 devices at 100 ms average response time require roughly 10 seconds per round with 20 concurrent requests; unreachable devices can extend this further up to the configured timeout.

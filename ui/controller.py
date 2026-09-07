@@ -44,6 +44,7 @@ from ui.workers import (
     OtaWorker,
     RebootWorker,
     SettingsWorker,
+    SettingsRefreshWorker,
     StatsPollingWorker,
     StaticIpAssignmentWorker,
     SystemInfoRefreshWorker,
@@ -63,6 +64,7 @@ MAX_COLUMN_WIDTH = 420
 DEFAULT_INSPECTOR_WIDTH = 355
 MIN_INSPECTOR_WIDTH = 300
 MAX_INSPECTOR_WIDTH = 640
+SETTINGS_REFRESH_DELAY_MS = 3_000
 
 KNOWN_SYSTEM_METRICS = {
     "idf_version",
@@ -540,6 +542,8 @@ class FleetController(QObject):
         self._stats_poll_running = False
         self._stats_worker: StatsPollingWorker | None = None
         self._system_info_refresh_worker: SystemInfoRefreshWorker | None = None
+        self._settings_refresh_worker: SettingsRefreshWorker | None = None
+        self._pending_settings_refresh: dict[str, str] = {}
         self._stats_round_started_at = 0.0
         self._stats_polling_status = (
             "WAITING" if self._scan_values()["stats_enabled"] else "DISABLED"
@@ -575,6 +579,9 @@ class FleetController(QObject):
         self.stats_timer.timeout.connect(self.startStatsPolling)
         if self._scan_values()["stats_enabled"]:
             self.stats_timer.start(self._scan_values()["stats_interval"] * 1000)
+        self.settings_refresh_timer = QTimer(self)
+        self.settings_refresh_timer.setSingleShot(True)
+        self.settings_refresh_timer.timeout.connect(self._start_settings_refresh)
         self.license_timer = QTimer(self)
         self.license_timer.setInterval(10_000)
         self.license_timer.timeout.connect(self.checkLicenseServer)
@@ -1152,6 +1159,8 @@ class FleetController(QObject):
         self._fleet_generation += 1
         if self._stats_worker is not None:
             self._stats_worker.cancel()
+        self._pending_settings_refresh.clear()
+        self.settings_refresh_timer.stop()
         self.source_model.clear()
         self._inspected_identity = ""
         self._setting_edits.clear()
@@ -1974,6 +1983,175 @@ class FleetController(QObject):
             )
         self._system_info_refresh_worker = None
 
+    def _queue_settings_refresh(self, targets: dict[str, str]) -> None:
+        """
+        Queue accepted settings changes for a delayed REST refresh.
+
+        :param targets: Identity-to-IP mapping for devices whose settings update
+            was accepted. The timer is restarted so every queued device receives
+            at least the configured reboot grace period before being queried.
+        :return: None. Missing inventory identities are ignored.
+        """
+        for identity, target_ip in targets.items():
+            record = self.source_model.record_by_identity(identity)
+            if record is None:
+                continue
+            self._pending_settings_refresh[identity] = target_ip or record.ip
+            self.source_model.update_operation(identity, "waiting for reboot", 0)
+        if not self._pending_settings_refresh:
+            return
+        self.settings_refresh_timer.start(SETTINGS_REFRESH_DELAY_MS)
+        self.stateChanged.emit()
+
+    @Slot()
+    def _start_settings_refresh(self) -> None:
+        """
+        Start the delayed targeted ``/api/settings`` refresh when idle.
+
+        :return: None. A refresh already in progress is left untouched and the
+            pending queue is retried after another reboot grace interval.
+        """
+        if self._settings_refresh_worker is not None:
+            if self._pending_settings_refresh:
+                self.settings_refresh_timer.start(SETTINGS_REFRESH_DELAY_MS)
+            return
+        pending = self._pending_settings_refresh
+        self._pending_settings_refresh = {}
+        if not pending:
+            return
+
+        records: list[DeviceRecord] = []
+        target_ips: dict[str, str] = {}
+        for identity, target_ip in pending.items():
+            record = self.source_model.record_by_identity(identity)
+            if record is None:
+                continue
+            records.append(record)
+            target_ips[identity] = target_ip or record.ip
+        if not records:
+            return
+
+        generation = self._fleet_generation
+        for record in records:
+            self.source_model.update_operation(record.identity, "refreshing settings", 0)
+        worker = SettingsRefreshWorker(
+            records,
+            target_ips=target_ips,
+            timeout=self._scan_values()["http_timeout"],
+            workers=self._scan_values()["workers"],
+        )
+        self._settings_refresh_worker = worker
+        worker.signals.progress.connect(
+            lambda payload, active_generation=generation:
+            self._settings_refresh_progress(payload, active_generation)
+        )
+        worker.signals.finished.connect(
+            lambda results, active_generation=generation:
+            self._settings_refresh_finished(results, active_generation)
+        )
+        worker.signals.error.connect(
+            lambda message, active_generation=generation, refresh_records=list(records):
+            self._settings_refresh_failed(
+                message,
+                active_generation,
+                refresh_records,
+            )
+        )
+        self.stateChanged.emit()
+        self.pool.start(worker)
+
+    def _settings_refresh_progress(self, payload: Any, generation: int) -> None:
+        """
+        Apply one delayed settings refresh result to the current fleet.
+
+        :param payload: Worker result containing identity, IP, settings, and status.
+        :param generation: Fleet generation captured when the worker started.
+        :return: None. Stale or unresolvable results are ignored safely.
+        """
+        if generation != self._fleet_generation or not isinstance(payload, dict):
+            return
+        identity = str(payload.get("identity") or "")
+        if self.source_model.record_by_identity(identity) is None:
+            identity = self._identity_for_ip(str(payload.get("ip") or ""))
+        if not identity:
+            return
+        success = bool(payload.get("success")) and isinstance(
+            payload.get("settings"),
+            dict,
+        )
+        self.source_model.apply_settings_result(
+            identity,
+            success,
+            payload.get("settings") if isinstance(payload.get("settings"), dict) else None,
+            ip=str(payload.get("ip") or "").strip() or None,
+            error=self._sanitize_error(
+                str(payload.get("error") or "Settings request failed")
+            ),
+        )
+        if success:
+            self.source_model.update_operation(identity, "complete", 100)
+            if identity == self._inspected_identity and self._setting_edits:
+                self._setting_edits.clear()
+                self.inspectorChanged.emit()
+        else:
+            self.source_model.update_operation(identity, "settings refresh failed", 0)
+
+    def _settings_refresh_finished(self, results: Any, generation: int) -> None:
+        """
+        Complete a delayed settings refresh and report per-device failures.
+
+        :param results: Per-device refresh payloads already applied incrementally.
+        :param generation: Fleet generation captured when the worker started.
+        :return: None. Pending changes are scheduled for a later refresh pass.
+        """
+        self._settings_refresh_worker = None
+        if generation != self._fleet_generation:
+            return
+        items = results if isinstance(results, list) else [results]
+        failures = sum(not self._result_success(item) for item in items)
+        if failures:
+            self.toastRequested.emit(
+                "warning",
+                f"Settings refresh finished with {failures} failed device(s).",
+            )
+        if self._pending_settings_refresh:
+            self.settings_refresh_timer.start(SETTINGS_REFRESH_DELAY_MS)
+        self.stateChanged.emit()
+
+    def _settings_refresh_failed(
+        self,
+        message: str,
+        generation: int,
+        records: list[DeviceRecord],
+    ) -> None:
+        """
+        Preserve cached values and mark devices when the refresh worker fails.
+
+        :param message: Worker-level failure detail to sanitize before storage.
+        :param generation: Fleet generation captured when the worker started.
+        :param records: Devices submitted to the failed refresh worker.
+        :return: None. Pending changes remain queued for a later attempt.
+        """
+        self._settings_refresh_worker = None
+        if generation != self._fleet_generation:
+            return
+        error = self._sanitize_error(message)
+        for record in records:
+            self.source_model.apply_settings_result(
+                record.identity,
+                False,
+                error=error,
+            )
+            self.source_model.update_operation(
+                record.identity,
+                "settings refresh failed",
+                0,
+            )
+        if self._pending_settings_refresh:
+            self.settings_refresh_timer.start(SETTINGS_REFRESH_DELAY_MS)
+        self.stateChanged.emit()
+        self.toastRequested.emit("warning", f"Settings refresh failed: {error}")
+
     def _schedule_next_stats_round(self) -> None:
         """
         Schedule the next round at least two seconds after the prior start.
@@ -2023,6 +2201,14 @@ class FleetController(QObject):
         """Summarize results, update reboot grace, and notify QML."""
         items = results if isinstance(results, list) else [results]
         info_refresh_records = self._system_info_refresh_records(kind, items)
+        applied_settings = getattr(self._active_worker, "settings", {})
+        if not isinstance(applied_settings, dict):
+            applied_settings = {}
+        settings_refresh_targets = (
+            self._settings_refresh_targets(items, applied_settings)
+            if kind == "settings"
+            else {}
+        )
         successes = 0
         failed: set[str] = set(self._failed_identities)
         for item in items:
@@ -2074,7 +2260,9 @@ class FleetController(QObject):
         self._active_operation = ""
         self._active_targets.clear()
         self._status_text = "SCANNING..." if self._scanning_enabled else "IDLE"
-        if kind == "settings" and not failures:
+        if kind == "settings" and settings_refresh_targets:
+            self._queue_settings_refresh(settings_refresh_targets)
+        elif kind == "settings" and not failures:
             self._setting_edits.clear()
             self.inspectorChanged.emit()
         self.stateChanged.emit()
@@ -2202,6 +2390,38 @@ class FleetController(QObject):
                 return self._identity_for_ip(str(getattr(result, "device_ip", "")))
             return ""
         return self._identity_for_ip(str(getattr(item, "device_ip", "")))
+
+    def _settings_refresh_targets(
+        self,
+        items: list[Any],
+        applied_settings: dict[str, Any],
+    ) -> dict[str, str]:
+        """
+        Resolve successful settings results to post-reboot refresh addresses.
+
+        :param items: Per-device results emitted by ``SettingsWorker``.
+        :param applied_settings: Partial settings payload submitted to the devices.
+        :return: Identity-to-IP mapping for successful records. A valid ``ip_sta``
+            value is preferred because it may be the device's new address.
+        """
+        configured_ip = str(applied_settings.get("ip_sta") or "").strip()
+        try:
+            parsed_ip = ipaddress.ip_address(configured_ip) if configured_ip else None
+        except ValueError:
+            parsed_ip = None
+        if not isinstance(parsed_ip, ipaddress.IPv4Address):
+            configured_ip = ""
+
+        targets: dict[str, str] = {}
+        for item in items:
+            if not self._result_success(item):
+                continue
+            identity = self._result_identity(item)
+            record = self.source_model.record_by_identity(identity)
+            if not identity or record is None:
+                continue
+            targets[identity] = configured_ip or record.ip
+        return targets
 
     def _system_info_refresh_records(
         self,

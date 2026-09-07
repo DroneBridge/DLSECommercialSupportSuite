@@ -83,6 +83,54 @@ class TestFleetModels(unittest.TestCase):
         self.assertEqual("ACTIVATED", record.activation_status)
         self.assertEqual("request timed out", record.errors["system_info"])
 
+    def test_settings_refresh_updates_table_projection_and_preserves_values_on_failure(self):
+        """A refreshed settings payload updates setting columns and failure diagnostics."""
+        record = DeviceRecord(
+            identity="KEY",
+            ip="192.168.1.42",
+            activation_key="KEY",
+            hostname="Old",
+            dlse_mode="ACCESS POINT",
+            baud="115200",
+            wifi_channel="6",
+            settings={
+                "wifi_hostname": "Old",
+                "esp32_mode": 1,
+                "baud": 115200,
+                "wifi_chan": 6,
+            },
+        )
+        model = DeviceTableModel()
+        model.upsert_many([record])
+
+        model.apply_settings_result(
+            "KEY",
+            True,
+            {
+                "wifi_hostname": "New",
+                "esp32_mode": 2,
+                "baud": 921600,
+                "udp_local_port": 14555,
+                "wifi_chan": 7,
+                "show_en_syid_ip": 1,
+            },
+            ip="192.168.1.77",
+        )
+
+        refreshed = model.record_by_identity("KEY")
+        self.assertEqual("192.168.1.77", refreshed.ip)
+        self.assertEqual("New", refreshed.hostname)
+        self.assertEqual("CLIENT", refreshed.dlse_mode)
+        self.assertEqual("921600", refreshed.baud)
+        self.assertEqual("7", refreshed.wifi_channel)
+        self.assertEqual("77", refreshed.mavlink_sys_id)
+        self.assertEqual(14555, refreshed.settings["udp_local_port"])
+
+        model.apply_settings_result("KEY", False, error="device rebooting")
+
+        self.assertEqual("New", refreshed.hostname)
+        self.assertEqual("device rebooting", refreshed.errors["settings"])
+
     def test_stats_failure_threshold_is_configurable(self):
         """The configured attempt threshold controls the offline transition."""
         model = DeviceTableModel()

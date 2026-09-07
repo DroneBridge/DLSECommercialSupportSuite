@@ -486,6 +486,76 @@ class DeviceTableModel(QAbstractTableModel):
             record.errors["system_info"] = error or "System info request failed"
         self._emit_record_changed(identity)
 
+    def apply_settings_result(
+        self,
+        identity: str,
+        success: bool,
+        settings: dict[str, Any] | None = None,
+        ip: str | None = None,
+        error: str = "",
+    ) -> None:
+        """
+        Apply a refreshed REST settings response to one inventory record.
+
+        :param identity: Stable inventory identity of the refreshed device.
+        :param success: Whether the settings request returned valid JSON.
+        :param settings: Complete or partial ``/api/settings`` response on success.
+        :param ip: Device address used for the successful refresh, when known.
+        :param error: Sanitized failure detail stored for inspector diagnostics.
+        :return: None. Failed refreshes preserve cached settings and table values.
+        """
+        record = self._records.get(identity)
+        if record is None:
+            return
+        if success and isinstance(settings, dict):
+            if ip:
+                record.ip = str(ip)
+            record.settings = dict(settings)
+            if "wifi_hostname" in settings:
+                record.hostname = _setting_text(settings.get("wifi_hostname"))
+            if "esp32_mode" in settings:
+                record.dlse_mode = _format_esp32_mode(settings.get("esp32_mode"))
+            if "baud" in settings:
+                record.baud = _setting_text(settings.get("baud"))
+            if "udp_local_port" in settings:
+                record.dlse_local_udp_port = _setting_text(
+                    settings.get("udp_local_port")
+                )
+            if "wifi_brcst_port" in settings:
+                record.dlse_remote_udp_port = _setting_text(
+                    settings.get("wifi_brcst_port")
+                )
+            if "show_pm_en" in settings:
+                record.power_mgmt = _format_enabled_disabled(settings.get("show_pm_en"))
+            if "show_pm_en_hb" in settings:
+                record.dlse_mavlink_heartbeat = _format_enabled_disabled(
+                    settings.get("show_pm_en_hb")
+                )
+            if "show_en_syid_ip" in settings:
+                record.dlse_mavlink_sys_id_based_on_ip = _format_yes_no(
+                    settings.get("show_en_syid_ip")
+                )
+            if "wifi_chan" in settings:
+                record.wifi_channel = _setting_text(settings.get("wifi_chan"))
+            if "ssid" in settings or "ssid_ap" in settings:
+                record.wifi_ssid = _setting_text(
+                    _first_configured_value(
+                        settings.get("ssid"),
+                        settings.get("ssid_ap"),
+                    )
+                )
+            if _setting_enabled(settings.get("show_en_syid_ip")):
+                sys_id = _sys_id_from_device_ip(record.ip)
+                if sys_id:
+                    record.mavlink_sys_id = sys_id
+            elif "show_man_sysid" in settings:
+                record.mavlink_sys_id = _setting_text(settings.get("show_man_sysid"))
+            record.last_seen = datetime.now()
+            record.errors.pop("settings", None)
+        else:
+            record.errors["settings"] = error or "Settings request failed"
+        self._emit_record_changed(identity)
+
     def update_operation(self, identity: str, operation: str, progress: int = 0) -> None:
         """Update one device operation label and bounded percentage."""
         record = self._records.get(identity)

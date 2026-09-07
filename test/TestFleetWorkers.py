@@ -14,6 +14,7 @@ from ui.workers import (
     OtaReleaseListWorker,
     OtaReleaseResolveWorker,
     OtaWorker,
+    SettingsRefreshWorker,
     StatsPollingWorker,
     StaticIpAssignmentWorker,
     SystemInfoRefreshWorker,
@@ -471,6 +472,51 @@ class TestFleetWorkers(unittest.TestCase):
             for request in get_json.call_args_list
         ))
         self.assertEqual(2, create_session.call_count)
+        for session in sessions:
+            session.close.assert_called_once()
+
+    @patch("ui.workers.db_api_get_json")
+    @patch("ui.workers.db_api_create_request_session")
+    def test_settings_refresh_worker_requests_settings_at_current_target_ips(
+        self,
+        create_session,
+        get_json,
+    ):
+        """Delayed settings refresh uses only affected devices and new IPs."""
+        sessions = [Mock(), Mock()]
+        create_session.side_effect = sessions
+        get_json.side_effect = [
+            {"wifi_chan": 7},
+            {"wifi_chan": 8},
+        ]
+        records = [
+            DeviceRecord(identity="A", ip="192.168.1.2"),
+            DeviceRecord(identity="B", ip="192.168.1.3"),
+        ]
+        worker = SettingsRefreshWorker(
+            records,
+            target_ips={"B": "192.168.2.3"},
+            timeout=1.5,
+            workers=1,
+        )
+        progress = []
+        finished = []
+        worker.signals.progress.connect(progress.append)
+        worker.signals.finished.connect(finished.append)
+
+        worker.run()
+
+        self.assertEqual(2, len(progress))
+        self.assertEqual(2, len(finished[0]))
+        self.assertEqual(
+            ["192.168.1.2", "192.168.2.3"],
+            [request.args[1] for request in get_json.call_args_list],
+        )
+        self.assertTrue(all(
+            request.args[2] == "/api/settings"
+            and request.kwargs["timeout"] == 1.5
+            for request in get_json.call_args_list
+        ))
         for session in sessions:
             session.close.assert_called_once()
 

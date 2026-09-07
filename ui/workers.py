@@ -342,6 +342,97 @@ class SystemInfoRefreshWorker(QRunnable):
             session.close()
 
 
+class SettingsRefreshWorker(QRunnable):
+    """Refresh REST settings for devices after accepted settings changes."""
+
+    def __init__(
+        self,
+        records: list[DeviceRecord],
+        target_ips: dict[str, str] | None = None,
+        timeout: float = 5.0,
+        workers: int = 20,
+    ) -> None:
+        """
+        Create a bounded post-reboot ``/api/settings`` refresh.
+
+        :param records: Devices whose settings update was accepted.
+        :param target_ips: Optional identity-to-IP mapping used when a settings
+            change moved a device to a new static address.
+        :param timeout: Per-device HTTP timeout in seconds.
+        :param workers: Maximum simultaneous refresh requests.
+        """
+        super().__init__()
+        self.signals = WorkerSignals()
+        self.records = list(records)
+        self.target_ips = dict(target_ips or {})
+        self.timeout = max(0.1, min(timeout, 30.0))
+        self.workers = max(1, min(workers, 64))
+
+    @Slot()
+    def run(self) -> None:
+        """
+        Fetch settings for each supplied device and emit one result per device.
+
+        :return: None. Request failures become per-device failure payloads;
+            unexpected executor failures emit the worker-level ``error`` signal.
+        """
+        results: list[dict[str, Any]] = []
+        try:
+            with ThreadPoolExecutor(max_workers=self.workers) as executor:
+                futures = {
+                    executor.submit(
+                        self._refresh_one,
+                        self.target_ips.get(record.identity, record.ip),
+                    ): record
+                    for record in self.records
+                }
+                for future in as_completed(futures):
+                    record = futures[future]
+                    target_ip = self.target_ips.get(record.identity, record.ip)
+                    try:
+                        settings = future.result()
+                        payload = {
+                            "identity": record.identity,
+                            "ip": target_ip,
+                            "success": isinstance(settings, dict),
+                            "settings": settings,
+                            "error": ""
+                            if isinstance(settings, dict)
+                            else "Settings request failed",
+                        }
+                    except Exception as exc:
+                        payload = {
+                            "identity": record.identity,
+                            "ip": target_ip,
+                            "success": False,
+                            "settings": None,
+                            "error": str(exc),
+                        }
+                    results.append(payload)
+                    self.signals.progress.emit(payload)
+            self.signals.finished.emit(results)
+        except Exception as exc:
+            self.signals.error.emit(str(exc))
+
+    def _refresh_one(self, target_ip: str) -> dict[str, Any] | None:
+        """
+        Fetch one device's settings using the shared REST helper.
+
+        :param target_ip: Address to query after the device rebooted.
+        :return: Parsed ``/api/settings`` response, or ``None`` on request failure.
+        """
+        session = db_api_create_request_session()
+        try:
+            return db_api_get_json(
+                session,
+                target_ip,
+                "/api/settings",
+                timeout=self.timeout,
+            )
+        finally:
+            session.close()
+
+
 class LicenseStatusWorker(FunctionWorker):
     """Check license-server availability."""
 

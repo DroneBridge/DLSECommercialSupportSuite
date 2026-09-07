@@ -26,6 +26,7 @@ from ui.controller import (
     MAX_COLUMN_WIDTH,
     MIN_INSPECTOR_WIDTH,
     MIN_COLUMN_WIDTH,
+    SETTINGS_REFRESH_DELAY_MS,
     FleetController,
 )
 from ui.models import DeviceRecord, DeviceTableModel
@@ -1487,13 +1488,15 @@ class TestFleetUI(unittest.TestCase):
                 [record.identity for record in call.args[0]],
             )
 
-    @patch("ui.controller.SystemInfoRefreshWorker")
-    def test_non_ota_operations_do_not_refresh_system_info(self, refresh_worker):
-        """Operations unrelated to OTA or activation do not request system info."""
+    @patch("ui.controller.SettingsRefreshWorker")
+    def test_settings_operation_delays_targeted_settings_refresh(self, refresh_worker):
+        """Accepted settings changes wait for reboot before refreshing affected rows."""
         self.controller.source_model.upsert_many([
             DeviceRecord(identity="A", ip="10.0.0.2", activation_key="A"),
         ])
-        self.controller._active_worker = Mock()
+        active_worker = Mock()
+        active_worker.settings = {"wifi_chan": 7}
+        self.controller._active_worker = active_worker
         self.controller._active_operation = "settings"
         self.controller._active_targets = {"A"}
 
@@ -1503,6 +1506,74 @@ class TestFleetUI(unittest.TestCase):
         )
 
         refresh_worker.assert_not_called()
+        self.assertTrue(self.controller.settings_refresh_timer.isActive())
+        self.assertEqual(
+            SETTINGS_REFRESH_DELAY_MS,
+            self.controller.settings_refresh_timer.interval(),
+        )
+
+        worker = Mock()
+        refresh_worker.return_value = worker
+        with patch.object(self.controller.pool, "start") as start:
+            self.controller._start_settings_refresh()
+
+        refresh_worker.assert_called_once_with(
+            [self.controller.source_model.record_by_identity("A")],
+            target_ips={"A": "10.0.0.2"},
+            timeout=1.0,
+            workers=20,
+        )
+        start.assert_called_once_with(worker)
+
+    def test_settings_refresh_progress_updates_inspected_device_and_clears_edits(self):
+        """A successful delayed refresh updates the inspector's settings source."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="A",
+                ip="10.0.0.2",
+                activation_key="A",
+                settings={"wifi_chan": 6},
+            )
+        ])
+        self.controller.inspectDevice("A")
+        self.controller.setSettingValue("wifi_chan", 7)
+
+        self.controller._settings_refresh_progress(
+            {
+                "identity": "A",
+                "ip": "10.0.0.2",
+                "success": True,
+                "settings": {"wifi_chan": 7},
+            },
+            self.controller._fleet_generation,
+        )
+
+        self.assertEqual(7, self.controller.source_model.record_by_identity("A").settings["wifi_chan"])
+        self.assertEqual(1, len(self.controller.settingsFields))
+        self.assertEqual(7, self.controller.settingsFields[0]["value"])
+        self.assertFalse(self.controller.settingsFields[0]["dirty"])
+
+    def test_settings_operation_queues_only_successful_devices_for_refresh(self):
+        """Failed settings requests are excluded from the delayed refresh queue."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(identity="A", ip="10.0.0.2", activation_key="A"),
+            DeviceRecord(identity="B", ip="10.0.0.3", activation_key="B"),
+        ])
+        active_worker = Mock()
+        active_worker.settings = {"wifi_chan": 7}
+        self.controller._active_worker = active_worker
+        self.controller._active_operation = "settings"
+        self.controller._active_targets = {"A", "B"}
+
+        self.controller._operation_finished(
+            "settings",
+            [
+                {"identity": "A", "success": True},
+                {"identity": "B", "success": False, "message": "rejected"},
+            ],
+        )
+
+        self.assertEqual({"A": "10.0.0.2"}, self.controller._pending_settings_refresh)
 
     def test_system_info_refresh_updates_inspected_device_status(self):
         """A successful UI info refresh updates the inspected-device property."""
