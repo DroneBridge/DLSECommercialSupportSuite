@@ -677,8 +677,8 @@ class TestFleetUI(unittest.TestCase):
         self.assertNotIn("modelData.group + \" / \" + modelData.key", source)
 
     def test_license_server_poll_interval_and_overlap_guard(self):
-        """License checks run every ten seconds and cannot overlap."""
-        self.assertEqual(10_000, self.controller.license_timer.interval())
+        """License checks run every 30 seconds and cannot overlap."""
+        self.assertEqual(30_000, self.controller.license_timer.interval())
         self.controller.pool.start = Mock()
         self.controller.checkLicenseServer()
         self.controller.checkLicenseServer()

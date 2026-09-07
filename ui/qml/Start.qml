@@ -75,8 +75,8 @@ Item {
             ModeButtonBig {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 180
-                title: "Monitor via Skybrush Server"
-                description: "Connect through Skybrush Live for monitoring without additional radio traffic.\nPlanned for a future release."
+                title: "Monitoring Mode"
+                description: "Monitor without additional radio traffic.\nPlanned for a future release."
                 enabled: false
                 opacity: 0.48
             }

@@ -583,7 +583,7 @@ class FleetController(QObject):
         self.settings_refresh_timer.setSingleShot(True)
         self.settings_refresh_timer.timeout.connect(self._start_settings_refresh)
         self.license_timer = QTimer(self)
-        self.license_timer.setInterval(10_000)
+        self.license_timer.setInterval(30_000)
         self.license_timer.timeout.connect(self.checkLicenseServer)
         self.license_timer.start()
         QTimer.singleShot(250, self.checkLicenseServer)
@@ -1528,7 +1528,7 @@ class FleetController(QObject):
 
     @Slot()
     def checkLicenseServer(self) -> None:
-        """Start a ten-second non-overlapping license-server check."""
+        """Start a 30-second non-overlapping license-server check."""
         if self._license_check_running:
             return
         self._license_check_running = True

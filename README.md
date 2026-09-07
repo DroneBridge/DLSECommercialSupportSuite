@@ -100,7 +100,7 @@ The inspector's **Metrics** tab groups connection, serial/MAVLink, flight-contro
 
 Settings values in the right-side panel, including Wi-Fi password fields, are shown as readable text so operators can verify device configuration before applying changes. License-server tokens are still session-only and are not persisted.
 
-License activation requires a DroneBridge license server token. The UI preloads the token from `DRONEBRIDGE_SECRET_TOKEN`, or accepts it for the current session. Tokens are never persisted. Regular activated licenses use the existing permanent-license behavior, and evaluation licenses request a fixed 60-day validity. License-server availability is checked every ten seconds.
+License activation requires a DroneBridge license server token. The UI preloads the token from `DRONEBRIDGE_SECRET_TOKEN`, or accepts it for the current session. Tokens are never persisted. Regular activated licenses use the existing permanent-license behavior, and evaluation licenses request a fixed 60-day validity. License-server availability is checked every 30 seconds.
 
 
 ### Operational Folder

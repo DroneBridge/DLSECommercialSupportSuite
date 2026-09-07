@@ -50,7 +50,7 @@ Last updated: 2026-06-15
 
 ## Operations
 
-- [x] Poll license-server availability every 10 seconds without overlapping checks.
+- [x] Poll license-server availability every 30 seconds without overlapping checks.
 - [x] Read `DRONEBRIDGE_SECRET_TOKEN` without persistence.
 - [x] Preserve sequential activation and duplicate-key protection.
 - [x] Support bounded REST reboot and explicitly confirmed MAVLink broadcast reboot.
