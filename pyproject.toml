@@ -24,6 +24,10 @@ dependencies = [
 [project.optional-dependencies]
 ui = [
   "PySide6>=6.8.0",
+  "aiounifi>=45,<56; python_version < '3.11'",
+  "aiounifi>=56,<75; python_version >= '3.11' and python_version < '3.12'",
+  "aiounifi>=75,<86; python_version >= '3.12' and python_version < '3.13'",
+  "aiounifi>=86; python_version >= '3.13'",
 ]
 
 [project.scripts]
@@ -49,6 +53,7 @@ packages = [
   "resources",
   "nvs_partition_tool",
   "esp_idf_nvs_partition_gen",
+  "ui",
 ]
 
 [tool.setuptools.package-dir]
@@ -56,11 +61,6 @@ esp_idf_nvs_partition_gen = "esp-idf-nvs-partition-gen/esp_idf_nvs_partition_gen
 
 [tool.setuptools.package-data]
 resources = ["*.wav", "*.pem"]
-
-[tool.setuptools.packages.find]
-include = ["ui*"]
-
-[tool.setuptools.package-data]
 ui = [
   "resources/**/*",
   "design_guide/*",

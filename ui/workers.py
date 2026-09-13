@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import math
 import os
+import ssl
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from ipaddress import IPv4Address, IPv4Network
 from pathlib import Path
@@ -10,6 +13,7 @@ from threading import Event
 from time import monotonic, sleep
 from typing import Any, Callable
 
+import aiohttp
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 from pymavlink import mavutil
 
@@ -340,6 +344,246 @@ class SystemInfoRefreshWorker(QRunnable):
             )
         finally:
             session.close()
+
+
+class UnifiPollingWorker(QRunnable):
+    """Read active wireless clients from a UniFi gateway through aiounifi."""
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        api_token: str,
+        site: str = "default",
+        timeout: float = 5.0,
+        verify_tls: bool = False,
+    ) -> None:
+        """
+        Create one bounded UniFi active-client polling request.
+
+        :param host: Gateway hostname or IPv4 address without a URL scheme.
+        :param port: HTTPS port used by the UniFi console.
+        :param api_token: User-supplied Network API token sent as ``X-API-Key``.
+        :param site: Internal UniFi site name used by the classic client endpoint.
+        :param timeout: Total request timeout in seconds, bounded to 1 through 30.
+        :param verify_tls: Whether to verify the gateway's TLS certificate.
+        :return: None. Results are emitted through ``signals.finished`` and
+            connection or authentication failures through ``signals.error``.
+        """
+        super().__init__()
+        self.signals = WorkerSignals()
+        self.host = host
+        self.port = port
+        self.api_token = api_token
+        self.site = site
+        self.timeout = max(1.0, min(float(timeout), 30.0))
+        self.verify_tls = verify_tls
+
+    @Slot()
+    def run(self) -> None:
+        """Run the asynchronous aiounifi request inside this worker thread."""
+        try:
+            self.signals.finished.emit(asyncio.run(self._fetch_clients()))
+        except Exception as exc:
+            self.signals.error.emit(str(exc))
+
+    async def _fetch_clients(self) -> list[dict[str, Any]]:
+        """
+        Fetch and normalize active wireless clients from the configured site.
+
+        :return: Client dictionaries containing ``mac``, ``ip``, ``rssi``, and
+            optional AP metadata. Wired clients and invalid RSSI values are
+            omitted. aiounifi/network exceptions propagate to ``run``.
+        """
+        timeout = aiohttp.ClientTimeout(total=self.timeout)
+        ssl_context: ssl.SSLContext | bool = (
+            ssl.create_default_context() if self.verify_tls else False
+        )
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            controller = _create_unifi_controller(
+                session,
+                self.host,
+                self.port,
+                self.site,
+                ssl_context,
+            )
+            connectivity = getattr(controller, "connectivity", controller)
+            connectivity.is_unifi_os = True
+            connectivity.headers["X-API-Key"] = self.api_token
+            connectivity.headers["Accept"] = "application/json"
+            await controller.clients.update()
+            return [
+                payload
+                for client in controller.clients.values()
+                if (payload := _unifi_client_payload(client)) is not None
+            ]
+
+
+def _create_unifi_controller(
+    session: aiohttp.ClientSession,
+    host: str,
+    port: int,
+    site: str,
+    ssl_context: ssl.SSLContext | bool,
+) -> Any:
+    """
+    Create an aiounifi controller across its Python 3.10–3.13 API generations.
+
+    :param session: aiohttp session owned by the current polling request.
+    :param host: UniFi console hostname or address.
+    :param port: UniFi console HTTPS port.
+    :param site: Internal UniFi site name.
+    :param ssl_context: Verified SSL context or ``False`` for local self-signed TLS.
+    :return: An aiounifi ``Controller`` instance. Import errors propagate so a
+        missing optional UI dependency is reported by the worker boundary.
+    """
+    from aiounifi import Controller
+
+    try:
+        from aiounifi.models.configuration import Configuration
+    except ImportError:
+        return Controller(
+            host,
+            session,
+            username="",
+            password="",
+            port=port,
+            site=site,
+            ssl_context=ssl_context,
+        )
+    return Controller(
+        Configuration(
+            session,
+            host,
+            username="",
+            password="",
+            port=port,
+            site=site,
+            ssl_context=ssl_context,
+        )
+    )
+
+
+def _unifi_client_payload(client: Any) -> dict[str, Any] | None:
+    """
+    Normalize one aiounifi client to AP-observed metrics.
+
+    :param client: aiounifi client object exposing its controller response as
+        ``raw``.
+    :return: A safe wireless-client dictionary, or ``None`` for wired clients,
+        missing identifiers, or values that are not plausible RSSI dBm values.
+        Rate and activity fields are kept numeric so the UI can format them
+        without losing precision; fields absent from a particular UniFi
+        firmware response remain ``None``.
+    """
+    raw = getattr(client, "raw", {})
+    if not isinstance(raw, dict) or raw.get("is_wired") is True:
+        return None
+    mac = str(raw.get("mac") or "")
+    ip = str(raw.get("ip") or "")
+    if not mac and not ip:
+        return None
+    # UniFi's ``signal`` field is the signed dBm measurement.  Some releases
+    # also expose ``rssi`` as a positive quality number, so only use it when
+    # the dBm field is absent; accepting that quality value would discard all
+    # otherwise valid wireless observations as implausible RSSI.
+    signal = raw.get("signal")
+    if signal is None:
+        signal = raw.get("rssi")
+    if isinstance(signal, bool):
+        return None
+    try:
+        rssi = float(signal)
+    except (TypeError, ValueError):
+        return None
+    if not -150 <= rssi <= 0:
+        return None
+    normalized_rssi: int | float = int(rssi) if rssi.is_integer() else rssi
+    signal_balance = next(
+        (
+            raw.get(key)
+            for key in (
+                "signal_balance",
+                "ap_client_signal_balance",
+                "balance",
+            )
+            if raw.get(key) not in (None, "")
+        ),
+        None,
+    )
+    return {
+        "mac": mac,
+        "ip": ip,
+        "rssi": normalized_rssi,
+        "ap_mac": str(raw.get("ap_mac") or ""),
+        "ssid": str(raw.get("essid") or ""),
+        "channel": raw.get("channel"),
+        "radio": str(raw.get("radio") or ""),
+        "radio_name": str(raw.get("radio_name") or ""),
+        "ap_channel": _unifi_channel(raw.get("channel")),
+        "ap_band": _unifi_band(raw.get("radio"), raw.get("channel")),
+        "wifi_standard": str(raw.get("radio_proto") or ""),
+        "rx_rate": _unifi_number(raw.get("rx_rate")),
+        "tx_rate": _unifi_number(raw.get("tx_rate")),
+        "rx_bytes": _unifi_number(raw.get("rx_bytes")),
+        "tx_bytes": _unifi_number(raw.get("tx_bytes")),
+        "rx_bytes_rate": _unifi_first_number(
+            raw,
+            ("rx_bytes-r", "rx_bytes_rate"),
+        ),
+        "tx_bytes_rate": _unifi_first_number(
+            raw,
+            ("tx_bytes-r", "tx_bytes_rate"),
+        ),
+        "signal_balance": signal_balance,
+        "source": "unifi",
+    }
+
+
+def _unifi_number(value: Any) -> int | float | None:
+    """Return a JSON-safe finite UniFi number, preserving integral values."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return int(number) if number.is_integer() else number
+
+
+def _unifi_first_number(
+    raw: dict[str, Any],
+    keys: tuple[str, ...],
+) -> int | float | None:
+    """Return the first numeric value from alternative UniFi field names."""
+    for key in keys:
+        number = _unifi_number(raw.get(key))
+        if number is not None:
+            return number
+    return None
+
+
+def _unifi_channel(value: Any) -> int | None:
+    """Return a valid Wi-Fi channel number from a UniFi client payload."""
+    number = _unifi_number(value)
+    if number is None or not float(number).is_integer() or not 1 <= number <= 233:
+        return None
+    return int(number)
+
+
+def _unifi_band(radio: Any, channel: Any = None) -> str | None:
+    """Map UniFi radio names to bands without guessing ambiguous channels."""
+    normalized = str(radio or "").strip().lower().replace(" ", "")
+    if normalized in {"ng", "2g", "2.4", "2.4g", "2.4ghz", "bg"}:
+        return "2.4 GHz"
+    if normalized in {"na", "5g", "5ghz", "5"}:
+        return "5 GHz"
+    if normalized in {"6e", "6g", "6ghz", "6"}:
+        return "6 GHz"
+    channel_number = _unifi_channel(channel)
+    return "2.4 GHz" if channel_number is not None and channel_number <= 14 else None
 
 
 class SettingsRefreshWorker(QRunnable):

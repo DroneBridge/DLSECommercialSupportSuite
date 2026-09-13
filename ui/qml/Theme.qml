@@ -19,7 +19,7 @@ QtObject {
     readonly property color muted: mutedText
     readonly property string bodyFont: "Geist"
     readonly property string dataFont: "Geist Mono"
-    readonly property int smallTextSize: 11
+    readonly property int smallTextSize: 12
     readonly property int bodyTextSize: 14
     readonly property int headingTextSize: 18
     readonly property int checkIconGlyphSize: 13

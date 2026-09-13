@@ -34,6 +34,11 @@ Item {
         statsTimeoutField.text = String(values.stats_timeout)
         statsWorkersField.text = String(values.stats_workers)
         statsFailureThresholdField.text = String(values.stats_failure_threshold)
+        unifiCheck.checked = values.unifi_enabled
+        unifiGatewayField.text = values.unifi_gateway_url
+        unifiTokenField.text = values.unifi_api_token
+        unifiSiteField.text = values.unifi_site
+        unifiVerifyTlsCheck.checked = values.unifi_verify_tls
         center(scanDialog)
         scanDialog.open()
     }
@@ -223,17 +228,25 @@ Item {
         title: "Scan Settings"
         preferredWidth: 600
 
-        GridLayout {
+        ScrollView {
+            id: scanSettingsScroll
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(scanSettingsGrid.implicitHeight, 430)
+            clip: true
+            ScrollBar.vertical.policy: ScrollBar.AsNeeded
+
+            GridLayout {
+                id: scanSettingsGrid
+                width: scanSettingsScroll.availableWidth
             Layout.fillWidth: true
             columns: 2
             columnSpacing: 12
-            rowSpacing: 10
+            rowSpacing: 8
 
             Text { text: "Discovery methods"; color: theme.secondaryText; font.family: theme.bodyFont }
             ColumnLayout {
                 AppCheckBox { id: mavlinkCheck; text: "MAVLink broadcast (recommended) - UART must be configured" }
                 AppCheckBox { id: httpCheck; text: "HTTP IP-range scan (slow - robust)" }
-                AppCheckBox { text: "UniFi discovery (future)"; enabled: false }
             }
 
             Text { text: "IPv4 subnet"; color: theme.secondaryText; font.family: theme.bodyFont }
@@ -253,6 +266,72 @@ Item {
 
             Text { text: "HTTP concurrency"; color: theme.secondaryText; font.family: theme.bodyFont }
             AppTextField { id: workersField; Layout.fillWidth: true; inputMethodHints: Qt.ImhDigitsOnly }
+
+            Rectangle {
+                Layout.columnSpan: 2
+                Layout.fillWidth: true
+                Layout.topMargin: 8
+                Layout.preferredHeight: 1
+                color: theme.border
+            }
+
+            Text {
+                Layout.columnSpan: 2
+                text: "UNIFI AP OBSERVATIONS"
+                color: theme.primaryText
+                font.family: theme.dataFont
+                font.pixelSize: theme.smallTextSize
+                font.bold: true
+            }
+
+            Text { text: "Connect to UniFi"; color: theme.secondaryText; font.family: theme.bodyFont }
+            AppCheckBox { id: unifiCheck; objectName: "unifiEnabledCheck"; text: "Enabled" }
+
+            Text { text: "Gateway URL"; color: theme.secondaryText; font.family: theme.bodyFont }
+            AppTextField {
+                id: unifiGatewayField
+                objectName: "unifiGatewayField"
+                Layout.fillWidth: true
+                enabled: unifiCheck.checked
+                placeholderText: "https://192.168.1.1"
+            }
+
+            Text { text: "API token"; color: theme.secondaryText; font.family: theme.bodyFont }
+            AppTextField {
+                id: unifiTokenField
+                objectName: "unifiTokenField"
+                Layout.fillWidth: true
+                enabled: unifiCheck.checked
+                echoMode: TextInput.Password
+                placeholderText: "UniFi Network API token"
+            }
+
+            Text { text: "Site"; color: theme.secondaryText; font.family: theme.bodyFont }
+            AppTextField {
+                id: unifiSiteField
+                objectName: "unifiSiteField"
+                Layout.fillWidth: true
+                enabled: unifiCheck.checked
+                placeholderText: "default"
+            }
+
+            Text { text: "TLS certificate"; color: theme.secondaryText; font.family: theme.bodyFont }
+            AppCheckBox {
+                id: unifiVerifyTlsCheck
+                objectName: "unifiVerifyTlsCheck"
+                enabled: unifiCheck.checked
+                text: "Verify certificate"
+            }
+
+            Text {
+                Layout.columnSpan: 2
+                Layout.fillWidth: true
+                text: "The API token is saved in this user's local application settings. Leave certificate verification off only for a trusted gateway using a self-signed certificate."
+                color: theme.mutedText
+                wrapMode: Text.Wrap
+                font.family: theme.bodyFont
+                font.pixelSize: theme.smallTextSize
+            }
 
             Rectangle {
                 Layout.columnSpan: 2
@@ -304,6 +383,7 @@ Item {
                 enabled: statsEnabledCheck.checked
                 inputMethodHints: Qt.ImhDigitsOnly
             }
+            }
         }
 
         RowLayout {
@@ -328,7 +408,12 @@ Item {
                         Number(statsIntervalField.text),
                         Number(statsTimeoutField.text),
                         Number(statsWorkersField.text),
-                        Number(statsFailureThresholdField.text)
+                        Number(statsFailureThresholdField.text),
+                        unifiCheck.checked,
+                        unifiGatewayField.text,
+                        unifiTokenField.text,
+                        unifiSiteField.text,
+                        unifiVerifyTlsCheck.checked
                     )
                     if (saved)
                         scanDialog.close()
@@ -852,7 +937,6 @@ Item {
                                 columnOrderModel.setProperty(columnRow.index, "columnVisible", checked)
                                 fleetController.setColumnVisible(columnRow.columnKey, checked)
                                 dialogs.applyColumnOrder()
-                                dialogs.refreshColumnOrderModel()
                             }
                         }
 
@@ -866,6 +950,20 @@ Item {
                             elide: Text.ElideRight
                         }
                     }
+                }
+
+                Rectangle {
+                    id: dropIndicator
+                    visible: columnList.dragStartIndex >= 0
+                             && columnList.dragTargetIndex === columnRow.index
+                             && columnList.dragStartIndex !== columnRow.index
+                    x: 8
+                    y: columnRow.index === 0 ? 0 : -2
+                    width: parent.width - 16
+                    height: 3
+                    radius: 1.5
+                    color: theme.accent
+                    z: 20
                 }
             }
 

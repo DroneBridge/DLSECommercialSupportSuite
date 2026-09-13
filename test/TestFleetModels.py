@@ -473,6 +473,103 @@ class TestFleetModels(unittest.TestCase):
         self.assertEqual("-64 dBm", index.data(Qt.DisplayRole))
         self.assertEqual("-64", index.data(DeviceTableModel.RssiRole))
 
+    def test_unifi_ap_rssi_is_matched_by_mac_before_ip(self):
+        """UniFi observations use MAC identity and retain AP data provenance."""
+        model = DeviceTableModel()
+        model.set_visible_columns(["ap_rssi"])
+        model.upsert_many([
+            DeviceRecord(
+                identity="A",
+                ip="192.168.1.20",
+                mac="AA:BB:CC:DD:EE:FF",
+            ),
+        ])
+
+        model.apply_ap_clients([
+            {
+                "mac": "aa-bb-cc-dd-ee-ff",
+                "ip": "192.168.1.99",
+                "rssi": -58,
+                "ap_mac": "11:22:33:44:55:66",
+                "source": "unifi",
+            },
+        ])
+
+        record = model.record_at(0)
+        index = model.index(0, 1)
+        self.assertEqual("-58", record.ap_rssi)
+        self.assertEqual("unifi", record.ap_metrics["source"])
+        self.assertEqual("-58 dBm", index.data(Qt.DisplayRole))
+        self.assertEqual("-58", index.data(DeviceTableModel.ApRssiRole))
+
+    def test_ap_rssi_column_is_operator_visible(self):
+        """The AP observation column has an explicit table header and default width."""
+        key, title, width = DeviceTableModel.column_definition("ap_rssi")
+        self.assertEqual("ap_rssi", key)
+        self.assertEqual("AP-MEASURED\nRSSI", title)
+        self.assertGreaterEqual(width, 90)
+
+    def test_unifi_ap_metrics_are_formatted_for_table_columns(self):
+        """UniFi standard, rates, throughput, and optional balance reach the table."""
+        model = DeviceTableModel()
+        model.set_visible_columns([
+            "ap_channel",
+            "ap_band",
+            "ap_wifi_standard",
+            "ap_live_throughput",
+            "ap_rx_rate",
+            "ap_tx_rate",
+            "ap_signal_balance",
+        ])
+        model.upsert_many([
+            DeviceRecord(identity="A", ip="192.168.1.20", mac="AA:BB:CC:DD:EE:FF"),
+        ])
+
+        model.apply_ap_clients([{
+            "mac": "aa-bb-cc-dd-ee-ff",
+            "ip": "192.168.1.99",
+            "rssi": -58,
+            "ap_channel": 48,
+            "ap_band": "5 GHz",
+            "wifi_standard": "ax",
+            "rx_rate": 72000,
+            "tx_rate": 77000,
+            "rx_bytes_rate": 125000,
+            "tx_bytes_rate": 25000,
+            "signal_balance": None,
+        }])
+
+        record = model.record_at(0)
+        self.assertEqual("48", record.ap_channel)
+        self.assertEqual("5 GHz", record.ap_band)
+        self.assertEqual("Wi-Fi 6 (802.11ax)", record.ap_wifi_standard)
+        self.assertEqual("1.2 Mbps", record.ap_live_throughput)
+        self.assertEqual("72 Mbps", record.ap_rx_rate)
+        self.assertEqual("77 Mbps", record.ap_tx_rate)
+        self.assertEqual("Unavailable", record.ap_signal_balance)
+        self.assertEqual("48", model.index(0, 1).data(Qt.DisplayRole))
+        self.assertEqual("5 GHz", model.index(0, 2).data(Qt.DisplayRole))
+        self.assertEqual("1.2 Mbps", model.index(0, 4).data(Qt.DisplayRole))
+
+    def test_unifi_ap_rssi_uses_ip_fallback_and_clears_stale_data(self):
+        """IP matching supports missing MACs and empty polls clear old RSSI."""
+        model = DeviceTableModel()
+        model.upsert_many([DeviceRecord(identity="A", ip="192.168.1.20")])
+
+        model.apply_ap_clients([
+            {"mac": "", "ip": "192.168.1.20", "rssi": -71},
+        ])
+        self.assertEqual("-71", model.record_at(0).ap_rssi)
+
+        model.apply_ap_clients([])
+        record = model.record_at(0)
+        self.assertEqual("", record.ap_rssi)
+        self.assertEqual("", record.ap_channel)
+        self.assertEqual("", record.ap_band)
+        self.assertEqual("", record.ap_wifi_standard)
+        self.assertEqual("", record.ap_live_throughput)
+        self.assertEqual({}, record.ap_metrics)
+
     def test_rest_chip_id_is_decoded_to_chip_column(self):
         """REST system info chip IDs are exposed as supported chip names."""
         record = record_from_discovery(
@@ -617,6 +714,18 @@ class TestFleetModels(unittest.TestCase):
         for key, label in expected.items():
             self.assertEqual(label, DeviceTableModel.column_definition(key)[1])
 
+        parameter_columns = {
+            "gpio_cts": "CTS GPIO",
+            "gpio_rts": "RTS GPIO",
+            "gpio_tx": "TX GPIO",
+            "gpio_rx": "RX GPIO",
+            "led_cont_en": "LED CONTROL",
+            "adc_a_en": "CURRENT\nMONITOR",
+            "adc_v_en": "VOLTAGE\nMONITOR",
+        }
+        for key, label in parameter_columns.items():
+            self.assertEqual(label, DeviceTableModel.column_definition(key)[1])
+
     def test_rest_settings_columns_are_populated_from_hydrated_settings(self):
         """Hydrated REST settings populate the additional operator columns."""
         record = record_from_discovery(
@@ -642,6 +751,66 @@ class TestFleetModels(unittest.TestCase):
         self.assertEqual("enabled", record.power_mgmt)
         self.assertEqual("disabled", record.dlse_mavlink_heartbeat)
         self.assertEqual("yes", record.dlse_mavlink_sys_id_based_on_ip)
+
+    def test_rest_parameter_columns_are_populated_and_decode_monitor_values(self):
+        """UART GPIOs remain numeric and monitor settings decode to states."""
+        record = record_from_discovery(
+            {
+                "ip": "192.168.1.88",
+                "settings": {
+                    "gpio_cts": 19,
+                    "gpio_rts": 18,
+                    "gpio_tx": 17,
+                    "gpio_rx": 16,
+                    "led_cont_en": 1,
+                    "adc_a_en": 0,
+                    "adc_v_en": "1",
+                },
+            },
+            "rest",
+        )
+
+        self.assertEqual("19", record.gpio_cts)
+        self.assertEqual("18", record.gpio_rts)
+        self.assertEqual("17", record.gpio_tx)
+        self.assertEqual("16", record.gpio_rx)
+        self.assertEqual("enabled", record.led_cont_en)
+        self.assertEqual("disabled", record.adc_a_en)
+        self.assertEqual("enabled", record.adc_v_en)
+
+    def test_rest_parameter_columns_refresh_existing_record(self):
+        """A settings refresh updates the new GPIO and monitor columns."""
+        model = DeviceTableModel()
+        model.upsert_many([
+            DeviceRecord(
+                identity="KEY",
+                ip="192.168.1.88",
+                activation_key="KEY",
+            )
+        ])
+
+        model.apply_settings_result(
+            "KEY",
+            True,
+            {
+                "gpio_cts": 5,
+                "gpio_rts": 6,
+                "gpio_tx": 7,
+                "gpio_rx": 8,
+                "led_cont_en": 0,
+                "adc_a_en": 1,
+                "adc_v_en": 0,
+            },
+        )
+
+        record = model.record_by_identity("KEY")
+        self.assertEqual("5", record.gpio_cts)
+        self.assertEqual("6", record.gpio_rts)
+        self.assertEqual("7", record.gpio_tx)
+        self.assertEqual("8", record.gpio_rx)
+        self.assertEqual("disabled", record.led_cont_en)
+        self.assertEqual("enabled", record.adc_a_en)
+        self.assertEqual("disabled", record.adc_v_en)
 
     def test_rest_settings_columns_are_exposed_as_qml_roles(self):
         """QML delegates can read REST setting columns from any table cell."""

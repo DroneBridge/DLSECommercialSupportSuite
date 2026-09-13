@@ -28,6 +28,7 @@ from ui.controller import (
     MIN_COLUMN_WIDTH,
     SETTINGS_REFRESH_DELAY_MS,
     FleetController,
+    _parse_unifi_gateway_url,
 )
 from ui.models import DeviceRecord, DeviceTableModel
 
@@ -66,6 +67,7 @@ class TestFleetUI(unittest.TestCase):
         self.controller.license_timer.stop()
         self.controller.scan_timer.stop()
         self.controller.stats_timer.stop()
+        self.controller.unifi_timer.stop()
         self.root = self.engine.rootObjects()[0]
         self._standalone_components = []
 
@@ -205,6 +207,10 @@ class TestFleetUI(unittest.TestCase):
         self.assertIn("SYSTEM STATS POLLING  /api/system/stats", source)
         self.assertIn("statsEnabledCheck.checked", source)
         self.assertIn("statsFailureThresholdField", source)
+        self.assertIsNotNone(self.root.findChild(QQuickItem, "unifiEnabledCheck"))
+        self.assertIsNotNone(self.root.findChild(QQuickItem, "unifiGatewayField"))
+        self.assertIsNotNone(self.root.findChild(QQuickItem, "unifiTokenField"))
+        self.assertIn("UNIFI AP OBSERVATIONS", source)
 
     def test_operation_toolbar_uses_exported_buttons(self):
         """Fleet operations render with the exported button frame controls."""
@@ -758,6 +764,60 @@ class TestFleetUI(unittest.TestCase):
         self.assertEqual(64, values["stats_workers"])
         self.assertEqual(20, values["stats_failure_threshold"])
 
+    def test_unifi_settings_persist_and_start_a_connection_check(self):
+        """Gateway, token, site, and TLS choices are persisted as UI settings."""
+        self.controller.pool.start = Mock()
+
+        saved = self.controller.saveScanSettings(
+            "192.168.1.0/24",
+            True,
+            True,
+            14555,
+            14550,
+            5,
+            1.0,
+            20,
+            True,
+            2,
+            1.0,
+            20,
+            3,
+            True,
+            "192.168.1.1",
+            "test-token",
+            "default",
+            False,
+        )
+
+        self.assertTrue(saved)
+        values = self.controller.scanSettings
+        self.assertTrue(values["unifi_enabled"])
+        self.assertEqual("https://192.168.1.1", values["unifi_gateway_url"])
+        self.assertEqual("test-token", values["unifi_api_token"])
+        self.assertEqual("default", values["unifi_site"])
+        self.assertFalse(values["unifi_verify_tls"])
+        self.assertEqual("CHECKING", self.controller.unifiStatus)
+        worker = self.controller.pool.start.call_args.args[0]
+        self.assertIs(worker, self.controller._unifi_worker)
+        self.assertEqual("192.168.1.1", worker.host)
+        self.assertEqual(443, worker.port)
+        self.assertEqual("test-token", worker.api_token)
+
+    def test_unifi_gateway_url_validation_accepts_origin_only(self):
+        """UniFi URLs normalize HTTPS defaults and reject paths or credentials."""
+        self.assertEqual(
+            ("https://192.168.1.1", "192.168.1.1", 443),
+            _parse_unifi_gateway_url("192.168.1.1"),
+        )
+        self.assertEqual(
+            ("https://gateway.local:8443", "gateway.local", 8443),
+            _parse_unifi_gateway_url("https://gateway.local:8443/"),
+        )
+        with self.assertRaises(ValueError):
+            _parse_unifi_gateway_url("http://192.168.1.1")
+        with self.assertRaises(ValueError):
+            _parse_unifi_gateway_url("https://user:secret@192.168.1.1/path")
+
     def test_disabling_stats_polling_preserves_device_state(self):
         """Disabling polling cancels work without clearing cached health or stats."""
         record = DeviceRecord(
@@ -941,15 +1001,18 @@ class TestFleetUI(unittest.TestCase):
         self.controller.stats_timer.stop()
 
     def test_footer_exposes_independent_scan_indicators(self):
-        """The footer contains separate discovery and stats process states."""
+        """The footer contains separate discovery, stats, and UniFi states."""
         self._enter_main_screen()
         discovery = self.root.findChild(QQuickItem, "discoveryFooterStatus")
         stats = self.root.findChild(QQuickItem, "statsPollingFooterStatus")
+        unifi = self.root.findChild(QQuickItem, "unifiFooterStatus")
 
         self.assertIsNotNone(discovery)
         self.assertIsNotNone(stats)
+        self.assertIsNotNone(unifi)
         self.assertIn("STOPPED", discovery.property("text"))
         self.assertIn("WAITING", stats.property("text"))
+        self.assertIn("DISABLED", unifi.property("text"))
 
     def test_discovery_and_stats_status_transitions_are_independent(self):
         """Starting discovery does not overwrite the stats polling indicator."""
@@ -1032,13 +1095,32 @@ class TestFleetUI(unittest.TestCase):
 
         self.assertLessEqual(right_edge, self.root.width())
 
+    def test_unifi_counter_deltas_become_live_throughput(self):
+        """Consecutive cumulative UniFi byte samples are exposed as a rate."""
+        first = [{
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "ip": "192.168.1.20",
+            "rssi": -60,
+            "rx_bytes": 1_000_000,
+            "tx_bytes": 2_000_000,
+        }]
+        second = [{**first[0], "rx_bytes": 1_125_000, "tx_bytes": 2_025_000}]
+        with patch("ui.controller.monotonic", side_effect=[100.0, 105.0]):
+            self.assertIsNone(self.controller._decorate_unifi_clients(first)[0].get("rx_bytes_rate"))
+            decorated = self.controller._decorate_unifi_clients(second)[0]
+        self.assertEqual(25_000, decorated["rx_bytes_rate"])
+        self.assertEqual(5_000, decorated["tx_bytes_rate"])
+
     def test_default_columns_match_requirements(self):
         """The required fields are the default table projection."""
         self.assertEqual(
             list(DeviceTableModel.DEFAULT_COLUMN_KEYS),
             self.controller.source_model.visible_column_keys(),
         )
-        self.assertEqual(12, self.controller.source_model.columnCount())
+        self.assertEqual(
+            len(DeviceTableModel.DEFAULT_COLUMN_KEYS) + 1,
+            self.controller.source_model.columnCount(),
+        )
 
     def test_sys_id_mismatch_uses_critical_status_badges(self):
         """Known FC/DLSE SYS ID mismatches highlight exactly the two ID cells."""
@@ -1059,6 +1141,9 @@ class TestFleetUI(unittest.TestCase):
             "hostname,ip,mavlink_sys_id,wifi_ssid",
         )
         self._test_settings.remove("columns/fc_sys_id_default_added")
+        self._test_settings.remove("columns/ap_rssi_default_added")
+        self._test_settings.remove("columns/ap_metrics_default_added")
+        self._test_settings.remove("columns/ap_channel_band_default_added")
         with (
             patch("ui.controller.QSettings", return_value=self._test_settings),
             patch("ui.controller.QTimer.singleShot"),
@@ -1067,9 +1152,24 @@ class TestFleetUI(unittest.TestCase):
         migrated.license_timer.stop()
         migrated.scan_timer.stop()
         migrated.stats_timer.stop()
+        migrated.unifi_timer.stop()
 
         self.assertEqual(
-            ["hostname", "ip", "mavlink_sys_id", "fc_sys_id", "wifi_ssid"],
+            [
+                "hostname",
+                "ip",
+                "mavlink_sys_id",
+                "fc_sys_id",
+                "wifi_ssid",
+                "ap_rssi",
+                "ap_channel",
+                "ap_band",
+                "ap_wifi_standard",
+                "ap_live_throughput",
+                "ap_rx_rate",
+                "ap_tx_rate",
+                "ap_signal_balance",
+            ],
             migrated.source_model.visible_column_keys(),
         )
 
@@ -1082,6 +1182,7 @@ class TestFleetUI(unittest.TestCase):
         restored.license_timer.stop()
         restored.scan_timer.stop()
         restored.stats_timer.stop()
+        restored.unifi_timer.stop()
 
         self.assertNotIn("fc_sys_id", restored.source_model.visible_column_keys())
 
@@ -1090,12 +1191,21 @@ class TestFleetUI(unittest.TestCase):
         self.controller.moveColumn("rssi", -10)
 
         self.assertEqual(
-            ["rssi", *list(DeviceTableModel.DEFAULT_COLUMN_KEYS[:-1])],
+            [
+                "rssi",
+                *[
+                    key
+                    for key in DeviceTableModel.DEFAULT_COLUMN_KEYS
+                    if key != "rssi"
+                ],
+            ],
             self.controller.source_model.visible_column_keys(),
         )
         self.assertEqual(
             "rssi,hostname,ip,activation_status,firmware_version,"
-            "chip,dronebridge_version,mavlink_sys_id,fc_sys_id,wifi_ssid,wifi_channel",
+            "chip,dronebridge_version,mavlink_sys_id,fc_sys_id,wifi_ssid,wifi_channel,"
+            "ap_rssi,ap_channel,ap_band,ap_wifi_standard,ap_live_throughput,"
+            "ap_rx_rate,ap_tx_rate,ap_signal_balance",
             self._test_settings.value("columns/visible"),
         )
         columns = self.controller.columns
@@ -1126,12 +1236,22 @@ class TestFleetUI(unittest.TestCase):
                 "fc_sys_id",
                 "wifi_ssid",
                 "wifi_channel",
+                "ap_rssi",
+                "ap_channel",
+                "ap_band",
+                "ap_wifi_standard",
+                "ap_live_throughput",
+                "ap_rx_rate",
+                "ap_tx_rate",
+                "ap_signal_balance",
             ],
             self.controller.source_model.visible_column_keys(),
         )
         self.assertEqual(
             "rssi,ip,hostname,activation_status,firmware_version,"
-            "chip,dronebridge_version,mavlink_sys_id,fc_sys_id,wifi_ssid,wifi_channel",
+            "chip,dronebridge_version,mavlink_sys_id,fc_sys_id,wifi_ssid,wifi_channel,"
+            "ap_rssi,ap_channel,ap_band,ap_wifi_standard,ap_live_throughput,"
+            "ap_rx_rate,ap_tx_rate,ap_signal_balance",
             self._test_settings.value("columns/visible"),
         )
 
@@ -1143,7 +1263,11 @@ class TestFleetUI(unittest.TestCase):
         self.assertEqual(
             [
                 "rssi",
-                *list(DeviceTableModel.DEFAULT_COLUMN_KEYS[:-1]),
+                *[
+                    key
+                    for key in DeviceTableModel.DEFAULT_COLUMN_KEYS
+                    if key != "rssi"
+                ],
                 "activation_key",
             ],
             self.controller.source_model.visible_column_keys(),

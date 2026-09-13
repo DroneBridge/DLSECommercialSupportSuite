@@ -33,7 +33,10 @@ Item {
 
     function dlseParameterWarning(columnKey, display) {
         const value = String(display).trim()
-        if (columnKey === "power_mgmt")
+        if (columnKey === "power_mgmt"
+                || columnKey === "adc_a_en"
+                || columnKey === "adc_v_en"
+                || columnKey === "led_cont_en")
             return value.toLowerCase() === "disabled"
         if (columnKey === "dlse_mavlink_heartbeat")
             return value.toLowerCase() === "enabled"
@@ -848,7 +851,7 @@ Item {
                                                       && (columnKey === "mavlink_sys_id"
                                                           || columnKey === "fc_sys_id"))
                                         text: String(display)
-                                        color: columnKey === "rssi" ? "white"
+                                        color: columnKey === "rssi" || columnKey.indexOf("ap_") === 0 ? "white"
                                              : dlseParameterWarning(columnKey, display) ? theme.warning
                                              : theme.primaryText
                                         font.family: theme.dataFont
@@ -1155,6 +1158,26 @@ Item {
                 }
 
                 Item { Layout.fillWidth: true }
+
+                Text {
+                    objectName: "unifiFooterStatus"
+                    Layout.minimumWidth: 0
+                    clip: true
+                    text: mainScreen.footerText(
+                              "UNIFI:",
+                              fleetController.unifiStatus,
+                              fleetController.unifiStatus === "ONLINE" ? theme.success
+                              : fleetController.unifiStatus === "OFFLINE"
+                                || fleetController.unifiStatus === "ERROR" ? theme.error
+                              : fleetController.unifiStatus === "CHECKING" ? theme.accent
+                              : theme.secondaryText)
+                    textFormat: Text.StyledText
+                    color: theme.primaryText
+                    font.family: theme.dataFont
+                    font.pixelSize: theme.smallTextSize
+                }
+
+                Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: theme.border }
 
                 Text {
                     text: mainScreen.footerText(

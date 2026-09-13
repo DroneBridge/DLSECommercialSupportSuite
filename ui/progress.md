@@ -1,6 +1,6 @@
 # Fleet Manager QML Progress
 
-Last updated: 2026-06-15
+Last updated: 2026-09-13
 
 ## QML Foundation
 
@@ -18,7 +18,7 @@ Last updated: 2026-06-15
 - [x] Align main-screen primary, secondary, muted, status, and control text colors with the updated reference.
 - [x] Reserve link blue for genuine hyperlinks instead of operational buttons and IP values.
 - [x] Add hover, pressed, disabled, focus, keyboard, validation, and busy states.
-- [x] Keep Direct Standalone active and show Skybrush, UniFi, and Network Manager as future features.
+- [x] Keep Direct Standalone active; show Skybrush and Network Manager as future features and expose UniFi AP observations in Fleet Manager.
 - [x] Use QML-owned operational dialogs and Qt Quick file/folder pickers.
 
 ## Fleet Inventory
@@ -39,7 +39,9 @@ Last updated: 2026-06-15
 
 - [x] Implement virtualized QML table and matrix views.
 - [x] Search all cached fields and sort projected table columns.
-- [x] Persist visible columns with the required nine data columns enabled by default.
+- [x] Persist visible columns with the required default data columns, including AP-measured RSSI.
+- [x] Expose UniFi AP Wi-Fi standard, RX/TX rates, sampled live throughput, and optional signal-balance values as configurable columns.
+- [x] Expose UniFi AP channel and band with radio-first, ambiguity-safe band detection.
 - [x] Allow visible fleet-table columns to be rearranged and persisted.
 - [x] Allow visible fleet-table columns to be manually resized and persisted.
 - [x] Share identity-based selection across list and matrix views.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from time import monotonic
@@ -35,6 +36,13 @@ class DeviceRecord:
     mavlink_sys_id: str = ""
     dlse_mode: str = ""
     baud: str = ""
+    gpio_cts: str = ""
+    gpio_rts: str = ""
+    gpio_tx: str = ""
+    gpio_rx: str = ""
+    led_cont_en: str = ""
+    adc_a_en: str = ""
+    adc_v_en: str = ""
     dlse_local_udp_port: str = ""
     dlse_remote_udp_port: str = ""
     power_mgmt: str = ""
@@ -44,6 +52,14 @@ class DeviceRecord:
     wifi_ssid: str = ""
     wifi_channel: str = ""
     rssi: str = ""
+    ap_rssi: str = ""
+    ap_channel: str = ""
+    ap_band: str = ""
+    ap_wifi_standard: str = ""
+    ap_live_throughput: str = ""
+    ap_rx_rate: str = ""
+    ap_tx_rate: str = ""
+    ap_signal_balance: str = ""
     battery_voltage: str = ""
     activation_key: str = ""
     mac: str = ""
@@ -58,6 +74,7 @@ class DeviceRecord:
     system_info: dict[str, Any] = field(default_factory=dict)
     settings: dict[str, Any] = field(default_factory=dict)
     stats: dict[str, Any] = field(default_factory=dict)
+    ap_metrics: dict[str, Any] = field(default_factory=dict)
     stats_rates: dict[str, float | None] = field(default_factory=dict)
     stats_sampled_at: float | None = None
     errors: dict[str, str] = field(default_factory=dict)
@@ -97,6 +114,13 @@ class DeviceRecord:
             self.mavlink_sys_id,
             self.dlse_mode,
             self.baud,
+            self.gpio_cts,
+            self.gpio_rts,
+            self.gpio_tx,
+            self.gpio_rx,
+            self.led_cont_en,
+            self.adc_a_en,
+            self.adc_v_en,
             self.dlse_local_udp_port,
             self.dlse_remote_udp_port,
             self.power_mgmt,
@@ -106,6 +130,14 @@ class DeviceRecord:
             self.wifi_ssid,
             self.wifi_channel,
             self.rssi,
+            self.ap_rssi,
+            self.ap_channel,
+            self.ap_band,
+            self.ap_wifi_standard,
+            self.ap_live_throughput,
+            self.ap_rx_rate,
+            self.ap_tx_rate,
+            self.ap_signal_balance,
             self.battery_voltage,
             self.activation_key,
             self.mac,
@@ -114,6 +146,7 @@ class DeviceRecord:
             self.system_info,
             self.settings,
             self.stats,
+            self.ap_metrics,
         ]
         return " ".join(str(value) for value in values).lower()
 
@@ -136,8 +169,23 @@ class DeviceTableModel(QAbstractTableModel):
         ("wifi_ssid", "DB APMODE\nSSID", 120),
         ("wifi_channel", "DB APMODE\nCHANNEL", 82),
         ("rssi", "DEVICE\nRSSI", 76),
+        ("ap_rssi", "AP-MEASURED\nRSSI", 96),
+        ("ap_channel", "AP\nCHANNEL", 92),
+        ("ap_band", "AP\nBAND", 90),
+        ("ap_wifi_standard", "AP WIFI\nSTANDARD", 126),
+        ("ap_live_throughput", "AP LIVE\nTHROUGHPUT", 128),
+        ("ap_rx_rate", "AP RX\nRATE", 100),
+        ("ap_tx_rate", "AP TX\nRATE", 100),
+        ("ap_signal_balance", "AP/CLIENT\nSIGNAL BALANCE", 138),
         ("dlse_mode", "DLSE MODE", 118),
         ("baud", "BAUD", 92),
+        ("gpio_cts", "CTS GPIO", 86),
+        ("gpio_rts", "RTS GPIO", 86),
+        ("gpio_tx", "TX GPIO", 86),
+        ("gpio_rx", "RX GPIO", 86),
+        ("led_cont_en", "LED CONTROL", 112),
+        ("adc_a_en", "CURRENT\nMONITOR", 120),
+        ("adc_v_en", "VOLTAGE\nMONITOR", 120),
         ("dlse_local_udp_port", "DLSE LOCAL\nUDP PORT", 116),
         ("dlse_remote_udp_port", "DLSE REMOTE\nUDP PORT", 122),
         ("power_mgmt", "POWER\nMGMT", 94),
@@ -149,7 +197,7 @@ class DeviceTableModel(QAbstractTableModel):
         ("operation", "OPERATION", 150),
         ("operation_progress", "PROGRESS", 106),
     ]
-    DEFAULT_COLUMN_KEYS = tuple(column[0] for column in COLUMNS[:11])
+    DEFAULT_COLUMN_KEYS = tuple(column[0] for column in COLUMNS[:19])
 
     IdentityRole = Qt.UserRole + 1
     IpRole = Qt.UserRole + 2
@@ -185,6 +233,15 @@ class DeviceTableModel(QAbstractTableModel):
     ErrorsRole = Qt.UserRole + 32
     ColumnKeyRole = Qt.UserRole + 33
     FcSysIdMismatchRole = Qt.UserRole + 34
+    ApRssiRole = Qt.UserRole + 35
+    ApMetricsRole = Qt.UserRole + 36
+    ApWifiStandardRole = Qt.UserRole + 37
+    ApLiveThroughputRole = Qt.UserRole + 38
+    ApRxRateRole = Qt.UserRole + 39
+    ApTxRateRole = Qt.UserRole + 40
+    ApSignalBalanceRole = Qt.UserRole + 41
+    ApChannelRole = Qt.UserRole + 42
+    ApBandRole = Qt.UserRole + 43
 
     _ROLE_ATTRIBUTES = {
         IdentityRole: "identity",
@@ -206,6 +263,14 @@ class DeviceTableModel(QAbstractTableModel):
         WifiSsidRole: "wifi_ssid",
         WifiChannelRole: "wifi_channel",
         RssiRole: "rssi",
+        ApRssiRole: "ap_rssi",
+        ApChannelRole: "ap_channel",
+        ApBandRole: "ap_band",
+        ApWifiStandardRole: "ap_wifi_standard",
+        ApLiveThroughputRole: "ap_live_throughput",
+        ApRxRateRole: "ap_rx_rate",
+        ApTxRateRole: "ap_tx_rate",
+        ApSignalBalanceRole: "ap_signal_balance",
         BatteryVoltageRole: "battery_voltage",
         ActivationKeyRole: "activation_key",
         MacRole: "mac",
@@ -217,6 +282,7 @@ class DeviceTableModel(QAbstractTableModel):
         SettingsRole: "settings",
         StatsRole: "stats",
         ErrorsRole: "errors",
+        ApMetricsRole: "ap_metrics",
         FcSysIdMismatchRole: "fc_sys_id_mismatch",
     }
 
@@ -250,6 +316,14 @@ class DeviceTableModel(QAbstractTableModel):
             self.WifiSsidRole: b"wifiSsid",
             self.WifiChannelRole: b"wifiChannel",
             self.RssiRole: b"rssi",
+            self.ApRssiRole: b"apRssi",
+            self.ApChannelRole: b"apChannel",
+            self.ApBandRole: b"apBand",
+            self.ApWifiStandardRole: b"apWifiStandard",
+            self.ApLiveThroughputRole: b"apLiveThroughput",
+            self.ApRxRateRole: b"apRxRate",
+            self.ApTxRateRole: b"apTxRate",
+            self.ApSignalBalanceRole: b"apSignalBalance",
             self.BatteryVoltageRole: b"batteryVoltage",
             self.ActivationKeyRole: b"activationKey",
             self.MacRole: b"mac",
@@ -263,6 +337,7 @@ class DeviceTableModel(QAbstractTableModel):
             self.SettingsRole: b"settings",
             self.StatsRole: b"stats",
             self.ErrorsRole: b"errors",
+            self.ApMetricsRole: b"apMetrics",
             self.ColumnKeyRole: b"columnKey",
             self.FcSysIdMismatchRole: b"fcSysIdMismatch",
         }
@@ -486,6 +561,84 @@ class DeviceTableModel(QAbstractTableModel):
             record.errors["system_info"] = error or "System info request failed"
         self._emit_record_changed(identity)
 
+    def apply_ap_clients(self, clients: list[dict[str, Any]]) -> None:
+        """
+        Apply the latest UniFi client observations to retained DLSE devices.
+
+        :param clients: Normalized active-client dictionaries containing MAC,
+            IP, RSSI, rates, and optional access-point metadata. Missing values
+            remain blank rather than being inferred from an unrelated metric.
+        :return: None. Records are matched by normalized MAC first and by IP as
+            a fallback. Missing clients have their stale AP observation cleared.
+        """
+        by_mac = {
+            normalized: client
+            for client in clients
+            if (normalized := _normalize_mac(client.get("mac")))
+        }
+        by_ip = {
+            str(client.get("ip")): client
+            for client in clients
+            if client.get("ip")
+        }
+        changed = False
+        for record in self._records.values():
+            client = by_mac.get(_normalize_mac(record.mac)) or by_ip.get(record.ip)
+            metrics = dict(client) if client else {}
+            ap_rssi = _rssi_text(metrics.get("rssi")) if metrics else ""
+            ap_channel = (
+                _ap_channel_text(metrics.get("ap_channel", metrics.get("channel")))
+                if metrics
+                else ""
+            )
+            ap_band = (
+                _ap_band_text(
+                    metrics.get("ap_band", metrics.get("band")),
+                    metrics.get("ap_channel", metrics.get("channel")),
+                    metrics.get("radio"),
+                )
+                if metrics
+                else ""
+            )
+            ap_wifi_standard = (
+                _wifi_standard_text(metrics.get("wifi_standard")) if metrics else ""
+            )
+            ap_live_throughput = _throughput_text(metrics) if metrics else ""
+            ap_rx_rate = _rate_text(metrics.get("rx_rate")) if metrics else ""
+            ap_tx_rate = _rate_text(metrics.get("tx_rate")) if metrics else ""
+            ap_signal_balance = (
+                _signal_balance_text(metrics.get("signal_balance")) if metrics else ""
+            )
+            if (
+                record.ap_metrics == metrics
+                and record.ap_rssi == ap_rssi
+                and record.ap_channel == ap_channel
+                and record.ap_band == ap_band
+                and record.ap_wifi_standard == ap_wifi_standard
+                and record.ap_live_throughput == ap_live_throughput
+                and record.ap_rx_rate == ap_rx_rate
+                and record.ap_tx_rate == ap_tx_rate
+                and record.ap_signal_balance == ap_signal_balance
+            ):
+                continue
+            record.ap_metrics = metrics
+            record.ap_rssi = ap_rssi
+            record.ap_channel = ap_channel
+            record.ap_band = ap_band
+            record.ap_wifi_standard = ap_wifi_standard
+            record.ap_live_throughput = ap_live_throughput
+            record.ap_rx_rate = ap_rx_rate
+            record.ap_tx_rate = ap_tx_rate
+            record.ap_signal_balance = ap_signal_balance
+            changed = True
+        if not changed or not self._order:
+            return
+        self.dataChanged.emit(
+            self.index(0, 0),
+            self.index(len(self._order) - 1, self.columnCount() - 1),
+        )
+        self.inventoryChanged.emit()
+
     def apply_settings_result(
         self,
         identity: str,
@@ -517,6 +670,22 @@ class DeviceTableModel(QAbstractTableModel):
                 record.dlse_mode = _format_esp32_mode(settings.get("esp32_mode"))
             if "baud" in settings:
                 record.baud = _setting_text(settings.get("baud"))
+            if "gpio_cts" in settings:
+                record.gpio_cts = _setting_text(settings.get("gpio_cts"))
+            if "gpio_rts" in settings:
+                record.gpio_rts = _setting_text(settings.get("gpio_rts"))
+            if "gpio_tx" in settings:
+                record.gpio_tx = _setting_text(settings.get("gpio_tx"))
+            if "gpio_rx" in settings:
+                record.gpio_rx = _setting_text(settings.get("gpio_rx"))
+            if "led_cont_en" in settings:
+                record.led_cont_en = _format_enabled_disabled(
+                    settings.get("led_cont_en")
+                )
+            if "adc_a_en" in settings:
+                record.adc_a_en = _format_enabled_disabled(settings.get("adc_a_en"))
+            if "adc_v_en" in settings:
+                record.adc_v_en = _format_enabled_disabled(settings.get("adc_v_en"))
             if "udp_local_port" in settings:
                 record.dlse_local_udp_port = _setting_text(
                     settings.get("udp_local_port")
@@ -679,6 +848,13 @@ class DeviceTableModel(QAbstractTableModel):
             "mavlink_sys_id",
             "dlse_mode",
             "baud",
+            "gpio_cts",
+            "gpio_rts",
+            "gpio_tx",
+            "gpio_rx",
+            "led_cont_en",
+            "adc_a_en",
+            "adc_v_en",
             "dlse_local_udp_port",
             "dlse_remote_udp_port",
             "power_mgmt",
@@ -730,7 +906,7 @@ class DeviceTableModel(QAbstractTableModel):
             return "ONLINE" if record.online else "OFFLINE"
         if column_key == "operation_progress":
             return f"{value}%" if record.operation else ""
-        if column_key == "rssi" and str(value).strip():
+        if column_key in {"rssi", "ap_rssi"} and str(value).strip():
             return f"{value} dBm"
         return value
 
@@ -834,6 +1010,131 @@ class DeviceCardModel(QAbstractListModel):
 def preferred_identity(record: DeviceRecord) -> str:
     """Return activation key, MAC, or IP as the stable session identity."""
     return record.activation_key or record.mac.lower() or record.ip
+
+
+def _normalize_mac(value: Any) -> str:
+    """Return a separator-free lowercase MAC key, or an empty string if invalid."""
+    normalized = "".join(
+        character
+        for character in str(value or "").lower()
+        if character.isalnum()
+    )
+    return normalized if len(normalized) == 12 and all(
+        character in "0123456789abcdef" for character in normalized
+    ) else ""
+
+
+def _rssi_text(value: Any) -> str:
+    """Return a finite AP RSSI value as compact text, or empty text if invalid."""
+    if isinstance(value, bool):
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if not -150 <= number <= 0:
+        return ""
+    return str(int(number)) if number.is_integer() else f"{number:g}"
+
+
+def _ap_channel_text(value: Any) -> str:
+    """Return a valid UniFi Wi-Fi channel number as display text."""
+    number = _numeric_metric(value)
+    if number is None or not number.is_integer() or not 1 <= number <= 233:
+        return "Unavailable"
+    return str(int(number))
+
+
+def _ap_band_text(value: Any, channel: Any = None, radio: Any = None) -> str:
+    """Map UniFi radio metadata to a band, with a safe channel fallback."""
+    normalized = str(value or radio or "").strip().lower().replace(" ", "")
+    if normalized in {"ng", "2g", "2.4", "2.4g", "2.4ghz", "bg"}:
+        return "2.4 GHz"
+    if normalized in {"na", "5g", "5ghz", "5"}:
+        return "5 GHz"
+    if normalized in {"6e", "6g", "6ghz", "6"}:
+        return "6 GHz"
+    # Channels 1-14 are unambiguous 2.4 GHz channels. Other channel ranges
+    # overlap 5/6 GHz allocations, so do not guess without UniFi radio data.
+    channel_text = _ap_channel_text(channel)
+    try:
+        channel_number = int(channel_text)
+    except ValueError:
+        return "Unavailable"
+    return "2.4 GHz" if 1 <= channel_number <= 14 else "Unavailable"
+
+
+def _numeric_metric(value: Any) -> float | None:
+    """Return a finite numeric UniFi metric, excluding booleans."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _wifi_standard_text(value: Any) -> str:
+    """Translate UniFi ``radio_proto`` values to operator-friendly Wi-Fi text."""
+    protocol = str(value or "").strip().lower()
+    if not protocol:
+        return "Unavailable"
+    return {
+        "be": "Wi-Fi 7 (802.11be)",
+        "ax": "Wi-Fi 6 (802.11ax)",
+        "ac": "Wi-Fi 5 (802.11ac)",
+        "n": "Wi-Fi 4 (802.11n)",
+        "ng": "Wi-Fi 4 (802.11n)",
+        "na": "Wi-Fi 4 (802.11n)",
+        "g": "802.11g",
+        "a": "802.11a",
+        "b": "802.11b",
+    }.get(protocol, str(value))
+
+
+def _rate_text(value: Any) -> str:
+    """Format a UniFi client PHY rate, whose API unit is usually kbit/s."""
+    number = _numeric_metric(value)
+    if number is None or number <= 0:
+        return "Unavailable"
+    mbps = number / 1000.0 if number >= 1000 else number
+    if mbps >= 100:
+        return f"{mbps:.0f} Mbps"
+    if mbps.is_integer():
+        return f"{int(mbps)} Mbps"
+    return f"{mbps:.1f} Mbps"
+
+
+def _speed_text(bits_per_second: float | None) -> str:
+    """Format a live traffic rate expressed in bits per second."""
+    if bits_per_second is None or bits_per_second < 0:
+        return "Unavailable"
+    if bits_per_second >= 1_000_000:
+        value = bits_per_second / 1_000_000
+        return f"{value:.1f} Mbps"
+    if bits_per_second >= 1_000:
+        return f"{bits_per_second / 1_000:.1f} Kbps"
+    return f"{bits_per_second:.0f} bps"
+
+
+def _throughput_text(metrics: dict[str, Any]) -> str:
+    """Format UniFi live throughput from direct or byte-counter rate fields."""
+    direct = _numeric_metric(metrics.get("live_throughput_bps"))
+    if direct is not None:
+        return _speed_text(direct)
+    rx_bytes = _numeric_metric(metrics.get("rx_bytes_rate"))
+    tx_bytes = _numeric_metric(metrics.get("tx_bytes_rate"))
+    if rx_bytes is None and tx_bytes is None:
+        return "Unavailable"
+    return _speed_text(max(0.0, (rx_bytes or 0.0) + (tx_bytes or 0.0)) * 8)
+
+
+def _signal_balance_text(value: Any) -> str:
+    """Format UniFi's optional AP/client signal-balance value."""
+    if value is None or str(value).strip() == "":
+        return "Unavailable"
+    return str(value)
 
 
 def _first_configured_value(*values: Any) -> Any:
@@ -1013,6 +1314,13 @@ def record_from_discovery(device: dict[str, Any], source: str) -> DeviceRecord:
         mavlink_sys_id=str(sys_id),
         dlse_mode=_format_esp32_mode(settings.get("esp32_mode")),
         baud=_setting_text(settings.get("baud")),
+        gpio_cts=_setting_text(settings.get("gpio_cts")),
+        gpio_rts=_setting_text(settings.get("gpio_rts")),
+        gpio_tx=_setting_text(settings.get("gpio_tx")),
+        gpio_rx=_setting_text(settings.get("gpio_rx")),
+        led_cont_en=_format_enabled_disabled(settings.get("led_cont_en")),
+        adc_a_en=_format_enabled_disabled(settings.get("adc_a_en")),
+        adc_v_en=_format_enabled_disabled(settings.get("adc_v_en")),
         dlse_local_udp_port=_setting_text(settings.get("udp_local_port")),
         dlse_remote_udp_port=_setting_text(settings.get("wifi_brcst_port")),
         power_mgmt=_format_enabled_disabled(settings.get("show_pm_en")),

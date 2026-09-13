@@ -4,7 +4,7 @@ import unittest
 from threading import Barrier, Lock
 from time import sleep
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from DroneBridgeCommercialSupportSuite import DBDLSERelease
 from pymavlink import mavutil
@@ -19,11 +19,95 @@ from ui.workers import (
     StaticIpAssignmentWorker,
     SystemInfoRefreshWorker,
     SysIdAlignmentWorker,
+    UnifiPollingWorker,
+    _unifi_client_payload,
 )
 
 
 class TestFleetWorkers(unittest.TestCase):
     """Verify worker queue behavior without hardware or network access."""
+
+    def test_unifi_client_payload_uses_ap_signal_and_rejects_wired_clients(self):
+        """UniFi's signed signal field is normalized as AP-measured RSSI."""
+        wireless = SimpleNamespace(raw={
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "ip": "192.168.1.20",
+            "signal": -63,
+            "ap_mac": "11:22:33:44:55:66",
+            "essid": "show",
+            "channel": 6,
+            "radio": "na",
+            "radio_name": "rai0",
+            "radio_proto": "ax",
+            "rx_rate": 72000,
+            "tx_rate": 77000,
+            "rx_bytes": 1000,
+            "tx_bytes": 2000,
+            "rx_bytes-r": 12,
+            "tx_bytes-r": 34,
+            "is_wired": False,
+        })
+        wired = SimpleNamespace(raw={
+            "mac": "00:11:22:33:44:55",
+            "signal": -20,
+            "is_wired": True,
+        })
+
+        payload = _unifi_client_payload(wireless)
+
+        self.assertEqual(-63, payload["rssi"])
+        self.assertEqual("11:22:33:44:55:66", payload["ap_mac"])
+        self.assertEqual("show", payload["ssid"])
+        self.assertEqual(6, payload["ap_channel"])
+        self.assertEqual("5 GHz", payload["ap_band"])
+        self.assertEqual("na", payload["radio"])
+        self.assertEqual("ax", payload["wifi_standard"])
+        self.assertEqual(72000, payload["rx_rate"])
+        self.assertEqual(77000, payload["tx_rate"])
+        self.assertEqual(12, payload["rx_bytes_rate"])
+        self.assertEqual(34, payload["tx_bytes_rate"])
+        self.assertIsNone(_unifi_client_payload(wired))
+
+        preferred = SimpleNamespace(raw={**wireless.raw, "rssi": 46, "signal": -57})
+        self.assertEqual(-57, _unifi_client_payload(preferred)["rssi"])
+        fallback = SimpleNamespace(raw={**wireless.raw, "signal": None, "rssi": -57})
+        self.assertEqual(-57, _unifi_client_payload(fallback)["rssi"])
+
+    def test_unifi_client_payload_band_fallback_is_safe(self):
+        """Only unambiguous 2.4 GHz channels are used without radio metadata."""
+        base = {
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "ip": "192.168.1.20",
+            "signal": -63,
+            "is_wired": False,
+        }
+        self.assertEqual(
+            "2.4 GHz",
+            _unifi_client_payload(SimpleNamespace(raw={**base, "channel": 6}))["ap_band"],
+        )
+        self.assertIsNone(
+            _unifi_client_payload(SimpleNamespace(raw={**base, "channel": 48}))["ap_band"]
+        )
+        self.assertEqual(
+            "6 GHz",
+            _unifi_client_payload(
+                SimpleNamespace(raw={**base, "channel": 37, "radio": "6e"})
+            )["ap_band"],
+        )
+
+    def test_unifi_worker_emits_async_results_without_exposing_token(self):
+        """The QRunnable boundary emits normalized results from its async poll."""
+        worker = UnifiPollingWorker("192.168.1.1", 443, "secret-token")
+        worker._fetch_clients = AsyncMock(return_value=[{"rssi": -55}])
+        finished = []
+        errors = []
+        worker.signals.finished.connect(finished.append)
+        worker.signals.error.connect(errors.append)
+
+        worker.run()
+
+        self.assertEqual([[{"rssi": -55}]], finished)
+        self.assertEqual([], errors)
 
     @patch("ui.workers.db_list_offline_dlse_releases", return_value=["cached-release"])
     @patch("ui.workers.db_api_get_dlse_releases")

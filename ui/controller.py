@@ -10,6 +10,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from time import monotonic
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from PySide6.QtCore import (
     Property,
@@ -49,6 +50,7 @@ from ui.workers import (
     StaticIpAssignmentWorker,
     SystemInfoRefreshWorker,
     SysIdAlignmentWorker,
+    UnifiPollingWorker,
 )
 
 
@@ -65,6 +67,8 @@ DEFAULT_INSPECTOR_WIDTH = 355
 MIN_INSPECTOR_WIDTH = 300
 MAX_INSPECTOR_WIDTH = 640
 SETTINGS_REFRESH_DELAY_MS = 3_000
+DEFAULT_UNIFI_GATEWAY_URL = "https://192.168.1.1"
+UNIFI_POLL_INTERVAL_MS = 5_000
 
 KNOWN_SYSTEM_METRICS = {
     "idf_version",
@@ -219,6 +223,78 @@ def _rssi_item(value: Any) -> dict[str, Any]:
         return _status_item("esp_rssi", "Wi-Fi signal", "Unavailable", "muted")
     tone = "success" if rssi >= -67 else "warning" if rssi >= -75 else "error"
     return _status_item("esp_rssi", "Wi-Fi signal", f"{rssi:g} dBm", tone)
+
+
+def _parse_unifi_gateway_url(value: str) -> tuple[str, str, int]:
+    """
+    Validate and normalize a local UniFi HTTPS gateway URL.
+
+    :param value: User-entered hostname, address, or HTTPS URL.
+    :return: Tuple of normalized URL, host, and explicit/default HTTPS port.
+    :raises ValueError: If credentials, paths, unsupported schemes, or an
+        invalid/missing host or port are supplied.
+    """
+    candidate = str(value or "").strip()
+    if not candidate:
+        raise ValueError("Enter the UniFi gateway URL.")
+    if "://" not in candidate:
+        candidate = f"https://{candidate}"
+    parsed = urlsplit(candidate)
+    if parsed.scheme.lower() != "https":
+        raise ValueError("The UniFi gateway URL must use HTTPS.")
+    if parsed.username or parsed.password:
+        raise ValueError("Do not include credentials in the UniFi gateway URL.")
+    if (
+        not parsed.hostname
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Enter only the UniFi gateway origin, without a path or query.")
+    try:
+        port = parsed.port or 443
+    except ValueError as exc:
+        raise ValueError("Enter a valid UniFi gateway port.") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("Enter a valid UniFi gateway port.")
+    host = parsed.hostname
+    display_host = f"[{host}]" if ":" in host else host
+    normalized = f"https://{display_host}" + (f":{port}" if port != 443 else "")
+    return normalized, host, port
+
+
+def _unifi_client_key(client: dict[str, Any]) -> str:
+    """Return a stable per-client key for UniFi byte-counter sampling."""
+    mac = "".join(
+        character
+        for character in str(client.get("mac") or "").lower()
+        if character.isalnum()
+    )
+    if len(mac) == 12:
+        return f"mac:{mac}"
+    ip = str(client.get("ip") or "").strip()
+    return f"ip:{ip}" if ip else ""
+
+
+def _nonnegative_number(value: Any) -> float | None:
+    """Return a finite non-negative number for a UniFi byte counter."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _counter_delta_rate(
+    previous: float,
+    current: float,
+    elapsed: float,
+) -> float | None:
+    """Return counter units per second, or ``None`` after a device reset."""
+    delta = current - previous
+    return delta / elapsed if delta >= 0 else None
 
 
 def _client_list(value: Any) -> str:
@@ -551,6 +627,17 @@ class FleetController(QObject):
         self._fleet_generation = 0
         self._license_check_running = False
         self._license_status = "unknown"
+        self._unifi_poll_running = False
+        self._unifi_worker: UnifiPollingWorker | None = None
+        self._unifi_generation = 0
+        self._unifi_byte_samples: dict[str, tuple[float, float, float]] = {}
+        unifi_settings = self._unifi_values()
+        if not unifi_settings["enabled"]:
+            self._unifi_status = "DISABLED"
+        elif not unifi_settings["api_token"]:
+            self._unifi_status = "NOT CONFIGURED"
+        else:
+            self._unifi_status = "WAITING"
         self._status_text = "IDLE"
         self._active_worker: Any = None
         self._active_operation = ""
@@ -586,7 +673,12 @@ class FleetController(QObject):
         self.license_timer.setInterval(30_000)
         self.license_timer.timeout.connect(self.checkLicenseServer)
         self.license_timer.start()
+        self.unifi_timer = QTimer(self)
+        self.unifi_timer.setSingleShot(True)
+        self.unifi_timer.timeout.connect(self.startUnifiPolling)
+        self._schedule_next_unifi_poll()
         QTimer.singleShot(250, self.checkLicenseServer)
+        QTimer.singleShot(350, self.startUnifiPolling)
 
     @Property(str, constant=True)
     def suiteVersion(self) -> str:
@@ -625,6 +717,11 @@ class FleetController(QObject):
     def licenseStatus(self) -> str:
         """Return ``online``, ``offline``, ``checking``, or ``unknown``."""
         return self._license_status
+
+    @Property(str, notify=stateChanged)
+    def unifiStatus(self) -> str:
+        """Return the current UniFi connection state for the footer."""
+        return self._unifi_status
 
     @Property(int, notify=stateChanged)
     def detectedCount(self) -> int:
@@ -706,7 +803,15 @@ class FleetController(QObject):
     @Property("QVariantMap", notify=scanSettingsChanged)
     def scanSettings(self) -> dict[str, Any]:
         """Return persisted discovery settings with field-safe defaults."""
-        return self._scan_values()
+        unifi = self._unifi_values()
+        return {
+            **self._scan_values(),
+            "unifi_enabled": unifi["enabled"],
+            "unifi_gateway_url": unifi["gateway_url"],
+            "unifi_api_token": unifi["api_token"],
+            "unifi_site": unifi["site"],
+            "unifi_verify_tls": unifi["verify_tls"],
+        }
 
     @Property("QVariantList", notify=columnsChanged)
     def columns(self) -> list[dict[str, Any]]:
@@ -756,6 +861,14 @@ class FleetController(QObject):
             "wifiSsid": record.wifi_ssid,
             "wifiChannel": record.wifi_channel,
             "rssi": record.rssi,
+            "apRssi": record.ap_rssi,
+            "apChannel": record.ap_channel,
+            "apBand": record.ap_band,
+            "apWifiStandard": record.ap_wifi_standard,
+            "apLiveThroughput": record.ap_live_throughput,
+            "apRxRate": record.ap_rx_rate,
+            "apTxRate": record.ap_tx_rate,
+            "apSignalBalance": record.ap_signal_balance,
             "batteryVoltage": record.battery_voltage,
             "activationKey": record.activation_key,
             "mac": record.mac,
@@ -766,6 +879,7 @@ class FleetController(QObject):
             "systemInfo": record.system_info,
             "settings": record.settings,
             "stats": record.stats,
+            "apMetrics": record.ap_metrics,
             "errors": record.errors,
         }
 
@@ -782,7 +896,7 @@ class FleetController(QObject):
             return []
         fields = []
         for key in sorted(record.settings):
-            if key.endswith("_type"):
+            if key == "data_types":
                 continue
             original = record.settings[key]
             current = self._setting_edits.get(key, original)
@@ -929,6 +1043,11 @@ class FleetController(QObject):
         float,
         int,
         int,
+        bool,
+        str,
+        str,
+        str,
+        bool,
         result=bool,
     )
     def saveScanSettings(
@@ -946,8 +1065,18 @@ class FleetController(QObject):
         stats_timeout: float,
         stats_workers: int,
         stats_failure_threshold: int,
+        unifi_enabled: bool = False,
+        unifi_gateway_url: str = DEFAULT_UNIFI_GATEWAY_URL,
+        unifi_api_token: str = "",
+        unifi_site: str = "default",
+        unifi_verify_tls: bool = False,
     ) -> bool:
-        """Validate, persist, and apply discovery and stats polling settings."""
+        """
+        Validate, persist, and apply discovery, stats, and UniFi settings.
+
+        :return: ``True`` when all settings were accepted. Validation failures
+            emit a user-facing toast and preserve the previous configuration.
+        """
         try:
             network = ipaddress.ip_network(subnet.strip(), strict=False)
         except ValueError:
@@ -967,6 +1096,21 @@ class FleetController(QObject):
             return False
         if not 1 <= esp32_port <= 65535 or not 1 <= local_port <= 65535:
             self.toastRequested.emit("error", "Ports must be between 1 and 65535.")
+            return False
+        api_token = unifi_api_token.strip()
+        site = unifi_site.strip() or "default"
+        try:
+            gateway_url, _host, _port = _parse_unifi_gateway_url(
+                unifi_gateway_url or DEFAULT_UNIFI_GATEWAY_URL
+            )
+        except ValueError as exc:
+            self.toastRequested.emit("error", str(exc))
+            return False
+        if unifi_enabled and not api_token:
+            self.toastRequested.emit("error", "Enter a UniFi API token.")
+            return False
+        if any(character in site for character in "/?#"):
+            self.toastRequested.emit("error", "Enter a valid UniFi site name.")
             return False
         values = {
             "subnet": str(network),
@@ -989,6 +1133,11 @@ class FleetController(QObject):
         was_stats_enabled = self._scan_values()["stats_enabled"]
         for key, value in values.items():
             self.settings.setValue(f"scan/{key}", value)
+        self.settings.setValue("unifi/enabled", unifi_enabled)
+        self.settings.setValue("unifi/gateway_url", gateway_url)
+        self.settings.setValue("unifi/api_token", api_token)
+        self.settings.setValue("unifi/site", site)
+        self.settings.setValue("unifi/verify_tls", unifi_verify_tls)
         self._restart_scan_timer()
         if not stats_enabled:
             self._fleet_generation += 1
@@ -1004,6 +1153,17 @@ class FleetController(QObject):
         elif not self._stats_poll_running:
             self._stats_polling_status = "WAITING"
             self._schedule_next_stats_round()
+        self.unifi_timer.stop()
+        self._unifi_generation += 1
+        self._unifi_poll_running = False
+        self._unifi_worker = None
+        self._unifi_byte_samples.clear()
+        if unifi_enabled:
+            self._unifi_status = "WAITING"
+            self.startUnifiPolling()
+        else:
+            self._unifi_status = "DISABLED"
+            self.source_model.apply_ap_clients([])
         self.scanSettingsChanged.emit()
         self.stateChanged.emit()
         return True
@@ -2060,6 +2220,59 @@ class FleetController(QObject):
         self.stateChanged.emit()
         self.pool.start(worker)
 
+    @Slot()
+    def startUnifiPolling(self) -> None:
+        """
+        Start one non-overlapping UniFi AP observation request.
+
+        :return: None. Disabled or incomplete settings update the footer without
+            starting network I/O; all other results arrive asynchronously.
+        """
+        if self._unifi_poll_running:
+            return
+        values = self._unifi_values()
+        self.unifi_timer.stop()
+        if not values["enabled"]:
+            self._unifi_status = "DISABLED"
+            self.stateChanged.emit()
+            return
+        if not values["api_token"]:
+            self._unifi_status = "NOT CONFIGURED"
+            self.stateChanged.emit()
+            return
+        try:
+            _url, host, port = _parse_unifi_gateway_url(values["gateway_url"])
+        except ValueError:
+            self._unifi_status = "ERROR"
+            self.stateChanged.emit()
+            return
+        worker = UnifiPollingWorker(
+            host,
+            port,
+            values["api_token"],
+            site=values["site"],
+            timeout=values["timeout"],
+            verify_tls=values["verify_tls"],
+        )
+        # Keep the runnable alive until one of its signals is delivered.  A
+        # local-only reference can be collected while the thread-pool job is
+        # still running, which drops the WorkerSignals object and leaves the
+        # footer stuck at CHECKING even though the request completed.
+        self._unifi_worker = worker
+        self._unifi_poll_running = True
+        self._unifi_status = "CHECKING"
+        generation = self._unifi_generation
+        worker.signals.finished.connect(
+            lambda clients, active_generation=generation:
+                self._unifi_finished(clients, active_generation)
+        )
+        worker.signals.error.connect(
+            lambda message, active_generation=generation:
+                self._unifi_failed(message, active_generation)
+        )
+        self.stateChanged.emit()
+        self.pool.start(worker)
+
     def _settings_refresh_progress(self, payload: Any, generation: int) -> None:
         """
         Apply one delayed settings refresh result to the current fleet.
@@ -2298,6 +2511,96 @@ class FleetController(QObject):
         self._license_status = "offline"
         self.stateChanged.emit()
 
+    def _unifi_finished(self, clients: Any, generation: int) -> None:
+        """
+        Apply one successful UniFi active-client response to the fleet.
+
+        :param clients: Normalized client dictionaries emitted by the worker.
+        :param generation: Configuration generation captured by the worker.
+        :return: None. Stale generations are ignored. Malformed top-level
+            responses are treated as empty while the connection remains online.
+        """
+        if generation != self._unifi_generation:
+            return
+        self._unifi_poll_running = False
+        self._unifi_worker = None
+        normalized = (
+            [client for client in clients if isinstance(client, dict)]
+            if isinstance(clients, list)
+            else []
+        )
+        self.source_model.apply_ap_clients(
+            self._decorate_unifi_clients(normalized)
+        )
+        self._unifi_status = "ONLINE"
+        self._schedule_next_unifi_poll()
+        self.stateChanged.emit()
+
+    def _unifi_failed(self, _message: str, generation: int) -> None:
+        """
+        Mark the UniFi connection offline and clear stale AP measurements.
+
+        :param _message: aiounifi failure detail, intentionally not surfaced on
+            every background cycle to avoid repetitive UI notifications.
+        :param generation: Configuration generation captured by the worker.
+        :return: None. Stale failures are ignored; current failures schedule the
+            next bounded polling attempt normally.
+        """
+        if generation != self._unifi_generation:
+            return
+        self._unifi_poll_running = False
+        self._unifi_worker = None
+        self._unifi_byte_samples.clear()
+        self._unifi_status = "OFFLINE"
+        self.source_model.apply_ap_clients([])
+        self._schedule_next_unifi_poll()
+        self.stateChanged.emit()
+
+    def _decorate_unifi_clients(
+        self,
+        clients: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Add live throughput rates calculated from consecutive UniFi polls.
+
+        UniFi firmware commonly exposes cumulative ``rx_bytes``/``tx_bytes``
+        counters but not a live byte-rate field.  The controller keeps one
+        bounded sample per active client and converts counter deltas to bits per
+        second.  A first sample intentionally remains ``Unavailable`` in the
+        table because no delta can be measured yet.
+        """
+        sampled_at = monotonic()
+        decorated: list[dict[str, Any]] = []
+        active_keys: set[str] = set()
+        for client in clients:
+            payload = dict(client)
+            key = _unifi_client_key(payload)
+            if not key:
+                decorated.append(payload)
+                continue
+            active_keys.add(key)
+            rx_bytes = _nonnegative_number(payload.get("rx_bytes"))
+            tx_bytes = _nonnegative_number(payload.get("tx_bytes"))
+            previous = self._unifi_byte_samples.get(key)
+            if rx_bytes is not None and tx_bytes is not None and previous:
+                previous_rx, previous_tx, previous_at = previous
+                elapsed = sampled_at - previous_at
+                if elapsed > 0:
+                    rx_rate = _counter_delta_rate(previous_rx, rx_bytes, elapsed)
+                    tx_rate = _counter_delta_rate(previous_tx, tx_bytes, elapsed)
+                    if payload.get("rx_bytes_rate") is None and rx_rate is not None:
+                        payload["rx_bytes_rate"] = rx_rate
+                    if payload.get("tx_bytes_rate") is None and tx_rate is not None:
+                        payload["tx_bytes_rate"] = tx_rate
+            if rx_bytes is not None and tx_bytes is not None:
+                self._unifi_byte_samples[key] = (rx_bytes, tx_bytes, sampled_at)
+            decorated.append(payload)
+        self._unifi_byte_samples = {
+            key: sample
+            for key, sample in self._unifi_byte_samples.items()
+            if key in active_keys
+        }
+        return decorated
+
     @Slot()
     def _inventory_changed(self) -> None:
         """Refresh aggregate and inspector QML properties."""
@@ -2522,6 +2825,39 @@ class FleetController(QObject):
             ),
         }
 
+    def _unifi_values(self) -> dict[str, Any]:
+        """Return persisted UniFi API settings with safe local defaults."""
+        return {
+            "enabled": self.settings.value("unifi/enabled", False, bool),
+            "gateway_url": str(
+                self.settings.value(
+                    "unifi/gateway_url",
+                    DEFAULT_UNIFI_GATEWAY_URL,
+                )
+            ),
+            "api_token": str(
+                self.settings.value(
+                    "unifi/api_token",
+                    os.environ.get("UNIFI_API_TOKEN", ""),
+                )
+            ),
+            "site": str(self.settings.value("unifi/site", "default")),
+            "verify_tls": self.settings.value(
+                "unifi/verify_tls",
+                False,
+                bool,
+            ),
+            "timeout": 5.0,
+        }
+
+    def _schedule_next_unifi_poll(self) -> None:
+        """Schedule the next UniFi refresh only when integration is configured."""
+        values = self._unifi_values()
+        if values["enabled"] and values["api_token"]:
+            self.unifi_timer.start(UNIFI_POLL_INTERVAL_MS)
+        else:
+            self.unifi_timer.stop()
+
     def _restart_scan_timer(self) -> None:
         """Apply the persisted rolling refresh interval."""
         self.scan_timer.start(max(5, self._scan_values()["interval"]) * 1000)
@@ -2544,6 +2880,62 @@ class FleetController(QObject):
                 keys.insert(insert_at, "fc_sys_id")
                 self.settings.setValue("columns/visible", ",".join(keys))
             self.settings.setValue("columns/fc_sys_id_default_added", True)
+        ap_rssi_migrated = self.settings.value(
+            "columns/ap_rssi_default_added",
+            False,
+            bool,
+        )
+        if not ap_rssi_migrated:
+            if keys and "ap_rssi" not in keys:
+                try:
+                    insert_at = keys.index("rssi") + 1
+                except ValueError:
+                    insert_at = len(keys)
+                keys.insert(insert_at, "ap_rssi")
+                self.settings.setValue("columns/visible", ",".join(keys))
+            self.settings.setValue("columns/ap_rssi_default_added", True)
+        ap_metrics_migrated = self.settings.value(
+            "columns/ap_metrics_default_added",
+            False,
+            bool,
+        )
+        if not ap_metrics_migrated:
+            ap_metric_keys = [
+                "ap_wifi_standard",
+                "ap_live_throughput",
+                "ap_rx_rate",
+                "ap_tx_rate",
+                "ap_signal_balance",
+            ]
+            if keys:
+                try:
+                    insert_at = keys.index("ap_rssi") + 1
+                except ValueError:
+                    insert_at = len(keys)
+                for key in ap_metric_keys:
+                    if key not in keys:
+                        keys.insert(insert_at, key)
+                        insert_at += 1
+                self.settings.setValue("columns/visible", ",".join(keys))
+            self.settings.setValue("columns/ap_metrics_default_added", True)
+        ap_channel_band_migrated = self.settings.value(
+            "columns/ap_channel_band_default_added",
+            False,
+            bool,
+        )
+        if not ap_channel_band_migrated:
+            ap_channel_band_keys = ["ap_channel", "ap_band"]
+            if keys:
+                try:
+                    insert_at = keys.index("ap_rssi") + 1
+                except ValueError:
+                    insert_at = len(keys)
+                for key in ap_channel_band_keys:
+                    if key not in keys:
+                        keys.insert(insert_at, key)
+                        insert_at += 1
+                self.settings.setValue("columns/visible", ",".join(keys))
+            self.settings.setValue("columns/ap_channel_band_default_added", True)
         self.source_model.set_visible_columns(
             keys or list(DeviceTableModel.DEFAULT_COLUMN_KEYS)
         )
