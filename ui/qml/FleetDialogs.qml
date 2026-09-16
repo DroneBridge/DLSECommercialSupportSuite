@@ -158,6 +158,31 @@ Item {
         confirmDialog.open()
     }
 
+    function confirmStaticIpAssignment() {
+        confirmationKind = "static_ip_assign"
+        confirmText.text = "Assign static IP settings to " + fleetController.eligibleStaticIpCount
+                  + " eligible selected device(s)? Each device will reboot and stop responding at its current IP."
+        center(confirmDialog)
+        confirmDialog.open()
+    }
+
+    function confirmStaticIpClear() {
+        confirmationKind = "static_ip_clear"
+        confirmText.text = "Clear static IP, subnet mask, and gateway on "
+                  + fleetController.eligibleStaticIpCount
+                  + " eligible selected device(s)? Each device will reboot and use DHCP after reconnecting."
+        center(confirmDialog)
+        confirmDialog.open()
+    }
+
+    function confirmSysIdAlignment() {
+        confirmationKind = "sys_id_alignment"
+        confirmText.text = "Align SYS IDs for " + fleetController.eligibleSysIdAlignmentCount
+                  + " eligible selected device(s)? This may write a MAVLink parameter and reboot each flight controller."
+        center(confirmDialog)
+        confirmDialog.open()
+    }
+
     function openApplyCsvToSelected() {
         if (fleetController.selectedCount <= 0) {
             showToast("info", "Select at least one device before applying settings.")
@@ -531,7 +556,7 @@ Item {
     ModalDialog {
         id: staticIpAssignmentDialog
         objectName: "staticIpAssignmentDialog"
-        title: "Assign Static IPs"
+        title: "Manage Static IPs"
         preferredWidth: 610
 
         Text {
@@ -556,6 +581,14 @@ Item {
         Text {
             Layout.fillWidth: true
             text: "Applying these settings reboots each DLSE. It will stop responding at its old IP, and the table updates to the new IP only after the device accepts the request."
+            color: theme.warning
+            wrapMode: Text.Wrap
+            font.family: theme.bodyFont
+        }
+
+        Text {
+            Layout.fillWidth: true
+            text: "Clear All Static IPs sends empty static IP, subnet mask, and gateway values to every eligible device. Each device reboots and will use DHCP after reconnecting."
             color: theme.warning
             wrapMode: Text.Wrap
             font.family: theme.bodyFont
@@ -587,21 +620,19 @@ Item {
             Item { Layout.fillWidth: true }
             AppButton { text: "Cancel"; quiet: true; onClicked: staticIpAssignmentDialog.close() }
             AppButton {
+                text: "Clear All Static IPs"
+                quiet: true
+                enabled: fleetController.eligibleStaticIpCount > 0
+                onClicked: dialogs.confirmStaticIpClear()
+            }
+            AppButton {
                 text: "Assign Static IPs"
                 emphasized: true
                 enabled: fleetController.eligibleStaticIpCount > 0
                          && staticIpStartField.text.trim().length > 0
                          && staticIpNetmaskField.text.trim().length > 0
                          && staticIpGatewayField.text.trim().length > 0
-                onClicked: {
-                    const started = fleetController.startStaticIpAssignment(
-                        staticIpStartField.text,
-                        staticIpNetmaskField.text,
-                        staticIpGatewayField.text
-                    )
-                    if (started)
-                        staticIpAssignmentDialog.close()
-                }
+                onClicked: dialogs.confirmStaticIpAssignment()
             }
         }
     }
@@ -662,11 +693,7 @@ Item {
                 emphasized: true
                 accentColor: theme.warning
                 enabled: fleetController.eligibleSysIdAlignmentCount > 0
-                onClicked: {
-                    const modes = ["ip", "fc", "manual"]
-                    fleetController.startSysIdAlignment(modes[sysIdAlignmentMode.currentIndex])
-                    sysIdAlignmentDialog.close()
-                }
+                onClicked: dialogs.confirmSysIdAlignment()
             }
         }
     }
@@ -1079,7 +1106,11 @@ Item {
 
     ModalDialog {
         id: confirmDialog
-        title: confirmationKind === "clear" ? "Clear Fleet" : "Apply Settings"
+        title: confirmationKind === "clear" ? "Clear Fleet"
+             : confirmationKind === "settings" ? "Apply Settings"
+             : confirmationKind === "static_ip_assign" ? "Assign Static IPs"
+             : confirmationKind === "static_ip_clear" ? "Clear Static IPs"
+             : "Align SYS IDs"
         preferredWidth: 460
 
         Text {
@@ -1096,14 +1127,35 @@ Item {
             Item { Layout.fillWidth: true }
             AppButton { text: "Cancel"; quiet: true; onClicked: confirmDialog.close() }
             AppButton {
-                text: confirmationKind === "clear" ? "Clear Fleet" : "Apply and Reboot"
+                text: confirmationKind === "clear" ? "Clear Fleet"
+                    : confirmationKind === "settings" ? "Apply and Reboot"
+                    : confirmationKind === "static_ip_assign" ? "Assign Static IPs"
+                    : confirmationKind === "static_ip_clear" ? "Clear Static IPs"
+                    : "Align SYS IDs"
                 emphasized: true
-                accentColor: confirmationKind === "clear" ? theme.error : theme.accent
+                accentColor: confirmationKind === "clear" || confirmationKind === "static_ip_clear"
+                             ? theme.error : theme.accent
                 onClicked: {
                     if (confirmationKind === "clear")
                         fleetController.clearFleet()
-                    else
+                    else if (confirmationKind === "settings")
                         fleetController.applyEditedSettings()
+                    else if (confirmationKind === "static_ip_assign") {
+                        const started = fleetController.startStaticIpAssignment(
+                            staticIpStartField.text,
+                            staticIpNetmaskField.text,
+                            staticIpGatewayField.text
+                        )
+                        if (started)
+                            staticIpAssignmentDialog.close()
+                    } else if (confirmationKind === "static_ip_clear") {
+                        if (fleetController.clearStaticIpAssignments())
+                            staticIpAssignmentDialog.close()
+                    } else if (confirmationKind === "sys_id_alignment") {
+                        const modes = ["ip", "fc", "manual"]
+                        fleetController.startSysIdAlignment(modes[sysIdAlignmentMode.currentIndex])
+                        sysIdAlignmentDialog.close()
+                    }
                     confirmDialog.close()
                 }
             }

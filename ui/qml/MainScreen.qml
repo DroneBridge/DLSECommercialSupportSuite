@@ -368,7 +368,7 @@ Item {
                         id: assignStaticIpButton
                         objectName: "assignStaticIpButton"
                         anchors.fill: parent
-                        text_LabelText: "Assign Static IPs"
+                        text_LabelText: "Manage Static IPs"
                         text_LabelWidth: 130
                         keyIconVisible: false
                         eigenschaft_2: assignStaticIpMouse.pressed

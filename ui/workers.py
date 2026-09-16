@@ -962,7 +962,7 @@ class SettingsWorker(QRunnable):
 
 
 class StaticIpAssignmentWorker(QRunnable):
-    """Assign generated static IPv4 settings to visible selected DLSE devices."""
+    """Assign or clear static IPv4 settings for visible selected DLSE devices."""
 
     def __init__(
         self,
@@ -972,7 +972,11 @@ class StaticIpAssignmentWorker(QRunnable):
         gateway: str,
         workers: int = 20,
     ) -> None:
-        """Create a bounded static-IP operation with a stable identity mapping."""
+        """Create a bounded static-IP operation with a stable identity mapping.
+
+        Empty assignment, netmask, and gateway values clear the corresponding
+        ESP32 static-network settings.
+        """
         super().__init__()
         self.signals = WorkerSignals()
         self.records = records
@@ -1149,7 +1153,7 @@ class StaticIpAssignmentWorker(QRunnable):
             self.signals.error.emit(str(exc))
 
     def _apply_one(self, record: DeviceRecord, target_ip: str) -> dict[str, Any]:
-        """Apply one generated static-IP payload to the record's current address."""
+        """Apply one static-IP or clear payload to the record's current address."""
         try:
             IPv4Address(str(record.ip or "").strip())
         except ValueError:

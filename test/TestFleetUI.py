@@ -217,7 +217,7 @@ class TestFleetUI(unittest.TestCase):
         self._enter_main_screen()
         expected = {
             "rebootButton": ("Reboot Devices", 158, 108, False),
-            "assignStaticIpButton": ("Assign Static IPs", 170, 130, False),
+            "assignStaticIpButton": ("Manage Static IPs", 170, 130, False),
             "alignSysIdsButton": ("Align SYS IDs", 150, 100, False),
             "otaFirmwareButton": ("OTA Firmware Upgrade", 208, 158, False),
             "otaActivationButton": ("OTA DLSE Activation", 190, 140, False),
@@ -288,6 +288,15 @@ class TestFleetUI(unittest.TestCase):
         source = (self.QML_ROOT / "FleetDialogs.qml").read_text(encoding="utf-8")
         self.assertIn("Addresses are assigned in the current table order", source)
         self.assertIn("after .254, the third octet increases", source)
+        self.assertIn('title: "Manage Static IPs"', source)
+        self.assertIn('text: "Clear All Static IPs"', source)
+        self.assertIn("fleetController.clearStaticIpAssignments()", source)
+        self.assertIn("function confirmStaticIpAssignment()", source)
+        self.assertIn("function confirmStaticIpClear()", source)
+        self.assertIn("function confirmSysIdAlignment()", source)
+        self.assertIn('onClicked: dialogs.confirmStaticIpAssignment()', source)
+        self.assertIn('onClicked: dialogs.confirmStaticIpClear()', source)
+        self.assertIn('onClicked: dialogs.confirmSysIdAlignment()', source)
         self.assertIn('placeholderText: "e.g. 255.255.255.0"', source)
         self.assertIn('objectName: "staticIpAssignmentDialog"', source)
         dialog.close()
@@ -1518,6 +1527,29 @@ class TestFleetUI(unittest.TestCase):
         self.assertEqual(1, self.controller.eligibleStaticIpCount)
         self.assertEqual(1, self.controller.filteredStaticIpCount)
 
+    def test_clear_static_ips_queues_empty_static_network_values(self):
+        """Clearing eligible devices sends empty IP, netmask, and gateway values."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="A",
+                ip="10.0.0.2",
+                activation_status="ACTIVATED",
+                activation_key="A",
+                selected=True,
+            )
+        ])
+        self.controller._launch_static_ip_assignment = Mock()
+
+        self.assertTrue(self.controller.clearStaticIpAssignments())
+
+        records, assignments, netmask, gateway = (
+            self.controller._launch_static_ip_assignment.call_args.args[:4]
+        )
+        self.assertEqual(["A"], [record.identity for record in records])
+        self.assertEqual({"A": ""}, assignments)
+        self.assertEqual("", netmask)
+        self.assertEqual("", gateway)
+
     def test_static_ip_assignment_rejects_invalid_preflight_without_launching(self):
         """Invalid static network input reports an error before creating a worker."""
         self.controller.source_model.upsert_many([
@@ -1577,6 +1609,31 @@ class TestFleetUI(unittest.TestCase):
         self.assertEqual("192.168.20.1", record.ip)
         self.assertEqual("255.255.255.0", record.settings["ip_sta_netmsk"])
         self.assertIsNotNone(record.offline_grace_until)
+
+    def test_static_ip_clear_success_keeps_current_address_and_caches_empty_settings(self):
+        """A clear result retains the current address until DHCP discovery updates it."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(identity="A", ip="10.0.0.2", activation_status="ACTIVATED")
+        ])
+        self.controller._active_worker = Mock()
+        self.controller._active_operation = "static_ip"
+        self.controller._active_targets = {"A"}
+
+        self.controller._operation_finished(
+            "static_ip",
+            [{
+                "identity": "A",
+                "target_ip": "",
+                "settings": {"ip_sta": "", "ip_sta_netmsk": "", "ip_sta_gw": ""},
+                "success": True,
+            }],
+        )
+
+        record = self.controller.source_model.record_by_identity("A")
+        self.assertEqual("10.0.0.2", record.ip)
+        self.assertEqual("", record.settings["ip_sta"])
+        self.assertEqual("", record.settings["ip_sta_netmsk"])
+        self.assertEqual("", record.settings["ip_sta_gw"])
 
     @patch("ui.controller.SystemInfoRefreshWorker")
     def test_ota_and_activation_refresh_only_devices_with_results(self, refresh_worker):

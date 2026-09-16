@@ -1494,6 +1494,34 @@ class FleetController(QObject):
         )
         return True
 
+    @Slot(result=bool)
+    def clearStaticIpAssignments(self) -> bool:
+        """Clear static-IP, gateway, and netmask values for eligible selected devices.
+
+        :return: ``True`` after the clear operation is queued. ``False`` when no
+            eligible target is selected or another fleet operation is active.
+        """
+        if not self.source_model.selected_records():
+            self.toastRequested.emit("info", "Select at least one device first.")
+            return False
+        records = self._static_ip_records()
+        if not records:
+            self.toastRequested.emit(
+                "info",
+                "Only visible selected Evaluation or Activated devices can manage static IPs.",
+            )
+            return False
+        if not self._operation_available():
+            return False
+        self._launch_static_ip_assignment(
+            records,
+            {record.identity: "" for record in records},
+            "",
+            "",
+            remember=True,
+        )
+        return True
+
     @Slot(str)
     def startSysIdAlignment(self, mode: str) -> None:
         """
@@ -2434,12 +2462,14 @@ class FleetController(QObject):
                 if kind == "static_ip" and isinstance(item, dict):
                     target_ip = str(item.get("target_ip") or "").strip()
                     settings = item.get("settings")
-                    if target_ip and isinstance(settings, dict):
-                        self.source_model.update_static_network(
-                            identity,
-                            target_ip,
-                            settings,
-                        )
+                    if isinstance(settings, dict):
+                        record = self.source_model.record_by_identity(identity)
+                        if record is not None:
+                            self.source_model.update_static_network(
+                                identity,
+                                target_ip or record.ip,
+                                settings,
+                            )
                 label = "reboot accepted" if kind == "reboot" else "complete"
                 self.source_model.update_operation(identity, label, 100)
         if kind == "reboot" and isinstance(results, dict) and results.get("mavlink"):

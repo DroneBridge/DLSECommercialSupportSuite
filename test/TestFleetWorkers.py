@@ -396,6 +396,24 @@ class TestFleetWorkers(unittest.TestCase):
         self.assertEqual("static IP accepted", progress[0]["status"])
         session.close.assert_called_once()
 
+    @patch("ui.workers.db_api_update_settings")
+    @patch("ui.workers.db_api_create_request_session")
+    def test_static_ip_worker_clears_all_static_network_values(self, create_session, update_settings):
+        """Empty static-network inputs are posted unchanged when clearing a DLSE."""
+        session = Mock()
+        create_session.return_value = session
+        update_settings.return_value = SimpleNamespace(success=True, message="accepted")
+        record = DeviceRecord(identity="A", ip="192.168.1.42")
+        worker = StaticIpAssignmentWorker([record], {"A": ""}, "", "", workers=1)
+
+        worker.run()
+
+        update_settings.assert_called_once_with(
+            session,
+            "192.168.1.42",
+            {"ip_sta": "", "ip_sta_netmsk": "", "ip_sta_gw": ""},
+        )
+
     def test_sys_id_alignment_resolves_all_three_source_modes(self):
         """IP, FC, and manual modes derive their documented source IDs."""
         record = DeviceRecord(
