@@ -28,7 +28,7 @@ from typing import Any, Dict, Set
 
 import requests
 
-from dlse_cli_utils import validate_activation_token
+from dlse_cli_utils import add_version_argument, validate_activation_token
 from DroneBridgeCommercialSupportSuite import (
     DBLogger,
     DBLicenseType,
@@ -118,6 +118,7 @@ def parse_args() -> argparse.Namespace:
     :return: Parsed argparse namespace.
     """
     parser = argparse.ArgumentParser(description="Install DroneBridge DLSE licenses on ESP32 devices over the air.")
+    add_version_argument(parser)
     parser.add_argument("--token", required=False, type=str,
                         help="Secret token for the DroneBridge licensing server.")
     parser.add_argument("--subnetmask", required=False, type=str,

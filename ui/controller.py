@@ -2935,7 +2935,6 @@ class FleetController(QObject):
                 "ap_live_throughput",
                 "ap_rx_rate",
                 "ap_tx_rate",
-                "ap_signal_balance",
             ]
             if keys:
                 try:
@@ -2948,6 +2947,9 @@ class FleetController(QObject):
                         insert_at += 1
                 self.settings.setValue("columns/visible", ",".join(keys))
             self.settings.setValue("columns/ap_metrics_default_added", True)
+        if "ap_signal_balance" in keys:
+            keys.remove("ap_signal_balance")
+            self.settings.setValue("columns/visible", ",".join(keys))
         ap_channel_band_migrated = self.settings.value(
             "columns/ap_channel_band_default_added",
             False,

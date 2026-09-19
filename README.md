@@ -11,6 +11,7 @@ This suite provides tools and scripts to manage, configure, and license DroneBri
 
 ## Features
 
+*   Desktop Fleet Manager for monitoring and managing DLSE fleets
 *   OpenAPI Definition
 
 *   Functions to manage your DLSE devices
@@ -35,7 +36,7 @@ This suite provides tools and scripts to manage, configure, and license DroneBri
 
 ### Recommended Installation
 
-Install the command-line tools from the latest GitHub release.
+Install the Fleet Manager and command-line tools from the latest GitHub release.
 
 GitHub Releases:
 [**Check the Github Releases**](https://github.com/DroneBridge/DLSECommercialSupportSuite/releases)
@@ -48,10 +49,10 @@ python -m pipx ensurepath
 Open a new terminal and install.
 
 ```bash
-pipx install https://github.com/DroneBridge/DLSECommercialSupportSuite/releases/download/v1.0.0/dlsecommercialsupportsuite-1.0.0-py3-none-any.whl
+pipx install https://github.com/DroneBridge/DLSECommercialSupportSuite/releases/download/v1.1.0/dlsecommercialsupportsuite-1.1.0-py3-none-any.whl
 ```
 
-For newer releases, replace `v1.0.0` and the wheel filename with the version shown on the GitHub Releases page.
+For newer releases, replace `v1.1.0` and the wheel filename with the version shown on the GitHub Releases page.
 
 Open a new terminal and verify the commands are available:
 
@@ -60,51 +61,30 @@ dlse-activate --help
 dlse-reboot --help
 dlse-update --help
 dlse-install --help
+dlse-ui
 ```
 
-## PySide6 Fleet Manager
+## User Interface - Fleet Manager
 
-The desktop Fleet Manager supports direct standalone management of DLSE ESP32 fleets. It provides MAVLink and HTTP discovery, rolling REST hydration, table and matrix views, complete device inspection, settings templates, OTA license activation, REST or MAVLink reboot, and local-binary OTA firmware updates. Serial flashing is intentionally not exposed in this UI.
+The desktop Fleet Manager provides MAVLink and HTTP discovery, fleet table and
+matrix views, device inspection, settings management, OTA licensing, reboot,
+firmware updates, and optional UniFi observations. Serial flashing remains a
+command-line workflow.
 
-The interface is implemented with Qt Quick/QML from the exported Figma design in `ui/qml`. Python does not construct widgets or dialogs; it exposes typed inventory models and a `FleetController` to QML while the existing support library and background workers perform network operations. The application targets desktop displays, opens at 1298×804, and has a minimum window size of 1180×720.
+Start the application after installation with:
 
-Install the package with UI dependencies from the repository root.
+```bash
+dlse-ui
+```
 
-### UI Description
+Windows x64 is the validated desktop platform for v1.1.0. Linux and macOS are
+expected to work but are not release-qualified. Python 3.10 and newer are
+supported; UniFi integration is guaranteed on Python 3.10 through 3.13 and is
+best-effort on newer Python versions.
 
-The application starts on the connection-mode screen. Choose **Direct Standalone** to open Fleet Manager. Skybrush and Network Manager remain future integration points; UniFi AP observations are available from Fleet Manager Scan Settings.
-
-Scan settings persist across sessions and include the IPv4 subnet, MAVLink ports, discovery methods, discovery interval, HTTP timeout, and bounded concurrency. MAVLink and HTTP discovery run concurrently, and each discovery pass merges devices into the retained session fleet rather than replacing it. The default discovery interval is five seconds and HTTP concurrency is 20.
-
-The same dialog can connect the Fleet Manager to a local UniFi gateway with `aiounifi`. Enable **UniFi AP Observations**, enter the gateway origin (for example `https://192.168.1.1`), a UniFi Network API token, and the internal site name (normally `default`). The app polls active wireless clients every five seconds through the gateway's `stat/sta` endpoint, matches them to detected DLSE devices by MAC address with an IP fallback, and records AP-observed RSSI separately from the RSSI reported by the ESP32. The AP channel, AP band, AP Wi-Fi standard, RX/TX PHY rates, live throughput, and AP/client signal balance columns are enabled by default for new installs and added once to existing saved layouts. PHY rates come directly from UniFi; live throughput is calculated from successive byte-counter samples when the gateway supplies counters, and signal balance displays `Unavailable` when that firmware does not return a balance field. Band detection uses UniFi's radio field and only falls back to unambiguous 2.4 GHz channels. The footer reports `DISABLED`, `NOT CONFIGURED`, `WAITING`, `CHECKING`, `ONLINE`, `OFFLINE`, or `ERROR`. Local gateways commonly use a self-signed certificate; certificate verification is therefore off by default and should only remain off on a trusted management network.
-
-The UniFi API token is persisted in the current user's local Qt application settings so that the integration can reconnect after restart. It is never included in fleet diagnostics or repository files. Protect the operating-system account and use a least-privileged, read-only Network API token where possible.
-
-The same dialog has an independent **System Stats Polling** section for `GET /api/system/stats`. Background polling is enabled by default with a two-second target interval, one-second per-request timeout, 20 concurrent requests, and an offline threshold of three consecutive failures. The supported ranges are 1–3600 seconds, 0.1–30 seconds, 1–64 workers, and 1–20 failures. Polling uses no automatic retries. A successful response updates cached statistics and marks the device online.
-
-After **Apply Changes** or bulk **Apply Settings** succeeds, the Fleet Manager waits three seconds for the ESP32s to reboot and then refreshes `GET /api/settings` for every affected device. The refreshed values update the table and inspector without requiring a network-wide scan. Devices whose settings request failed are not treated as refreshed; a failed follow-up request preserves the last cached settings and records a diagnostic.
-
-Disabling stats polling cancels queued requests, ignores late results from that polling generation, and preserves cached statistics and the last known online/offline status. Re-enabling it starts a round immediately. Device discovery continues independently.
-
-For large fleets, two seconds is a target rather than a guaranteed per-device interval. Polling rounds never overlap, and only the configured number of HTTP requests are active at once (default 20, maximum 64). If a round takes longer than two seconds, the next round waits for it to finish. For example, 2,000 devices at 100 ms average response time require roughly 10 seconds per round with 20 concurrent requests; unreachable devices can extend this further up to the configured timeout.
-
-The footer reports discovery and stats polling separately. Discovery shows `STOPPED`, `WAITING`, `SCANNING`, or `ERROR`; stats polling shows `DISABLED`, `WAITING`, `POLLING`, or `ERROR`. Ordinary per-device request failures affect device health but do not set the global stats polling indicator to `ERROR`.
-
-The fleet table starts with Hostname, IP, Activation Status, DLSE Firmware, Chip, Build Version, DLSE Configured MAVLink Sys ID, FC MAVLink Sys ID, DB APMODE SSID, DB APMODE CHANNEL, DEVICE RSSI, AP-MEASURED RSSI, AP CHANNEL, AP BAND, AP WIFI STANDARD, AP LIVE THROUGHPUT, AP RX RATE, AP TX RATE, and AP/CLIENT SIGNAL BALANCE. When `show_en_syid_ip` is enabled, the configured MAVLink sys ID is always the final octet of the DLSE device's currently discovered IP address, including dynamically assigned addresses. Otherwise it uses the observed MAVLink discovery sys ID when available, then falls back to `show_man_sysid`. The FC MAVLink sys ID is read from `/api/system/stats` field `fc_sysid`; `-1`, `0`, missing, or invalid values display as `unknown`, while valid values range from `1` through `255`. AP-MEASURED RSSI is the UniFi client's `signal` value in dBm and remains blank when UniFi is disabled, unreachable, or cannot match a connected wireless client. When a matching client is present but a metric is absent from the gateway response, the cell displays `Unavailable`. When a known FC SYS ID differs from the DLSE configured SYS ID, both table cells use the red offline-status badge styling. Use **Configure Columns** to show or hide additional REST-backed settings such as DLSE mode, baud, CTS/RTS/TX/RX GPIOs, LED control, current and voltage monitoring, local and remote UDP ports, power management, MAVLink heartbeat, and whether the sys ID is based on IP. GPIO values remain numeric; LED control and ADC monitor values display as `enabled` or `disabled` for raw `1` or `0`. Drag rows in the Configure Columns dialog to reorder visible columns. Drag a column header's right edge to resize that column; double-click the resize handle to restore its default width. Visible column order and custom widths are persisted across sessions.
-
-Use **Align SYS IDs** to reconcile explicitly selected, licensed DLSE/FC pairs. Only devices with `EVALUATION` or `ACTIVATED` license status are processed. Choose **Based on DLSE IP address** to set the FC to the DLSE IP address last octet and enable `show_en_syid_ip`; **Based on FC SYS ID** to copy `/api/system/stats` `fc_sysid` into `show_man_sysid` and disable IP-based SYS IDs; or **Based on manual DLSE SYS ID** to set the FC to `show_man_sysid` and disable IP-based SYS IDs. FC-changing modes use the device's hydrated `udp_local_port`, falling back to the Scan Settings ESP32 port, require a matching MAVLink parameter echo before rebooting, and then require the FC to acknowledge the reboot command. The UI tries ArduPilot `SYSID_THISMAV` first, then PX4 `MAV_SYS_ID`; PX4 accepts IDs only from `1` through `250`. If the FC write or reboot is rejected, DLSE settings are not changed. The firmware remains responsible for refusing unsafe operations such as an armed FC reboot. Validate this operation on a small, non-production batch before fleet-wide use.
-
-Use **Manage Static IPs** to configure or clear the static network settings of selected DLSE devices. Only selected devices currently visible in the filtered table and carrying `EVALUATION` or `ACTIVATED` license status are processed; selected rows hidden by the search filter are excluded. Enter the starting static IP, subnet mask, and gateway to assign addresses in the current table order, incrementing the final octet from `.1` through `.254`; after `.254`, the third octet increases and the final octet resumes at `.1`. The complete generated range must fit the entered subnet, use usable host addresses, keep the gateway inside the subnet, and avoid known retained-device IP conflicts. **Clear All Static IPs** sends empty strings for static IP, subnet mask, and gateway to every eligible target, disabling static addressing so the devices use DHCP after reconnecting. Each accepted `POST /api/settings` request reboots the DLSE. Test with a small, non-production batch before changing a full fleet.
-
-The matrix view uses compact inspection cards optimized for high-density fleets. Each card centers the hostname, last two IP octets, RSSI, MAVLink system ID, and online/activation status; selection remains controlled from the table view.
-
-The right-side ESP32 configuration panel can be resized by dragging its left edge. Double-click the resize handle to restore the default width. The chosen panel width is persisted across sessions.
-
-The inspector's **Metrics** tab groups connection, serial/MAVLink, flight-controller, health, firmware/hardware, and license information into cards. Byte and message counters remain cumulative since boot. Directional serial throughput is calculated from the two latest successful stats polls using their actual elapsed time; it displays as `Calculating...` until a valid pair is available and resets its baseline when a device counter decreases. MAVLink loss is shown as both an absolute count and a percentage. Firmware fields unknown to this application remain visible in the **Other** card.
-
-Settings values in the right-side panel, including Wi-Fi password fields, are shown as readable text so operators can verify device configuration before applying changes. License-server tokens are still session-only and are not persisted.
-
-License activation requires a DroneBridge license server token. The UI preloads the token from `DRONEBRIDGE_SECRET_TOKEN`, or accepts it for the current session. Tokens are never persisted. Regular activated licenses use the existing permanent-license behavior, and evaluation licenses request a fixed 60-day validity. License-server availability is checked every 30 seconds.
+Before fleet operations, ensure the ESP32 devices are reachable and stop
+Skybrush Live when the selected workflow uses MAVLink ports. Test settings,
+activation, reboot, and OTA operations on a small non-production fleet first.
 
 
 ### Operational Folder
@@ -112,7 +92,7 @@ License activation requires a DroneBridge license server token. The UI preloads 
 Run the installed commands from the folder where you want operational files to live. Relative paths for firmware release folders, settings CSV files, `logs/`, and `received_licenses/` are resolved from your current terminal folder. Firmware release folders are external downloads and are not bundled into the Python package.
 
 
-## Usage
+## Command Line Usage
 Normal users should use the installed commands:
 
 ```bash
@@ -128,17 +108,7 @@ The suite includes installable `dlse-*` commands for normal operation.
 
 Before running hardware workflows, stop Skybrush Live when using MAVLink discovery, reboot, or OTA update paths. Serial flashing also requires OS access to the ESP32 serial port.
 
-Configuration export uses the existing NVS-compatible `key,type,encoding,value` CSV format. For multi-device template application, static IP, subnet mask, gateway, hostname, and manual MAVLink system ID are excluded by default; the confirmation dialog allows changing the exclusion set.
-
-Activation keys are intentionally shown in full in the fleet table and inspector. Tokens, activation keys, and license payloads remain masked in diagnostic output and are never persisted by the UI.
-
-OTA updates accept a DroneBridge account release, a validated local release folder, or explicit `www.bin` and application binary paths. Account releases use a session-only license server token from the dialog or `DRONEBRIDGE_SECRET_TOKEN`, are downloaded into the local `dlse_releases/` cache, and are validated before any device upload starts. The UI uploads the web image first, waits two seconds, then uploads the application image that reboots the device. Queued updates can be cancelled, but active uploads are allowed to finish to avoid intentionally interrupting a transfer.
-
 Before network operations, make sure the ESP32s are reachable, configured UDP ports match, and Skybrush Live is stopped when MAVLink ports are required. Test activation, settings, reboot, and OTA operations on a small hardware batch before using them on a production fleet. Hardware workflows were not exercised by the automated test suite.
-
-The default automated test run skips checks that require a physical ESP32 or the production license server. Set `DLSE_RUN_HARDWARE_TESTS=1` only with a test ESP32 connected, optionally selecting its port with `DLSE_TEST_SERIAL_PORT` (default `COM18`). Set `DLSE_RUN_NETWORK_TESTS=1` to include the live license-server availability check.
-
-The Web Interface inspector uses Qt WebEngine Quick and is instantiated only after an online device is selected and the tab is opened. Linux deployments must provide the normal Qt runtime system libraries. Geist and Geist Mono are bundled under the SIL Open Font License 1.1, together with the application icons and other design assets, so the UI performs no runtime asset downloads.
 
 ## Automated DLSE Batch Installation
 <img alt="Gemini_Generated_Image_kvejvukvejvukvej" src="https://github.com/user-attachments/assets/a069d8a4-fb42-4b4c-b2d6-70a67f0ac5ed" />
@@ -170,14 +140,13 @@ Follow the setup commands described above to install the toolchain on your machi
 
 ### Step 3 — Download the DLSE firmware binaries
 
-[Download the latest DLSE release binaries](https://drone-bridge.com/dlse/) and extract them into the `DLSECommercialSupportSuite` folder.
-
+Optional: [Download the latest DLSE release binaries](https://drone-bridge.com/dlse/) and extract them into the `DLSECommercialSupportSuite` folder.  
 The support library can also list the DLSE releases available to your account via
 the DroneBridge license server and download a selected release zip into the local
-`dlse_releases/` cache. Extracted releases in that folder are operational data
-and are ignored by git. The batch scripts still accept `--release-folder`, so you
-can continue to point them at any manually downloaded and extracted release root
-folder.
+`dlse_releases/` cache.   
+
+The batch scripts still accept `--release-folder`, so you can continue to point them at any manually downloaded and 
+extracted release root folder.
 
 ---
 
@@ -224,14 +193,14 @@ dlse-install \
 > [!NOTE]
 > Running the script multiple times for the same ESP32 (identified by its activation key) will **not** consume additional license credits. Re-generating a license is always free.
 
-## Batch Over-The-Air Firmware Update for DLSE Devices
+## CLI: Batch Over-The-Air Firmware Update for DLSE Devices
 <img alt="Gemini_Generated_Image_o10ugso10ugso10u" src="https://github.com/user-attachments/assets/a3158a18-723f-4c0b-99ff-962e029371d8" />
 
-Update the firmware of your drone swarm over the air.
+Update the firmware of your drone swarm over the air. This is the CLI workflow, you can do it using the user interface as well.
 
 > [!CAUTION]
 > Requires Skybrush Live to be turned off.
-> Requires TX & RX GPIO pins to be configured and TRAIL mode being not expired in order to detect the ESP32
+> Requires TX & RX GPIO pins to be configured and TRAIL mode being not expired in order to detect the ESP32 (early DLSE releases)
 
 ```bash
 dlse-update --release-folder "DroneBridge_ESP32DLSE_BETA3" --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
@@ -291,8 +260,10 @@ Status Code: 200
   - {'key': ('192.168.1.206', 206, 240), 'ip': '192.168.1.206', 'sys_id': 206, 'comp_id': 240, 'middleware_sw_version': 0, 'os_sw_version': 0, 'board_version': 0, 'vendor_id': 0, 'product_id': 0, 'mac': 0, 'flight_sw_version': {'major': 0, 'minor': 0, 'patch': 0, 'release_num': 1, 'type': 'dev', 'version_str': '0.0.0-dev.1'}}
 ```
 
-## Batch Over-The-Air License Activation for DLSE Drones
+## CLI: Batch Over-The-Air License Activation for DLSE Drones
 <img alt="Gemini_Generated_Image_scabxascabxascab" src="https://github.com/user-attachments/assets/6152d740-2bde-496f-b818-a8bf9077b872" />
+This is the CLI workflow. You can also activate Over-The-Air using the user interface application.    
+
 Activates all ESP32s on the subnet by requesting a license from the license server and installing it via a WiFi connection. Requires Skybrush Live to be turned off.    
 For the most robust discovery behavior, run the script with `--force-rest`. This skips MAVLink discovery and uses an HTTP scan of the selected `--subnetmask` with `GET /api/system/info`, 20 concurrent probes, and a 1 second per-host timeout. If `--force-rest` is omitted, discovery first uses MAVLink UDP broadcast and falls back to the same HTTP scan only when no devices respond.
 
@@ -345,7 +316,7 @@ dlse-activate --token <YOUR_SECRET_TOKEN> --force-rest -e --subnetmask "192.168.
 [2026-03-04 23:34:42] Processed activation keys: {'mKM*****DQIA'}
 ```
 
-## Batch Over-The-Air Reboot for DLSE Devices
+## CLI: Batch Over-The-Air Reboot for DLSE Devices
 
 Reboot all detected ESP32 DLSE devices in one confirmed operation. The script first tries MAVLink discovery. If at least one ESP32 is discovered, it sends one MAVLink broadcast reboot command to the subnet broadcast address. If MAVLink discovers no devices, it falls back to HTTP discovery with `GET /api/system/info` and reboots each detected device by sending `{}` to `POST /api/settings`.
 
@@ -382,17 +353,18 @@ dlse-reboot --force-rest --subnetmask "192.168.1.0/24" --http-timeout 1.0 --http
 ## Examples on individual functions
 
 *   **`example_esp32_get_license.py`**: Standalone script to request a license file using an activation key.
-*   **`example_params_update_flash.py`**: Demonstrates how to update configuration parameters (like IP and Hostname) in the CSV and flash them.
 *   **`example_esp32_ota_update.py`**: Performs an Over-The-Air (OTA) firmware update for all detected ESP32 DLSE devices. Turn off Skybrush Live to allow port binding by the script
 *   **`example_esp32_download_log.py`** & **`example_esp32_download_log_MAVSDK.py`**: Examples for downloading logs from the flight controller via the ESP32 bridge.
 
 
 # OpenAPI Description
 
-Find the DroneBridge DLSE OpenAPI description here: `api_definiton/openapi_definition.yaml`
+Find the DroneBridge DLSE OpenAPI description here: `api_definition/openapi_definition.yaml`
 
 
 # Installation for Development Setups
+
+If you plan to write your own scripts using the DLSE Commercial Support Suite Framework, it is recommended to install the following developer setup.
 
 1.  Clone the repository:
     ```bash
@@ -412,14 +384,24 @@ Find the DroneBridge DLSE OpenAPI description here: `api_definiton/openapi_defin
     python batch_ota_update_allinone.py --release-folder DroneBridge_ESP32DLSE_BETA5
     python batch_install_dlse_allinone.py --token <YOUR_SECRET_TOKEN> --release-folder DroneBridge_ESP32DLSE_BETA5 --settings-file my_parameters/dlse_my_params.csv --start-index 55
     ```
+    
+The default automated test run skips checks that require a physical ESP32 or the production license server. Set `DLSE_RUN_HARDWARE_TESTS=1` only with a test ESP32 connected, optionally selecting its port with `DLSE_TEST_SERIAL_PORT` (default `COM18`). Set `DLSE_RUN_NETWORK_TESTS=1` to include the live license-server availability check.
 
 ## Release Build Checklist
 
-Build the wheel and source distribution from the repository root:
+Run the non-hardware test suite from an environment containing the project
+dependencies:
 
 ```bash
-python -m pip install build
+python -m unittest discover -s test -p "Test*.py"
+```
+
+Build and validate the wheel and source distribution:
+
+```bash
+python -m pip install build twine
 python -m build
+python -m twine check dist/*
 ```
 
 If an existing local `build/` folder shadows the Python `build` module, run the command from the parent folder instead:
@@ -428,17 +410,19 @@ If an existing local `build/` folder shadows the Python `build` module, run the 
 python -m build DLSECommercialSupportSuite
 ```
 
-Smoke-test the wheel in an isolated `pipx` environment before publishing:
+Smoke-test the v1.1.0 wheel in an isolated `pipx` environment before publishing:
 
 ```bash
-pipx install dist/DLSECommercialSupportSuite-<version>-py3-none-any.whl
+pipx install --force dist/dlsecommercialsupportsuite-1.1.0-py3-none-any.whl
 dlse-activate --help
 dlse-reboot --help
 dlse-update --help
 dlse-install --help
+dlse-ui
 ```
 
-Attach the generated wheel and source archive to GitHub Releases if users should install from release artifacts instead of PyPI.
+Verify the UI opens with its bundled fonts and icons before attaching the wheel,
+source archive, and SHA-256 checksums to the manually created GitHub Release.
 
 # Images
 

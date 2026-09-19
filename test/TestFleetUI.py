@@ -18,7 +18,14 @@ from PySide6.QtQml import QQmlComponent
 from PySide6.QtTest import QTest
 
 from DroneBridgeCommercialSupportSuite import DBDLSERelease
-from ui.app import GEIST_FONT, GEIST_FONT_ROOT, GEIST_MONO_FONT, _load_fonts, create_engine
+from ui.app import (
+    BUNDLED_FONTS,
+    GEIST_FONT,
+    GEIST_FONT_ROOT,
+    GEIST_MONO_FONT,
+    _load_fonts,
+    create_engine,
+)
 from ui.controller import (
     DEFAULT_BULK_EXCLUSIONS,
     DEFAULT_INSPECTOR_WIDTH,
@@ -459,9 +466,9 @@ class TestFleetUI(unittest.TestCase):
         """All QML text sizes use the three semantic typography tokens."""
         theme_source = (self.QML_ROOT / "Theme.qml").read_text(encoding="utf-8")
         expected_sizes = {
-            "smallTextSize": 11,
-            "bodyTextSize": 13,
-            "headingTextSize": 17,
+            "smallTextSize": 12,
+            "bodyTextSize": 14,
+            "headingTextSize": 18,
         }
         for token, size in expected_sizes.items():
             self.assertIn(f"readonly property int {token}: {size}", theme_source)
@@ -484,6 +491,7 @@ class TestFleetUI(unittest.TestCase):
     def test_geist_fonts_and_license_are_bundled(self):
         """Bundled typography assets register both named theme families."""
         license_path = GEIST_FONT_ROOT / "OFL.txt"
+        self.assertEqual((GEIST_FONT, GEIST_MONO_FONT), BUNDLED_FONTS)
         self.assertTrue(GEIST_FONT.is_file())
         self.assertTrue(GEIST_MONO_FONT.is_file())
         self.assertIn("SIL OPEN FONT LICENSE", license_path.read_text(encoding="utf-8"))
@@ -1177,7 +1185,6 @@ class TestFleetUI(unittest.TestCase):
                 "ap_live_throughput",
                 "ap_rx_rate",
                 "ap_tx_rate",
-                "ap_signal_balance",
             ],
             migrated.source_model.visible_column_keys(),
         )
@@ -1214,7 +1221,7 @@ class TestFleetUI(unittest.TestCase):
             "rssi,hostname,ip,activation_status,firmware_version,"
             "chip,dronebridge_version,mavlink_sys_id,fc_sys_id,wifi_ssid,wifi_channel,"
             "ap_rssi,ap_channel,ap_band,ap_wifi_standard,ap_live_throughput,"
-            "ap_rx_rate,ap_tx_rate,ap_signal_balance",
+            "ap_rx_rate,ap_tx_rate,dlse_mode",
             self._test_settings.value("columns/visible"),
         )
         columns = self.controller.columns
@@ -1252,7 +1259,7 @@ class TestFleetUI(unittest.TestCase):
                 "ap_live_throughput",
                 "ap_rx_rate",
                 "ap_tx_rate",
-                "ap_signal_balance",
+                "dlse_mode",
             ],
             self.controller.source_model.visible_column_keys(),
         )
@@ -1260,7 +1267,7 @@ class TestFleetUI(unittest.TestCase):
             "rssi,ip,hostname,activation_status,firmware_version,"
             "chip,dronebridge_version,mavlink_sys_id,fc_sys_id,wifi_ssid,wifi_channel,"
             "ap_rssi,ap_channel,ap_band,ap_wifi_standard,ap_live_throughput,"
-            "ap_rx_rate,ap_tx_rate,ap_signal_balance",
+            "ap_rx_rate,ap_tx_rate,dlse_mode",
             self._test_settings.value("columns/visible"),
         )
 
@@ -1613,7 +1620,12 @@ class TestFleetUI(unittest.TestCase):
     def test_static_ip_clear_success_keeps_current_address_and_caches_empty_settings(self):
         """A clear result retains the current address until DHCP discovery updates it."""
         self.controller.source_model.upsert_many([
-            DeviceRecord(identity="A", ip="10.0.0.2", activation_status="ACTIVATED")
+            DeviceRecord(
+                identity="A",
+                ip="10.0.0.2",
+                activation_status="ACTIVATED",
+                activation_key="A",
+            )
         ])
         self.controller._active_worker = Mock()
         self.controller._active_operation = "static_ip"

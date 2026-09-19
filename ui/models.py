@@ -176,7 +176,6 @@ class DeviceTableModel(QAbstractTableModel):
         ("ap_live_throughput", "AP LIVE\nTHROUGHPUT", 128),
         ("ap_rx_rate", "AP RX\nRATE", 100),
         ("ap_tx_rate", "AP TX\nRATE", 100),
-        ("ap_signal_balance", "AP/CLIENT\nSIGNAL BALANCE", 138),
         ("dlse_mode", "DLSE MODE", 118),
         ("baud", "BAUD", 92),
         ("gpio_cts", "CTS GPIO", 86),

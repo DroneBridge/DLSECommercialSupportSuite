@@ -85,7 +85,7 @@ Item {
                 FocusScope {
                     id: standaloneModeButton
                     objectName: "standaloneModeButton"
-                    Layout.preferredWidth: 126
+                    Layout.preferredWidth: 150
                     Layout.preferredHeight: 30
                     activeFocusOnTab: true
 
@@ -992,7 +992,9 @@ Item {
                 id: inspectorShell
                 objectName: "inspectorShell"
                 Layout.fillHeight: true
+                Layout.minimumWidth: 0
                 Layout.preferredWidth: inspectorExpanded ? fleetController.inspectorWidth : 0
+                Layout.maximumWidth: inspectorExpanded ? fleetController.inspectorWidth : 0
                 visible: inspectorExpanded
 
                 property real resizeStartX: 0

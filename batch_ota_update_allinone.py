@@ -23,6 +23,7 @@ import argparse
 import os.path
 import time
 
+from dlse_cli_utils import add_version_argument
 from dlse_release_cli_utils import select_and_validate_dlse_release_folder
 from DroneBridgeCommercialSupportSuite import DBLogger, db_scan_for_esp32_devices, db_api_ota_perform_www_update, \
     db_api_ota_perform_app_update_with_progress, db_check_release_binaries_present, db_get_bin_folder, \
@@ -47,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     :return: Parsed argparse namespace with release, discovery, and targeting options.
     """
     parser = argparse.ArgumentParser(description='Update DroneBridge DLSE on ESP32 devices over the air.')
+    add_version_argument(parser)
     parser.add_argument('--release-folder', required=False, type=str,
                         help='Folder path to the root directory of the release e.g. /DroneBridge_ESP32DLSE_BETA3 . Download & extract them from https://drone-bridge.com/dlse/')
     parser.add_argument('--token', required=False, type=str,

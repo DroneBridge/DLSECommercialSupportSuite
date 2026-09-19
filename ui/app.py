@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -12,21 +13,17 @@ from PySide6.QtCore import QUrl
 from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication, QIcon
 from PySide6.QtQml import QQmlApplicationEngine
 
+from dlse_cli_utils import add_version_argument
 from ui.controller import FleetController
 
 
 UI_ROOT = Path(__file__).resolve().parent
 QML_ROOT = UI_ROOT / "qml"
 RESOURCE_ROOT = UI_ROOT / "resources"
-MATERIAL_FONT = (
-    RESOURCE_ROOT
-    / "Material_Symbols_Outlined"
-    / "MaterialSymbolsOutlined[FILL,GRAD,opsz,wght].ttf"
-)
 GEIST_FONT_ROOT = RESOURCE_ROOT / "fonts" / "Geist"
 GEIST_FONT = GEIST_FONT_ROOT / "Geist[wght].ttf"
 GEIST_MONO_FONT = GEIST_FONT_ROOT / "GeistMono[wght].ttf"
-BUNDLED_FONTS = (MATERIAL_FONT, GEIST_FONT, GEIST_MONO_FONT)
+BUNDLED_FONTS = (GEIST_FONT, GEIST_MONO_FONT)
 DEFAULT_FONT_PIXEL_SIZE = 13
 
 
@@ -62,6 +59,21 @@ def _set_default_font(app: QGuiApplication) -> None:
     app.setFont(default_font)
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """
+    Parse command-line options for the GUI launcher.
+
+    :param argv: Optional argument list without the executable name. When
+        omitted, arguments are read from ``sys.argv``.
+    :return: Parsed GUI launcher arguments.
+    """
+    parser = argparse.ArgumentParser(
+        description="Launch the DroneBridge DLSE Commercial Support Suite UI."
+    )
+    add_version_argument(parser)
+    return parser.parse_args(argv)
+
+
 def create_engine() -> tuple[QQmlApplicationEngine, FleetController]:
     """Create the QML engine and expose stable controller/model properties."""
     engine = QQmlApplicationEngine()
@@ -75,8 +87,15 @@ def create_engine() -> tuple[QQmlApplicationEngine, FleetController]:
     return engine, controller
 
 
-def main() -> int:
-    """Run the cross-platform Qt Quick application and return its exit code."""
+def main(argv: list[str] | None = None) -> int:
+    """
+    Run the cross-platform Qt Quick application and return its exit code.
+
+    :param argv: Optional GUI launcher arguments without the executable name.
+        ``--version`` exits before Qt initialization.
+    :return: Application exit code after the UI closes.
+    """
+    parse_args(argv)
     os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
     _initialize_webengine()
     app = QGuiApplication(sys.argv)

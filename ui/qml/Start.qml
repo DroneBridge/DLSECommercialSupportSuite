@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.VectorImage
 
 Item {
     id: start
@@ -34,12 +35,13 @@ Item {
         width: Math.min(parent.width - 64, 816)
         spacing: 16
 
-        Image {
+        VectorImage {
             Layout.alignment: Qt.AlignHCenter
             Layout.preferredWidth: 245
             Layout.preferredHeight: 66
-            source: Qt.resolvedUrl("assets/droneBridgeLogo_foremost_white_1.png")
-            fillMode: Image.PreserveAspectFit
+            source: Qt.resolvedUrl("../resources/images/DroneBridgeLogo_foremost_white.svg")
+            fillMode: VectorImage.PreserveAspectFit
+            preferredRendererType: VectorImage.CurveRenderer
         }
 
         Item { Layout.preferredHeight: 20 }
@@ -80,32 +82,6 @@ Item {
                 enabled: false
                 opacity: 0.48
             }
-        }
-
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.topMargin: 1
-            Layout.preferredHeight: 1
-            color: "#e6e6e6"
-        }
-
-        AppButton {
-            Layout.alignment: Qt.AlignHCenter
-            Layout.preferredWidth: 200
-            text: "UniFi  Add UniFi Gateway"
-            enabled: false
-        }
-
-        Text {
-            Layout.alignment: Qt.AlignHCenter
-            Layout.maximumWidth: 500
-            text: "A UniFi Gateway connection and Network Manager are planned future features."
-            color: theme.textSecondary
-            opacity: 0.7
-            horizontalAlignment: Text.AlignHCenter
-            wrapMode: Text.Wrap
-            font.family: theme.bodyFont
-            font.pixelSize: theme.bodyTextSize
         }
     }
 

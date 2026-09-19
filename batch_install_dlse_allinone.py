@@ -29,7 +29,7 @@ import time
 
 import serial.tools.list_ports
 
-from dlse_cli_utils import resolve_resource_path, validate_activation_token
+from dlse_cli_utils import add_version_argument, resolve_resource_path, validate_activation_token
 from dlse_release_cli_utils import default_settings_file_for_release, select_and_validate_dlse_release_folder
 from DroneBridgeCommercialSupportSuite import db_get_activation_key, db_api_request_license_file, DBLicenseType, \
     db_embed_license_in_settings_csv, db_parameters_generate_binary, db_flash_binaries, db_csv_update_parameters, \
@@ -77,6 +77,7 @@ def parse_args() -> argparse.Namespace:
     :return: Parsed argparse namespace.
     """
     parser = argparse.ArgumentParser(description='Install DroneBridge DLSE on ESP32.')
+    add_version_argument(parser)
     parser.add_argument('--release-folder', required=False, type=str,
                         help='Folder path to the root directory of the release e.g. /DroneBridge_ESP32DLSE_BETA3 . Download & extract them from https://drone-bridge.com/dlse/')
     parser.add_argument('--settings-file', required=False, type=str,
