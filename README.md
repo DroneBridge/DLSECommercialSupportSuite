@@ -71,6 +71,8 @@ matrix views, device inspection, settings management, OTA licensing, reboot,
 firmware updates, and optional UniFi observations. Serial flashing remains a
 command-line workflow.
 
+<img width="1377" height="836" alt="DLSE_UI1" src="https://github.com/user-attachments/assets/be8bb527-ab1b-4b7c-83c2-c37ccdaca1e1" />
+
 Start the application after installation with:
 
 ```bash
