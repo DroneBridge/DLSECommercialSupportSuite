@@ -3,6 +3,8 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/DLSECommercialSupportSuite.iml" filepath="$PROJECT_DIR$/.idea/DLSECommercialSupportSuite.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/DLSECommercialSupportSuite@1.iml" filepath="$PROJECT_DIR$/.idea/DLSECommercialSupportSuite@1.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/esp_idf_nvs_partition_gen.iml" filepath="$PROJECT_DIR$/.idea/esp_idf_nvs_partition_gen.iml" />
     </modules>
   </component>
 </project>

@@ -23,6 +23,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+from dlse_cli_utils import add_version_argument
 from DroneBridgeCommercialSupportSuite import (
     DBLogger,
     db_api_create_request_session,
@@ -48,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     :return: Parsed argparse namespace with discovery, reboot, and HTTP scan options.
     """
     parser = argparse.ArgumentParser(description="Reboot DroneBridge DLSE ESP32 devices over the air.")
+    add_version_argument(parser)
     parser.add_argument("--subnetmask", required=False, type=str,
                         help="Subnet mask describing where to scan. Default: 192.168.1.0/24")
     parser.add_argument("--esp32localbrcstport", required=False, type=int,

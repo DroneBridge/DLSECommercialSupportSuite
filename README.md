@@ -11,6 +11,7 @@ This suite provides tools and scripts to manage, configure, and license DroneBri
 
 ## Features
 
+*   Desktop Fleet Manager for monitoring and managing DLSE fleets
 *   OpenAPI Definition
 
 *   Functions to manage your DLSE devices
@@ -35,7 +36,7 @@ This suite provides tools and scripts to manage, configure, and license DroneBri
 
 ### Recommended Installation
 
-Install the command-line tools from the latest GitHub release.
+Install the Fleet Manager and command-line tools from the latest GitHub release.
 
 GitHub Releases:
 [**Check the Github Releases**](https://github.com/DroneBridge/DLSECommercialSupportSuite/releases)
@@ -48,10 +49,10 @@ python -m pipx ensurepath
 Open a new terminal and install.
 
 ```bash
-pipx install https://github.com/DroneBridge/DLSECommercialSupportSuite/releases/download/v1.0.0/dlsecommercialsupportsuite-1.0.0-py3-none-any.whl
+pipx install https://github.com/DroneBridge/DLSECommercialSupportSuite/releases/download/v1.1.0/dlsecommercialsupportsuite-1.1.0-py3-none-any.whl
 ```
 
-For newer releases, replace `v1.0.0` and the wheel filename with the version shown on the GitHub Releases page.
+For newer releases, replace `v1.1.0` and the wheel filename with the version shown on the GitHub Releases page.
 
 Open a new terminal and verify the commands are available:
 
@@ -60,12 +61,40 @@ dlse-activate --help
 dlse-reboot --help
 dlse-update --help
 dlse-install --help
+dlse-ui
 ```
+
+## User Interface - Fleet Manager
+
+The desktop Fleet Manager provides MAVLink and HTTP discovery, fleet table and
+matrix views, device inspection, settings management, OTA licensing, reboot,
+firmware updates, and optional UniFi observations. Serial flashing remains a
+command-line workflow.
+
+<img width="1377" height="836" alt="DLSE_UI1" src="https://github.com/user-attachments/assets/be8bb527-ab1b-4b7c-83c2-c37ccdaca1e1" />
+
+Start the application after installation with:
+
+```bash
+dlse-ui
+```
+
+Windows x64 is the validated desktop platform for v1.1.0. Linux and macOS are
+expected to work but are not release-qualified. Python 3.10 and newer are
+supported; UniFi integration is guaranteed on Python 3.10 through 3.13 and is
+best-effort on newer Python versions.
+
+Before fleet operations, ensure the ESP32 devices are reachable and stop
+Skybrush Live when the selected workflow uses MAVLink ports. Test settings,
+activation, reboot, and OTA operations on a small non-production fleet first.
+
 
 ### Operational Folder
 
 Run the installed commands from the folder where you want operational files to live. Relative paths for firmware release folders, settings CSV files, `logs/`, and `received_licenses/` are resolved from your current terminal folder. Firmware release folders are external downloads and are not bundled into the Python package.
 
+
+## Command Line Usage
 Normal users should use the installed commands:
 
 ```bash
@@ -77,12 +106,11 @@ dlse-update --release-folder DroneBridge_ESP32DLSE_BETA5 --subnetmask 192.168.1.
 dlse-install --token <YOUR_SECRET_TOKEN> --release-folder DroneBridge_ESP32DLSE_BETA5 --settings-file my_parameters/dlse_my_params.csv --start-index 55
 ```
 
-## Usage
-
 The suite includes installable `dlse-*` commands for normal operation.
 
 Before running hardware workflows, stop Skybrush Live when using MAVLink discovery, reboot, or OTA update paths. Serial flashing also requires OS access to the ESP32 serial port.
 
+Before network operations, make sure the ESP32s are reachable, configured UDP ports match, and Skybrush Live is stopped when MAVLink ports are required. Test activation, settings, reboot, and OTA operations on a small hardware batch before using them on a production fleet. Hardware workflows were not exercised by the automated test suite.
 
 ## Automated DLSE Batch Installation
 <img alt="Gemini_Generated_Image_kvejvukvejvukvej" src="https://github.com/user-attachments/assets/a069d8a4-fb42-4b4c-b2d6-70a67f0ac5ed" />
@@ -114,16 +142,33 @@ Follow the setup commands described above to install the toolchain on your machi
 
 ### Step 3 — Download the DLSE firmware binaries
 
-[Download the latest DLSE release binaries](https://drone-bridge.com/dlse/) and extract them into the `DLSECommercialSupportSuite` folder.
+Optional: [Download the latest DLSE release binaries](https://drone-bridge.com/dlse/) and extract them into the `DLSECommercialSupportSuite` folder.  
+The support library can also list the DLSE releases available to your account via
+the DroneBridge license server and download a selected release zip into the local
+`dlse_releases/` cache.   
+
+The batch scripts still accept `--release-folder`, so you can continue to point them at any manually downloaded and 
+extracted release root folder.
 
 ---
 
 ### Step 4 — Run the batch installation script
 
-From this point on the process is fully automated. Inside the `DLSECommercialSupportSuite` folder, run:
+From this point on the process is fully automated. Run the following command to install on all ESP32 serial devices connected to your computer:
 ```bash
 dlse-install \
   --token <YOUR_SECRET_TOKEN> \
+  --release-folder "DroneBridge_ESP32DLSE_BETA3" \
+  --settings-file my_parameters/dlse_my_params.csv \
+  --start-index 55
+```
+
+To request 60-day evaluation licenses instead of regular activated licenses, add `-e`:
+
+```bash
+dlse-install \
+  --token <YOUR_SECRET_TOKEN> \
+  -e \
   --release-folder "DroneBridge_ESP32DLSE_BETA3" \
   --settings-file my_parameters/dlse_my_params.csv \
   --start-index 55
@@ -134,8 +179,9 @@ dlse-install \
 | Parameter | Description |
 |---|---|
 | `--token` | Your secret token from [drone-bridge.com](https://drone-bridge.com). You can also set `DRONEBRIDGE_SECRET_TOKEN`; `--token` overrides the environment variable. |
-| `--release-folder` | Path to the folder containing the DLSE firmware binaries you downloaded in Step 3. |
-| `--settings-file` | Path to the settings file you exported from the ESP32 web interface in Step 1. |
+| `-e`, `--evaluation` | Request 60-day evaluation licenses instead of regular activated licenses. Evaluation licenses require license server access and are not cached in `received_licenses/`. |
+| `--release-folder` | Path to the folder containing the DLSE firmware binaries you downloaded in Step 3. If omitted, the script asks you to choose a cached release from `dlse_releases/`, download an available online release, or enter a manual folder path. |
+| `--settings-file` | Path to the settings file you exported from the ESP32 web interface in Step 1. If omitted while using the release selector, the script uses `db_show_params.csv` from the selected release. |
 | `--start-index` | A numeric postfix appended to `ssid_ap`, `wifi_hostname`, and `ip_sta` for each flashed unit. For example, with `--start-index 33`, the access point SSID becomes `<YOUR_SSID>33` and the static IP of the ESP32 will be `192.168.50.33` if your config has set `192.168.50.1` as static IP. |
 
 #### What the script does
@@ -143,19 +189,20 @@ dlse-install \
 - Automatically requests a license from the DroneBridge license server and registers it with your account.
 - Flashes the DLSE firmware together with your exported settings and the generated license.
 - Falls back to **offline activation** if a local license file for the ESP32 is already present in `/received_licenses`, or if the device has previously been activated (the existing license is pulled and re-applied before the new firmware is written).
+- In evaluation mode, temporary 60-day licenses require the license server and are not stored in `/received_licenses`.
 - Logs all actions to `/logs`.
 
 > [!NOTE]
 > Running the script multiple times for the same ESP32 (identified by its activation key) will **not** consume additional license credits. Re-generating a license is always free.
 
-## Batch Over-The-Air Firmware Update for DLSE Devices
+## CLI: Batch Over-The-Air Firmware Update for DLSE Devices
 <img alt="Gemini_Generated_Image_o10ugso10ugso10u" src="https://github.com/user-attachments/assets/a3158a18-723f-4c0b-99ff-962e029371d8" />
 
-Update the firmware of your drone swarm over the air.
+Update the firmware of your drone swarm over the air. This is the CLI workflow, you can do it using the user interface as well.
 
 > [!CAUTION]
 > Requires Skybrush Live to be turned off.
-> Requires TX & RX GPIO pins to be configured and TRAIL mode being not expired in order to detect the ESP32
+> Requires TX & RX GPIO pins to be configured and TRAIL mode being not expired in order to detect the ESP32 (early DLSE releases)
 
 ```bash
 dlse-update --release-folder "DroneBridge_ESP32DLSE_BETA3" --subnetmask "192.168.1.0/24" --esp32localbrcstport 14555 --esp32remotebrcstport 14550
@@ -170,7 +217,8 @@ If a parameter is not supplied, all detected devices will be upgraded.
 
 | Parameter | Description |
 |---|---|
-| `--release-folder` | Path to the root directory of the release, e.g. `DroneBridge_ESP32DLSE_BETA3`. |
+| `--release-folder` | Path to the root directory of the release, e.g. `DroneBridge_ESP32DLSE_BETA3`. If omitted, the script asks you to choose a cached release from `dlse_releases/`, download an available online release, or enter a manual folder path. |
+| `--token` | Optional token used only for listing and downloading releases when `--release-folder` is omitted. You can also set `DRONEBRIDGE_SECRET_TOKEN`; `--token` overrides the environment variable. |
 | `--subnetmask` | IP address range to scan for devices. |
 | `--target-version` | Only upgrade ESP32s running this specific DLSE version — all other devices are skipped. Use `"0.0.0-dev.1"` to target DLSE Beta4 and earlier, as all those versions identify with that version string. |
 | `--esp32localbrcstport` | As configured in the web interface of the ESP32 (open on your ESP32) (udp_local_port) - Default: 14555 |
@@ -214,8 +262,10 @@ Status Code: 200
   - {'key': ('192.168.1.206', 206, 240), 'ip': '192.168.1.206', 'sys_id': 206, 'comp_id': 240, 'middleware_sw_version': 0, 'os_sw_version': 0, 'board_version': 0, 'vendor_id': 0, 'product_id': 0, 'mac': 0, 'flight_sw_version': {'major': 0, 'minor': 0, 'patch': 0, 'release_num': 1, 'type': 'dev', 'version_str': '0.0.0-dev.1'}}
 ```
 
-## Batch Over-The-Air License Activation for DLSE Drones
+## CLI: Batch Over-The-Air License Activation for DLSE Drones
 <img alt="Gemini_Generated_Image_scabxascabxascab" src="https://github.com/user-attachments/assets/6152d740-2bde-496f-b818-a8bf9077b872" />
+This is the CLI workflow. You can also activate Over-The-Air using the user interface application.    
+
 Activates all ESP32s on the subnet by requesting a license from the license server and installing it via a WiFi connection. Requires Skybrush Live to be turned off.    
 For the most robust discovery behavior, run the script with `--force-rest`. This skips MAVLink discovery and uses an HTTP scan of the selected `--subnetmask` with `GET /api/system/info`, 20 concurrent probes, and a 1 second per-host timeout. If `--force-rest` is omitted, discovery first uses MAVLink UDP broadcast and falls back to the same HTTP scan only when no devices respond.
 
@@ -268,7 +318,7 @@ dlse-activate --token <YOUR_SECRET_TOKEN> --force-rest -e --subnetmask "192.168.
 [2026-03-04 23:34:42] Processed activation keys: {'mKM*****DQIA'}
 ```
 
-## Batch Over-The-Air Reboot for DLSE Devices
+## CLI: Batch Over-The-Air Reboot for DLSE Devices
 
 Reboot all detected ESP32 DLSE devices in one confirmed operation. The script first tries MAVLink discovery. If at least one ESP32 is discovered, it sends one MAVLink broadcast reboot command to the subnet broadcast address. If MAVLink discovers no devices, it falls back to HTTP discovery with `GET /api/system/info` and reboots each detected device by sending `{}` to `POST /api/settings`.
 
@@ -305,17 +355,18 @@ dlse-reboot --force-rest --subnetmask "192.168.1.0/24" --http-timeout 1.0 --http
 ## Examples on individual functions
 
 *   **`example_esp32_get_license.py`**: Standalone script to request a license file using an activation key.
-*   **`example_params_update_flash.py`**: Demonstrates how to update configuration parameters (like IP and Hostname) in the CSV and flash them.
 *   **`example_esp32_ota_update.py`**: Performs an Over-The-Air (OTA) firmware update for all detected ESP32 DLSE devices. Turn off Skybrush Live to allow port binding by the script
 *   **`example_esp32_download_log.py`** & **`example_esp32_download_log_MAVSDK.py`**: Examples for downloading logs from the flight controller via the ESP32 bridge.
 
 
 # OpenAPI Description
 
-Find the DroneBridge DLSE OpenAPI description here: `api_definiton/openapi_definition.yaml`
+Find the DroneBridge DLSE OpenAPI description here: `api_definition/openapi_definition.yaml`
 
 
 # Installation for Development Setups
+
+If you plan to write your own scripts using the DLSE Commercial Support Suite Framework, it is recommended to install the following developer setup.
 
 1.  Clone the repository:
     ```bash
@@ -335,14 +386,24 @@ Find the DroneBridge DLSE OpenAPI description here: `api_definiton/openapi_defin
     python batch_ota_update_allinone.py --release-folder DroneBridge_ESP32DLSE_BETA5
     python batch_install_dlse_allinone.py --token <YOUR_SECRET_TOKEN> --release-folder DroneBridge_ESP32DLSE_BETA5 --settings-file my_parameters/dlse_my_params.csv --start-index 55
     ```
+    
+The default automated test run skips checks that require a physical ESP32 or the production license server. Set `DLSE_RUN_HARDWARE_TESTS=1` only with a test ESP32 connected, optionally selecting its port with `DLSE_TEST_SERIAL_PORT` (default `COM18`). Set `DLSE_RUN_NETWORK_TESTS=1` to include the live license-server availability check.
 
 ## Release Build Checklist
 
-Build the wheel and source distribution from the repository root:
+Run the non-hardware test suite from an environment containing the project
+dependencies:
 
 ```bash
-python -m pip install build
+python -m unittest discover -s test -p "Test*.py"
+```
+
+Build and validate the wheel and source distribution:
+
+```bash
+python -m pip install build twine
 python -m build
+python -m twine check dist/*
 ```
 
 If an existing local `build/` folder shadows the Python `build` module, run the command from the parent folder instead:
@@ -351,21 +412,23 @@ If an existing local `build/` folder shadows the Python `build` module, run the 
 python -m build DLSECommercialSupportSuite
 ```
 
-Smoke-test the wheel in an isolated `pipx` environment before publishing:
+Smoke-test the v1.1.0 wheel in an isolated `pipx` environment before publishing:
 
 ```bash
-pipx install dist/DLSECommercialSupportSuite-<version>-py3-none-any.whl
+pipx install --force dist/dlsecommercialsupportsuite-1.1.0-py3-none-any.whl
 dlse-activate --help
 dlse-reboot --help
 dlse-update --help
 dlse-install --help
+dlse-ui
 ```
 
-Attach the generated wheel and source archive to GitHub Releases if users should install from release artifacts instead of PyPI.
+Verify the UI opens with its bundled fonts and icons before attaching the wheel,
+source archive, and SHA-256 checksums to the manually created GitHub Release.
 
 # Images
 
-All images are for illustration purposes only and are generated by Google Gemini (AI)
+All images except for the user interface are for illustration purposes only and are generated by Google Gemini (AI)
 
 # License
 

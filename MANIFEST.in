@@ -1,0 +1,11 @@
+prune ui/resources/Material_Symbols_Outlined
+prune ui/resources/Master
+prune ui/resources/logos
+
+exclude ui/Start.png
+exclude ui/MainScreen.png
+exclude ui/requirements.md
+exclude ui/progress.md
+exclude ui/qml/DLSE_UI.zip
+exclude ui/qml/*.qmlproject
+exclude ui/qml/DesignTokens/*.qmlproject

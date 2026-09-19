@@ -1,6 +1,10 @@
+import argparse
+import importlib.metadata
+import re
 from pathlib import Path
 
 
+PROJECT_DISTRIBUTION_NAME = "DLSECommercialSupportSuite"
 PLACEHOLDER_TOKEN_MARKERS = (
     "<add token",
     "<enter your token",
@@ -8,6 +12,54 @@ PLACEHOLDER_TOKEN_MARKERS = (
     "add token here",
     "enter your token",
 )
+
+
+def get_project_version() -> str:
+    """
+    Return the installed project version, with a source-tree fallback.
+
+    :return: Distribution version, the version from the repository's
+        ``pyproject.toml``, or ``"unknown"`` when neither is available.
+    :failure behavior: Metadata and source-file lookup failures are converted
+        to the stable ``"unknown"`` value so ``--version`` remains usable.
+    """
+    try:
+        return importlib.metadata.version(PROJECT_DISTRIBUTION_NAME)
+    except importlib.metadata.PackageNotFoundError:
+        pass
+
+    pyproject_path = Path(__file__).resolve().with_name("pyproject.toml")
+    try:
+        pyproject_text = pyproject_path.read_text(encoding="utf-8")
+    except OSError:
+        return "unknown"
+
+    project_section = re.search(
+        r"(?ms)^\[project\]\s*(.*?)(?=^\[|\Z)",
+        pyproject_text,
+    )
+    if project_section is None:
+        return "unknown"
+    version_match = re.search(
+        r'^\s*version\s*=\s*["\']([^"\']+)["\']\s*$',
+        project_section.group(1),
+    )
+    return version_match.group(1) if version_match is not None else "unknown"
+
+
+def add_version_argument(parser: argparse.ArgumentParser) -> None:
+    """
+    Add the standard project version option to an argument parser.
+
+    :param parser: Parser receiving the ``--version`` action.
+    :return: None. The action prints ``<program> <version>`` and exits.
+    """
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {get_project_version()}",
+        help="Show the installed DLSE Commercial Support Suite version and exit.",
+    )
 
 
 def is_placeholder_token(token: str | None) -> bool:

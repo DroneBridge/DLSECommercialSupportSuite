@@ -7,6 +7,7 @@ from DroneBridgeCommercialSupportSuite import (
     DBLicenseActivationStatus,
     DBLicenseType,
     db_api_activate_dlse_device,
+    db_api_get_activation_key,
     db_scan_for_esp32_devices_by_ip_range,
 )
 
@@ -18,6 +19,23 @@ class TestOTALicenseActivation(unittest.TestCase):
 
     def tearDown(self):
         self.session.close()
+
+    def test_get_activation_key_does_not_send_license_token(self):
+        """Fetching an ESP32 activation key does not require a DroneBridge token."""
+        session = Mock()
+        response = Mock()
+        response.json.return_value = {"activation_key": "ACTIVATION_KEY"}
+        session.get.return_value = response
+
+        result = db_api_get_activation_key(session, "192.168.1.42")
+
+        self.assertEqual("ACTIVATION_KEY", result)
+        session.get.assert_called_once_with(
+            "http://192.168.1.42/api/system/info",
+            headers={"Accept": "application/json"},
+            timeout=5,
+        )
+        response.raise_for_status.assert_called_once()
 
     @patch("DroneBridgeCommercialSupportSuite.db_api_upload_license", return_value=(True, "Activated"))
     @patch("DroneBridgeCommercialSupportSuite.db_dlse_validate_license", return_value=(True, {}))

@@ -32,12 +32,14 @@ import socket
 import select
 import time
 import re
+import shutil
+import zipfile
 import esptool
 import requests
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Set, Dict, Any, Optional, Tuple
+from typing import Set, Dict, Any, Optional, Tuple, Callable, BinaryIO
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from pymavlink import mavutil
@@ -60,8 +62,10 @@ REQUEST_TIMEOUT = 5
 
 DLSE_LICENSE_SERVER_BASE_URL = "https://drone-bridge.com"
 DLSE_LICENSE_GENERATE_PATH = "/api/license/generate"
+DLSE_RELEASES_PATH = "/api/dlse/releases"
 
 DLSE_LICENSE_FOLDER = "received_licenses/" # Location of all received license files (excluding the EVALUATION licenses). Stored locally here.
+DLSE_RELEASES_FOLDER = "dlse_releases"
 
 DLSE_SETTINGS_PARTITION_ADDRESS = 0x9000 # Do not change
 DLSE_SETTINGS_PARTITION_SIZE = 0x6000 # Do not change
@@ -88,10 +92,16 @@ class DBLogger:
         return self._log_file
 
     def log(self, message):
-        """Log a message with timestamp to console and file."""
+        """
+        Log one timestamped message to the console and active UTF-8 log file.
+
+        :param message: Value to convert to text and record.
+        :return: None. Console encoding failures are replaced for display while
+            the original Unicode message is retained in the log file.
+        """
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         full_message = f"[{timestamp}] {message}"
-        print(full_message)
+        self._print_console(full_message)
         if self._log_file is None:
             self.create_log_file("logs")
         if self._log_file:
@@ -99,9 +109,25 @@ class DBLogger:
                 with open(self._log_file, "a", encoding='utf-8') as f:
                     f.write(full_message + "\n")
             except Exception as e:
-                print(f"Error writing to log file: {e}")
+                self._print_console(f"Error writing to log file: {e}")
         else:
-            print("Cannot log. No log file created by DBLogger")
+            self._print_console("Cannot log. No log file created by DBLogger")
+
+    @staticmethod
+    def _print_console(message: str) -> None:
+        """
+        Print text safely when the active Windows console lacks Unicode support.
+
+        :param message: Unicode text intended for standard output.
+        :return: None. Unsupported characters are replaced only in console
+            output; callers retain the original text for file logging.
+        """
+        try:
+            print(message)
+        except UnicodeEncodeError:
+            encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+            safe_message = message.encode(encoding, errors="replace").decode(encoding)
+            print(safe_message)
 
 
 class DBLicenseType(Enum):
@@ -129,6 +155,66 @@ class DBLicenseActivationResult:
     activation_key: str | None = None
     license_path: str | None = None
     sys_id: int | None = None
+
+
+@dataclass
+class DBDLSERelease:
+    """DLSE firmware release metadata returned by the DroneBridge license server."""
+    release_date: str
+    name: str
+    download_link: str
+
+    @property
+    def safe_folder_name(self) -> str:
+        """
+        Build a filesystem-safe folder name for caching this release.
+
+        :return: Path-safe folder name containing the release date and name.
+        """
+        label = f"{self.release_date}_{self.name}".strip("_")
+        return re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("._") or "dlse_release"
+
+
+@dataclass
+class DBApiOperationResult:
+    """Structured result for a REST operation that does not return device data."""
+    success: bool
+    message: str
+    status_code: int | None = None
+    response: dict[str, Any] | None = None
+
+
+class DBOtaStage(Enum):
+    """Stages emitted by the callback-driven OTA update workflow."""
+    VALIDATING = "validating"
+    INSPECTING = "inspecting"
+    UPLOADING_WWW = "uploading_www"
+    WAITING = "waiting"
+    UPLOADING_FIRMWARE = "uploading_firmware"
+    COMPLETE = "complete"
+    FAILED = "failed"
+
+
+@dataclass
+class DBOtaProgress:
+    """Progress notification emitted while updating one ESP32."""
+    device_ip: str
+    stage: DBOtaStage
+    sent_bytes: int = 0
+    total_bytes: int = 0
+    message: str = ""
+
+
+@dataclass
+class DBOtaUpdateResult:
+    """Structured result returned by :func:`db_api_ota_update_device`."""
+    device_ip: str
+    success: bool
+    stage: DBOtaStage
+    message: str
+    chip_id: int | None = None
+    www_path: str | None = None
+    firmware_path: str | None = None
 
 class DLSESupportedChips(Enum):
     ESP32C3 = 5
@@ -193,6 +279,20 @@ def db_build_dlse_license_generate_url(base_url: str = DLSE_LICENSE_SERVER_BASE_
     return urljoin(f"{clean_base_url.rstrip('/')}/", DLSE_LICENSE_GENERATE_PATH.lstrip("/"))
 
 
+def db_build_dlse_releases_url(base_url: str = DLSE_LICENSE_SERVER_BASE_URL) -> str:
+    """
+    Build the DLSE releases endpoint from a configurable license server base URL.
+
+    :param base_url: License server base URL such as ``https://drone-bridge.com``.
+        Passing the full ``/api/dlse/releases`` endpoint is also accepted.
+    :return: Full URL for the DLSE releases API endpoint.
+    """
+    clean_base_url = (base_url or DLSE_LICENSE_SERVER_BASE_URL).strip()
+    if clean_base_url.rstrip("/").endswith(DLSE_RELEASES_PATH):
+        return clean_base_url.rstrip("/")
+    return urljoin(f"{clean_base_url.rstrip('/')}/", DLSE_RELEASES_PATH.lstrip("/"))
+
+
 def db_is_dlse_lic_server_available(lic_server_address: str = DLSE_LICENSE_SERVER_BASE_URL) -> bool:
     """
     Check whether the configured DLSE license server is reachable.
@@ -216,6 +316,321 @@ def db_is_dlse_lic_server_available(lic_server_address: str = DLSE_LICENSE_SERVE
     except requests.RequestException as e:
         logger.log(f"❌ License server not available: {e}")
         return False
+
+def db_api_get_dlse_releases(token: str, base_url: str = DLSE_LICENSE_SERVER_BASE_URL) -> list[DBDLSERelease] | None:
+    """
+    Fetch the DLSE firmware releases available to the authenticated user.
+
+    :param token: Bearer token for the DroneBridge license server.
+    :param base_url: License server base URL. A full ``/api/dlse/releases`` URL
+        is accepted for tests or custom deployments.
+    :return: List of release metadata objects, or ``None`` if authentication,
+        request, response validation, or JSON parsing fails.
+    """
+    logger = DBLogger()
+    if not token or not token.strip():
+        logger.log("Missing DroneBridge activation token for release listing.")
+        return None
+
+    releases_url = db_build_dlse_releases_url(base_url)
+    headers = {
+        "Authorization": f"Bearer {token.strip()}",
+        "Accept": "application/json",
+    }
+    max_attempts = 3
+    connect_timeout_s = 5
+    read_timeout_s = 30
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            logger.log(f"Requesting available DLSE releases from {releases_url}... (attempt {attempt}/{max_attempts})")
+            response = requests.get(
+                releases_url,
+                headers=headers,
+                timeout=(connect_timeout_s, read_timeout_s),
+            )
+            status = response.status_code
+
+            if status == 200:
+                try:
+                    payload = response.json()
+                except ValueError as e:
+                    logger.log(f"Release listing returned malformed JSON: {e}")
+                    return None
+
+                if not isinstance(payload, dict) or payload.get("ok") is not True:
+                    logger.log("Release listing request was rejected by the server.")
+                    return None
+
+                raw_releases = payload.get("releases")
+                if not isinstance(raw_releases, list):
+                    logger.log("Release listing response is missing the releases list.")
+                    return None
+
+                releases: list[DBDLSERelease] = []
+                for idx, raw_release in enumerate(raw_releases, start=1):
+                    if not isinstance(raw_release, dict):
+                        logger.log(f"Release entry {idx} is malformed.")
+                        return None
+                    release_date = raw_release.get("release_date")
+                    name = raw_release.get("name")
+                    download_link = raw_release.get("download_link")
+                    if not all(isinstance(value, str) and value.strip() for value in (release_date, name, download_link)):
+                        logger.log(f"Release entry {idx} is missing release_date, name, or download_link.")
+                        return None
+                    releases.append(DBDLSERelease(
+                        release_date=release_date.strip(),
+                        name=name.strip(),
+                        download_link=download_link.strip(),
+                    ))
+
+                logger.log(f"Found {len(releases)} DLSE release(s) available for this account.")
+                return releases
+
+            try:
+                resp_text = response.text
+                if resp_text and len(resp_text) > 2000:
+                    resp_text = resp_text[:2000] + "...<truncated>"
+            except Exception:
+                resp_text = "<unavailable>"
+
+            logger.log(f"Failed to list DLSE releases. Status Code: {status}")
+            logger.log(f"Response: {resp_text}")
+            if status not in (429, 500, 502, 503, 504):
+                return None
+
+        except (requests.Timeout, requests.ConnectionError, requests.RequestException) as e:
+            logger.log(f"Request error while listing DLSE releases: {e}")
+        except Exception as e:
+            logger.log(f"Error while listing DLSE releases: {e}")
+
+        if attempt < max_attempts:
+            time.sleep(1.0 * attempt)
+
+    return None
+
+
+def db_list_offline_dlse_releases(releases_dir: str | Path = DLSE_RELEASES_FOLDER) -> list[str]:
+    """
+    List locally cached DLSE release folders that contain the required binaries.
+
+    :param releases_dir: Directory containing extracted DLSE release folders.
+    :return: Valid release root folder paths. Invalid or incomplete folders are skipped.
+    """
+    logger = DBLogger()
+    releases_path = Path(releases_dir)
+    if not releases_path.exists():
+        logger.log(f"DLSE releases folder '{releases_path}' does not exist yet.")
+        return []
+    if not releases_path.is_dir():
+        logger.log(f"DLSE releases path '{releases_path}' is not a folder.")
+        return []
+
+    offline_releases: list[str] = []
+    for candidate in sorted(releases_path.iterdir()):
+        if not candidate.is_dir():
+            continue
+        release_root = db_find_extracted_dlse_release_root(candidate)
+        if release_root is not None:
+            offline_releases.append(str(release_root))
+    return offline_releases
+
+
+def db_has_release_binaries_quiet(release_path: str | Path) -> bool:
+    """
+    Check whether a folder looks like a valid DLSE release root without logging.
+
+    This is used while probing extracted archive layouts where invalid candidate
+    folders are expected and should not produce operator-facing error messages.
+
+    :param release_path: Candidate DLSE release root folder.
+    :return: ``True`` when the required settings file and chip flash argument
+        files are present, otherwise ``False``.
+    """
+    release_root = Path(release_path)
+    if not release_root.exists() or not release_root.is_dir():
+        return False
+    if not (release_root / "db_show_params.csv").exists():
+        return False
+
+    for chip in DLSESupportedChips:
+        bin_folder = db_get_bin_folder(chip.value)
+        if bin_folder == 0:
+            continue
+        if not (release_root / bin_folder / "flash_args.txt").exists():
+            return False
+    return True
+
+
+def db_find_extracted_dlse_release_root(extract_dir: str | Path) -> Path | None:
+    """
+    Find the valid DLSE release root in an extracted archive directory.
+
+    :param extract_dir: Directory where a release zip was extracted.
+    :return: Path to the release root folder, or ``None`` when required binaries
+        are missing.
+    """
+    extract_path = Path(extract_dir)
+    if db_has_release_binaries_quiet(extract_path):
+        return extract_path
+
+    child_dirs = [child for child in extract_path.iterdir() if child.is_dir()]
+    if len(child_dirs) == 1 and db_has_release_binaries_quiet(child_dirs[0]):
+        return child_dirs[0]
+
+    for child in child_dirs:
+        if db_has_release_binaries_quiet(child):
+            return child
+    return None
+
+
+def db_download_and_extract_dlse_release(
+        release: DBDLSERelease | str,
+        token: str,
+        output_dir: str | Path = DLSE_RELEASES_FOLDER,
+        base_url: str = DLSE_LICENSE_SERVER_BASE_URL) -> str | None:
+    """
+    Download a DLSE release zip, extract it into the local release cache, and delete the zip.
+
+    Existing extracted files in the target release folder are overwritten by
+    deleting and recreating that folder before extraction. The downloaded zip is
+    removed only after a successful extraction and binary validation.
+
+    :param release: Release metadata returned by ``db_api_get_dlse_releases`` or
+        a direct download link.
+    :param token: Bearer token for the DroneBridge license server.
+    :param output_dir: Parent directory used for cached release folders.
+    :param base_url: License server base URL used to resolve relative downloads.
+    :return: Path to the extracted release root folder, or ``None`` on download,
+        extraction, validation, or filesystem failure.
+    """
+    logger = DBLogger()
+    if not token or not token.strip():
+        logger.log("Missing DroneBridge activation token for release download.")
+        return None
+
+    if isinstance(release, DBDLSERelease):
+        download_link = release.download_link
+        folder_name = release.safe_folder_name
+    else:
+        download_link = str(release or "").strip()
+        archive_stem = Path(download_link.split("?", 1)[0]).stem
+        folder_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", archive_stem).strip("._") or "dlse_release"
+
+    if not download_link:
+        logger.log("Missing DLSE release download link.")
+        return None
+
+    download_url = urljoin(f"{base_url.rstrip('/')}/", download_link)
+    output_path = Path(output_dir)
+    extract_path = output_path / folder_name
+    zip_path = output_path / f"{folder_name}.zip"
+    headers = {"Authorization": f"Bearer {token.strip()}"}
+    max_attempts = 3
+    connect_timeout_s = 5
+    read_timeout_s = 120
+
+    try:
+        output_path.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.log(f"Could not create release output folder '{output_path}': {e}")
+        return None
+
+    for attempt in range(1, max_attempts + 1):
+        bytes_written = 0
+        try:
+            logger.log(f"Downloading DLSE release from {download_url}... (attempt {attempt}/{max_attempts})")
+            response = requests.get(
+                download_url,
+                headers=headers,
+                stream=True,
+                timeout=(connect_timeout_s, read_timeout_s),
+            )
+            status = response.status_code
+            if status == 200:
+                with open(zip_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        bytes_written += len(chunk)
+                response.close()
+
+                if bytes_written <= 0:
+                    logger.log("Release download returned 200 but contained no data.")
+                    try:
+                        zip_path.unlink()
+                    except OSError:
+                        pass
+                else:
+                    break
+            else:
+                try:
+                    resp_text = response.text
+                    if resp_text and len(resp_text) > 2000:
+                        resp_text = resp_text[:2000] + "...<truncated>"
+                except Exception:
+                    resp_text = "<unavailable>"
+                finally:
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
+
+                logger.log(f"Failed to download DLSE release. Status Code: {status}")
+                logger.log(f"Response: {resp_text}")
+                if status not in (429, 500, 502, 503, 504):
+                    return None
+
+        except (requests.Timeout, requests.ConnectionError, requests.RequestException) as e:
+            logger.log(f"Request error while downloading DLSE release: {e}")
+        except OSError as e:
+            logger.log(f"File error while saving DLSE release: {e}")
+            return None
+        except Exception as e:
+            logger.log(f"Error while downloading DLSE release: {e}")
+
+        if attempt < max_attempts:
+            time.sleep(1.0 * attempt)
+    else:
+        return None
+
+    try:
+        if not zipfile.is_zipfile(zip_path):
+            logger.log(f"Downloaded release file is not a valid zip archive: {zip_path}")
+            return None
+
+        if extract_path.exists():
+            if not extract_path.is_dir():
+                logger.log(f"Extraction target exists but is not a folder: {extract_path}")
+                return None
+            shutil.rmtree(extract_path)
+        extract_path.mkdir(parents=True, exist_ok=True)
+
+        with zipfile.ZipFile(zip_path, "r") as archive:
+            resolved_extract_path = extract_path.resolve()
+            for member in archive.infolist():
+                member_target = (extract_path / member.filename).resolve()
+                try:
+                    member_target.relative_to(resolved_extract_path)
+                except ValueError:
+                    logger.log(f"Refusing to extract unsafe zip member: {member.filename}")
+                    return None
+            archive.extractall(extract_path)
+
+        release_root = db_find_extracted_dlse_release_root(extract_path)
+        if release_root is None:
+            logger.log(f"Extracted release does not contain the required DLSE binaries: {extract_path}")
+            return None
+
+        zip_path.unlink()
+        logger.log(f"DLSE release extracted to '{release_root}'")
+        return str(release_root)
+
+    except (OSError, zipfile.BadZipFile) as e:
+        logger.log(f"Error while extracting DLSE release: {e}")
+        return None
+
 
 def db_get_bin_folder(_chip_id: int):
     logger = DBLogger()
@@ -241,7 +656,6 @@ def db_check_release_binaries_present(_dlse_release_path: str) -> bool:
     :return: True if all required binaries are present, False otherwise
     """
     logger = DBLogger()
-
     if not os.path.exists(_dlse_release_path):
         logger.log(f"❌ Release path '{_dlse_release_path}' does not exist.")
         return False
@@ -1408,11 +1822,14 @@ def db_api_create_request_session(retries: int = MAX_RETRIES,
 
 
 def db_api_get_activation_key(session: requests.Session,
-                                  device_ip: str,
-                                  token: str) -> Optional[str]:
+                                  device_ip: str) -> Optional[str]:
     """
-    Fetch activation key from REST API with exponential backoff.
-    Returns None if permanently failed or key unavailable.
+    Fetch activation key from the ESP32 REST API with exponential backoff.
+
+    :param session: Request session used for the ESP32 REST call.
+    :param device_ip: ESP32 IP address without protocol.
+    :return: Activation key, or ``None`` if the request permanently fails or
+        the key is unavailable.
     """
     info_endpoint = "/api/system/info"
     endpoint = f"http://{device_ip}{info_endpoint}"
@@ -1421,7 +1838,7 @@ def db_api_get_activation_key(session: requests.Session,
         try:
             response = session.get(
                 endpoint,
-                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                headers={"Accept": "application/json"},
                 timeout=REQUEST_TIMEOUT
             )
             response.raise_for_status()
@@ -1560,6 +1977,160 @@ def db_api_get_json(session: requests.Session, device_ip: str, endpoint: str,
     return None
 
 
+def db_api_update_settings(session: requests.Session, device_ip: str,
+                           settings: dict[str, Any],
+                           timeout: float = REQUEST_TIMEOUT,
+                           logger: DBLogger | None = None) -> DBApiOperationResult:
+    """
+    Apply a partial settings dictionary through ``POST /api/settings``.
+
+    :param session: Requests session used for retries and connection reuse.
+    :param device_ip: ESP32 IPv4 address or hostname without protocol.
+    :param settings: Parameter names and values to update. Unspecified values
+        remain unchanged on the ESP32.
+    :param timeout: Request timeout in seconds.
+    :param logger: Optional logger used for sanitized diagnostics.
+    :return: Structured success or failure result. Request errors are not raised.
+    """
+    active_logger = logger or DBLogger()
+    if not isinstance(settings, dict) or not settings:
+        return DBApiOperationResult(False, "No settings were supplied")
+    if not isinstance(device_ip, str) or not device_ip.strip():
+        return DBApiOperationResult(False, "Invalid device IP")
+
+    try:
+        encoded_size = len(
+            requests.models.complexjson.dumps(settings).encode("utf-8")
+        )
+    except (TypeError, ValueError) as exc:
+        return DBApiOperationResult(False, f"Settings are not JSON serializable: {exc}")
+    if encoded_size >= 10240:
+        return DBApiOperationResult(False, "Settings payload exceeds the 10,240 byte device limit")
+
+    url = f"http://{device_ip.strip()}/api/settings"
+    try:
+        response = session.post(
+            url,
+            json=settings,
+            headers={"Accept": "application/json"},
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        active_logger.log(f"Settings update failed for {device_ip}: {exc}")
+        return DBApiOperationResult(False, str(exc))
+
+    payload = None
+    try:
+        candidate = response.json()
+        if isinstance(candidate, dict):
+            payload = candidate
+    except ValueError:
+        pass
+    message = ""
+    if payload:
+        message = str(payload.get("msg") or payload.get("message") or "")
+    if not message:
+        message = response.text[:500] if getattr(response, "text", "") else ""
+    if response.status_code == 200:
+        return DBApiOperationResult(
+            True,
+            message or "Settings accepted; device is rebooting",
+            response.status_code,
+            payload,
+        )
+    if response.status_code == 422 and not message:
+        message = "Device rejected settings because the drone is armed"
+    return DBApiOperationResult(
+        False,
+        message or f"Settings request failed with HTTP {response.status_code}",
+        response.status_code,
+        payload,
+    )
+
+
+_CSV_ENCODING_BY_TYPE = {
+    bool: "u8",
+    int: "i32",
+    float: "string",
+    str: "string",
+}
+
+
+def db_settings_to_csv(settings: dict[str, Any], output_path: str | Path) -> bool:
+    """
+    Export REST settings to the NVS-compatible ``key,type,encoding,value`` CSV format.
+
+    The REST ``data_types`` metadata is used for CSV encodings and omitted from
+    the output, along with metadata entries ending in ``_type``. Existing
+    integer widths fall back to ``i32`` when ``data_types`` is unavailable.
+
+    :param settings: Settings returned by ``GET /api/settings``.
+    :param output_path: Destination CSV file path.
+    :return: ``True`` when the file was written, otherwise ``False``.
+    """
+    if not isinstance(settings, dict):
+        return False
+    path = Path(output_path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(["key", "type", "encoding", "value"])
+            writer.writerow(["settings", "namespace", "", ""])
+            data_types = settings.get("data_types")
+            data_type_index = 0
+            for key, value in settings.items():
+                if key == "data_types" or key.endswith("_type"):
+                    continue
+                if isinstance(data_types, (list, tuple)) and data_type_index < len(data_types):
+                    encoding = str(data_types[data_type_index])
+                elif isinstance(data_types, dict) and key in data_types:
+                    encoding = str(data_types[key])
+                else:
+                    encoding = _CSV_ENCODING_BY_TYPE.get(type(value), "string")
+                data_type_index += 1
+                if isinstance(value, bool):
+                    value = int(value)
+                writer.writerow([key, "data", encoding, value])
+        return True
+    except (OSError, csv.Error, TypeError):
+        return False
+
+
+def db_settings_from_csv(csv_path: str | Path) -> dict[str, Any] | None:
+    """
+    Load a settings template from an NVS-compatible CSV file.
+
+    :param csv_path: Source CSV path containing ``key,type,encoding,value``.
+    :return: Parsed settings dictionary, or ``None`` for malformed input.
+    """
+    path = Path(csv_path)
+    try:
+        with path.open("r", newline="", encoding="utf-8-sig") as csv_file:
+            reader = csv.DictReader(csv_file)
+            if reader.fieldnames != ["key", "type", "encoding", "value"]:
+                return None
+            settings: dict[str, Any] = {}
+            for row in reader:
+                key = (row.get("key") or "").strip()
+                row_type = (row.get("type") or "").strip()
+                encoding = (row.get("encoding") or "").strip().lower()
+                value = row.get("value") or ""
+                if not key or row_type == "namespace":
+                    continue
+                if row_type != "data":
+                    return None
+                if encoding in {"u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64"}:
+                    settings[key] = int(value)
+                elif encoding == "string":
+                    settings[key] = value
+                else:
+                    return None
+            return settings
+    except (OSError, csv.Error, TypeError, ValueError):
+        return None
+
+
 def db_api_reboot_esp32_device(session: requests.Session, device_ip: str,
                                timeout: float = REQUEST_TIMEOUT,
                                logger: DBLogger | None = None) -> bool:
@@ -1636,6 +2207,156 @@ def db_api_get_device_details(session: requests.Session, device_ip: str,
         else:
             details[key] = data
     return details
+
+
+class _CallbackFileReader:
+    """File-like request body that reports cumulative upload progress."""
+
+    def __init__(self, path: Path, callback: Callable[[int, int], None] | None) -> None:
+        """Open *path* and prepare progress callbacks for streamed reads."""
+        self._file: BinaryIO = path.open("rb")
+        self._total = path.stat().st_size
+        self._sent = 0
+        self._callback = callback
+
+    def __len__(self) -> int:
+        """Return the content length used by ``requests``."""
+        return self._total
+
+    def read(self, size: int = -1) -> bytes:
+        """Read a chunk and report cumulative bytes sent."""
+        chunk = self._file.read(size)
+        self._sent += len(chunk)
+        if self._callback:
+            self._callback(self._sent, self._total)
+        return chunk
+
+    def close(self) -> None:
+        """Close the underlying binary file."""
+        self._file.close()
+
+    def __enter__(self) -> "_CallbackFileReader":
+        """Return this reader for context-manager use."""
+        return self
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+        """Close the file when the upload finishes."""
+        self.close()
+
+
+def db_api_ota_update_device(
+        session: requests.Session,
+        device_ip: str,
+        release_path: str | Path | None = None,
+        www_path: str | Path | None = None,
+        firmware_path: str | Path | None = None,
+        timeout: float = 120.0,
+        wait_seconds: float = 2.0,
+        progress_callback_fn: Callable[[DBOtaProgress], None] | None = None,
+        logger: DBLogger | None = None) -> DBOtaUpdateResult:
+    """
+    Update one ESP32 web filesystem and application using the established OTA order.
+
+    Either provide ``release_path`` so chip-specific binaries can be resolved,
+    or provide both ``www_path`` and ``firmware_path``. The function validates
+    all files before uploading and reports byte progress through the optional
+    callback. A successful firmware upload causes the ESP32 to reboot.
+
+    :param session: Requests session used for REST calls.
+    :param device_ip: ESP32 IPv4 address or hostname without protocol.
+    :param release_path: Optional DLSE release root containing chip folders.
+    :param www_path: Optional explicit web filesystem image.
+    :param firmware_path: Optional explicit application image.
+    :param timeout: Timeout for each upload request in seconds.
+    :param wait_seconds: Delay between WWW and application upload.
+    :param progress_callback_fn: Optional progress notification callback.
+    :param logger: Optional logger for sanitized diagnostics.
+    :return: Structured OTA result. Network and validation failures are not raised.
+    """
+    active_logger = logger or DBLogger()
+
+    def emit(stage: DBOtaStage, sent: int = 0, total: int = 0, message: str = "") -> None:
+        if progress_callback_fn:
+            progress_callback_fn(DBOtaProgress(device_ip, stage, sent, total, message))
+
+    emit(DBOtaStage.VALIDATING, message="Validating OTA inputs")
+    if not isinstance(device_ip, str) or not device_ip.strip():
+        return DBOtaUpdateResult("", False, DBOtaStage.FAILED, "Invalid device IP")
+
+    emit(DBOtaStage.INSPECTING, message="Reading device chip information")
+    info = db_api_get_json(session, device_ip, "/api/system/info", timeout=min(timeout, 10.0))
+    if not info:
+        return DBOtaUpdateResult(device_ip, False, DBOtaStage.FAILED, "Could not read system information")
+    chip_id = info.get("esp_chip_model")
+    if not isinstance(chip_id, int) or not is_valid_supported_dlse_chip(chip_id):
+        return DBOtaUpdateResult(
+            device_ip, False, DBOtaStage.FAILED, f"Unsupported chip ID: {chip_id}", chip_id=chip_id
+        )
+
+    if release_path is not None:
+        folder = db_get_bin_folder(chip_id)
+        if not folder:
+            return DBOtaUpdateResult(device_ip, False, DBOtaStage.FAILED, "No binary folder for chip", chip_id)
+        binary_root = Path(release_path) / str(folder)
+        resolved_www = binary_root / "www.bin"
+        resolved_firmware = binary_root / "db_esp32.bin"
+    else:
+        resolved_www = Path(www_path) if www_path else Path()
+        resolved_firmware = Path(firmware_path) if firmware_path else Path()
+
+    if not resolved_www.is_file() or not resolved_firmware.is_file():
+        return DBOtaUpdateResult(
+            device_ip,
+            False,
+            DBOtaStage.FAILED,
+            "Both WWW and application binaries must exist",
+            chip_id,
+            str(resolved_www),
+            str(resolved_firmware),
+        )
+
+    uploads = (
+        (DBOtaStage.UPLOADING_WWW, "/update/www", resolved_www),
+        (DBOtaStage.UPLOADING_FIRMWARE, "/update/firmware", resolved_firmware),
+    )
+    for index, (stage, endpoint, path) in enumerate(uploads):
+        emit(stage, 0, path.stat().st_size, f"Uploading {path.name}")
+        try:
+            with _CallbackFileReader(
+                    path,
+                    lambda sent, total, active_stage=stage: emit(active_stage, sent, total)) as body:
+                response = session.post(
+                    f"http://{device_ip.strip()}{endpoint}",
+                    data=body,
+                    headers={"Content-Type": "application/octet-stream"},
+                    timeout=timeout,
+                )
+        except (OSError, requests.RequestException) as exc:
+            active_logger.log(f"OTA upload failed for {device_ip} at {stage.value}: {exc}")
+            emit(DBOtaStage.FAILED, message=str(exc))
+            return DBOtaUpdateResult(
+                device_ip, False, stage, str(exc), chip_id, str(resolved_www), str(resolved_firmware)
+            )
+        if response.status_code != 200:
+            message = f"{path.name} upload failed with HTTP {response.status_code}"
+            emit(DBOtaStage.FAILED, message=message)
+            return DBOtaUpdateResult(
+                device_ip, False, stage, message, chip_id, str(resolved_www), str(resolved_firmware)
+            )
+        if index == 0 and wait_seconds > 0:
+            emit(DBOtaStage.WAITING, message="Waiting before application upload")
+            time.sleep(wait_seconds)
+
+    emit(DBOtaStage.COMPLETE, message="OTA update accepted; device is rebooting")
+    return DBOtaUpdateResult(
+        device_ip,
+        True,
+        DBOtaStage.COMPLETE,
+        "OTA update accepted; device is rebooting",
+        chip_id,
+        str(resolved_www),
+        str(resolved_firmware),
+    )
 
 
 def db_scan_for_esp32_devices_by_ip_range(subnet_mask: str = "192.168.1.0/24",
@@ -1734,7 +2455,7 @@ def db_api_activate_dlse_device(device: Dict[str, Any], session: requests.Sessio
     ips_seen = successful_ips if successful_ips is not None else set()
 
     try:
-        activation_key = db_api_get_activation_key(session, device_ip, token)
+        activation_key = db_api_get_activation_key(session, device_ip)
         masked_key = db_mask_sensitive_value(activation_key)
         if not activation_key:
             active_logger.log(f"Failed to get activation key for {device_ip}")

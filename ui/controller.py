@@ -1,0 +1,3108 @@
+"""QML-facing application controller for the DLSE Fleet Manager."""
+
+from __future__ import annotations
+
+import ipaddress
+import json
+import math
+import os
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+from time import monotonic
+from typing import Any, Callable
+from urllib.parse import urlsplit
+
+from PySide6.QtCore import (
+    Property,
+    QObject,
+    QSettings,
+    QThreadPool,
+    QTimer,
+    QUrl,
+    Qt,
+    Signal,
+    Slot,
+)
+
+from DroneBridgeCommercialSupportSuite import (
+    DBLicenseType,
+    db_check_release_binaries_present,
+    db_settings_from_csv,
+    db_settings_to_csv,
+)
+from ui.models import (
+    DeviceCardModel,
+    DeviceFilterProxyModel,
+    DeviceRecord,
+    DeviceTableModel,
+)
+from ui.workers import (
+    ActivationWorker,
+    DiscoveryWorker,
+    LicenseStatusWorker,
+    OtaReleaseListWorker,
+    OtaReleaseResolveWorker,
+    OtaWorker,
+    RebootWorker,
+    SettingsWorker,
+    SettingsRefreshWorker,
+    StatsPollingWorker,
+    StaticIpAssignmentWorker,
+    SystemInfoRefreshWorker,
+    SysIdAlignmentWorker,
+    UnifiPollingWorker,
+)
+
+
+DEFAULT_BULK_EXCLUSIONS = {
+    "ip_sta",
+    "ip_sta_netmsk",
+    "ip_sta_gw",
+    "wifi_hostname",
+    "show_man_sysid",
+}
+MIN_COLUMN_WIDTH = 48
+MAX_COLUMN_WIDTH = 420
+DEFAULT_INSPECTOR_WIDTH = 355
+MIN_INSPECTOR_WIDTH = 300
+MAX_INSPECTOR_WIDTH = 640
+SETTINGS_REFRESH_DELAY_MS = 3_000
+DEFAULT_UNIFI_GATEWAY_URL = "https://192.168.1.1"
+UNIFI_POLL_INTERVAL_MS = 5_000
+
+KNOWN_SYSTEM_METRICS = {
+    "idf_version",
+    "db_build_version",
+    "major_version",
+    "minor_version",
+    "patch_version",
+    "maturity_version",
+    "license_type",
+    "expiration_date",
+    "activation_key",
+    "key",
+    "esp_chip_model",
+    "has_rf_switch",
+    "esp_mac",
+    "serial_via_JTAG",
+    "hostname",
+}
+KNOWN_RUNTIME_METRICS = {
+    "read_bytes",
+    "serial_bytes_sent",
+    "serial_mav_msgs_received",
+    "serial_mav_msgs_lost",
+    "tcp_connected",
+    "udp_connected",
+    "udp_clients",
+    "current_client_ip",
+    "esp_rssi",
+    "sta_rssi",
+    "connected_sta",
+    "fc_pw_state",
+    "fc_armed_state",
+    "fc_sysid",
+    "battery_voltage",
+    "battery_current",
+    "cpu_load",
+}
+
+
+def _metric_item(
+    key: str,
+    label: str,
+    value: str,
+    *,
+    tone: str = "neutral",
+    kind: str = "value",
+    wide: bool = False,
+) -> dict[str, Any]:
+    """Build one stable display item for the QML metrics card delegate."""
+    return {
+        "key": key,
+        "label": label,
+        "value": value,
+        "tone": tone,
+        "kind": kind,
+        "wide": wide,
+    }
+
+
+def _number(value: Any) -> float | None:
+    """Return a finite numeric value while rejecting booleans and malformed input."""
+    if isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _format_count(value: Any) -> str:
+    """Format an integer-like counter with separators or mark it unavailable."""
+    number = _number(value)
+    if number is None or number < 0:
+        return "Unavailable"
+    return f"{int(number):,}" if number.is_integer() else f"{number:,.2f}"
+
+
+def _format_bytes(value: Any, *, per_second: bool = False) -> str:
+    """Format a non-negative byte value using compact binary units."""
+    number = _number(value)
+    if number is None or number < 0:
+        return "Unavailable"
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    unit_index = 0
+    while number >= 1024 and unit_index < len(units) - 1:
+        number /= 1024
+        unit_index += 1
+    precision = 0 if unit_index == 0 else 2
+    suffix = "/s" if per_second else ""
+    return f"{number:,.{precision}f} {units[unit_index]}{suffix}"
+
+
+def _format_measurement(value: Any, unit: str) -> str:
+    """Format a finite measurement with two decimals and its display unit."""
+    number = _number(value)
+    if number is None:
+        return "Unavailable"
+    return f"{number:,.2f} {unit}"
+
+
+def _format_unknown(value: Any) -> str:
+    """Render an unrecognized scalar or collection without losing its contents."""
+    if value in (None, ""):
+        return "Unavailable"
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
+
+
+def _status_item(
+    key: str,
+    label: str,
+    value: str,
+    tone: str,
+) -> dict[str, Any]:
+    """Build a status-badge metric item with the requested semantic tone."""
+    return _metric_item(key, label, value, tone=tone, kind="status")
+
+
+def _binary_status(
+    key: str,
+    label: str,
+    raw_value: Any,
+    enabled_text: str = "Enabled",
+    disabled_text: str = "Disabled",
+) -> dict[str, Any]:
+    """Map a strict REST integer boolean to a status-badge metric item."""
+    if raw_value in (None, ""):
+        return _status_item(key, label, "Unavailable", "muted")
+    number = _number(raw_value)
+    if number == 1:
+        return _status_item(key, label, enabled_text, "success")
+    if number == 0:
+        return _status_item(key, label, disabled_text, "muted")
+    return _status_item(key, label, f"Unknown ({raw_value})", "muted")
+
+
+def _connection_count_item(key: str, label: str, value: Any) -> dict[str, Any]:
+    """Format an active connection count and highlight nonzero connectivity."""
+    number = _number(value)
+    if number is None or number < 0:
+        return _status_item(key, label, "Unavailable", "muted")
+    count = int(number)
+    return _status_item(key, label, str(count), "success" if count else "muted")
+
+
+def _rssi_item(value: Any) -> dict[str, Any]:
+    """Format Wi-Fi RSSI and assign good, fair, or weak signal coloring."""
+    rssi = _number(value)
+    if rssi is None:
+        return _status_item("esp_rssi", "Wi-Fi signal", "Unavailable", "muted")
+    tone = "success" if rssi >= -67 else "warning" if rssi >= -75 else "error"
+    return _status_item("esp_rssi", "Wi-Fi signal", f"{rssi:g} dBm", tone)
+
+
+def _parse_unifi_gateway_url(value: str) -> tuple[str, str, int]:
+    """
+    Validate and normalize a local UniFi HTTPS gateway URL.
+
+    :param value: User-entered hostname, address, or HTTPS URL.
+    :return: Tuple of normalized URL, host, and explicit/default HTTPS port.
+    :raises ValueError: If credentials, paths, unsupported schemes, or an
+        invalid/missing host or port are supplied.
+    """
+    candidate = str(value or "").strip()
+    if not candidate:
+        raise ValueError("Enter the UniFi gateway URL.")
+    if "://" not in candidate:
+        candidate = f"https://{candidate}"
+    parsed = urlsplit(candidate)
+    if parsed.scheme.lower() != "https":
+        raise ValueError("The UniFi gateway URL must use HTTPS.")
+    if parsed.username or parsed.password:
+        raise ValueError("Do not include credentials in the UniFi gateway URL.")
+    if (
+        not parsed.hostname
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Enter only the UniFi gateway origin, without a path or query.")
+    try:
+        port = parsed.port or 443
+    except ValueError as exc:
+        raise ValueError("Enter a valid UniFi gateway port.") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("Enter a valid UniFi gateway port.")
+    host = parsed.hostname
+    display_host = f"[{host}]" if ":" in host else host
+    normalized = f"https://{display_host}" + (f":{port}" if port != 443 else "")
+    return normalized, host, port
+
+
+def _unifi_client_key(client: dict[str, Any]) -> str:
+    """Return a stable per-client key for UniFi byte-counter sampling."""
+    mac = "".join(
+        character
+        for character in str(client.get("mac") or "").lower()
+        if character.isalnum()
+    )
+    if len(mac) == 12:
+        return f"mac:{mac}"
+    ip = str(client.get("ip") or "").strip()
+    return f"ip:{ip}" if ip else ""
+
+
+def _nonnegative_number(value: Any) -> float | None:
+    """Return a finite non-negative number for a UniFi byte counter."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _counter_delta_rate(
+    previous: float,
+    current: float,
+    elapsed: float,
+) -> float | None:
+    """Return counter units per second, or ``None`` after a device reset."""
+    delta = current - previous
+    return delta / elapsed if delta >= 0 else None
+
+
+def _client_list(value: Any) -> str:
+    """Format a client collection as a readable multi-line value."""
+    if value is None:
+        return "Unavailable"
+    if not isinstance(value, (list, tuple)) or not value:
+        return "None"
+    lines = []
+    for client in value:
+        if isinstance(client, dict):
+            address = client.get("sta_mac") or client.get("ip") or "Unknown client"
+            rssi = _number(client.get("sta_rssi"))
+            lines.append(f"{address} ({rssi:g} dBm)" if rssi is not None else str(address))
+        else:
+            lines.append(str(client))
+    return "\n".join(lines)
+
+
+def _power_item(value: Any) -> dict[str, Any]:
+    """Translate the flight-controller power-state API values."""
+    if value in (None, ""):
+        return _status_item("fc_pw_state", "Power", "Unavailable", "muted")
+    number = _number(value)
+    if number == 1:
+        return _status_item("fc_pw_state", "Power", "Powered", "success")
+    if number == 0:
+        return _status_item("fc_pw_state", "Power", "Unpowered", "warning")
+    if number == -1:
+        return _status_item("fc_pw_state", "Power", "Disabled", "muted")
+    return _status_item("fc_pw_state", "Power", f"Unknown ({value})", "muted")
+
+
+def _armed_item(value: Any) -> dict[str, Any]:
+    """Translate the flight-controller armed-state API values."""
+    if value in (None, ""):
+        return _status_item(
+            "fc_armed_state",
+            "Armed state",
+            "Unavailable",
+            "muted",
+        )
+    number = _number(value)
+    if number == 1:
+        return _status_item("fc_armed_state", "Armed state", "Armed", "warning")
+    if number == 0:
+        return _status_item("fc_armed_state", "Armed state", "Disarmed", "success")
+    if number is not None and number < 0:
+        return _status_item("fc_armed_state", "Armed state", "Not received", "muted")
+    return _status_item("fc_armed_state", "Armed state", f"Unknown ({value})", "muted")
+
+
+def _system_id(value: Any) -> str:
+    """Format a valid MAVLink system ID or its not-received state."""
+    if value in (None, ""):
+        return "Unavailable"
+    number = _number(value)
+    if number is not None and number.is_integer() and 1 <= number <= 255:
+        return str(int(number))
+    return "Not received" if number == -1 else f"Unknown ({value})"
+
+
+def _loss_value(received_value: Any, lost_value: Any) -> str:
+    """Format lost MAVLink messages as an absolute count and percentage."""
+    received = _number(received_value)
+    lost = _number(lost_value)
+    if received is None or lost is None or received < 0 or lost < 0:
+        return "Unavailable"
+    total = received + lost
+    percentage = 0.0 if total == 0 else lost / total * 100
+    return f"{int(lost):,} ({percentage:.2f}%)"
+
+
+def _firmware_display(record: DeviceRecord, info: dict[str, Any]) -> str:
+    """Combine semantic firmware components into one readable version label."""
+    parts = [
+        _number(info.get("major_version")),
+        _number(info.get("minor_version")),
+        _number(info.get("patch_version")),
+    ]
+    if all(part is not None and part.is_integer() for part in parts):
+        version = ".".join(str(int(part)) for part in parts)
+        maturity = str(info.get("maturity_version") or "").strip()
+        return f"{version} {maturity}".strip()
+    return record.firmware_version or "Unavailable"
+
+
+def _chip_display(record: DeviceRecord, info: dict[str, Any]) -> str:
+    """Return a user-facing ESP32 model name from known API chip identifiers."""
+    chip_id = _number(info.get("esp_chip_model"))
+    names = {5: "ESP32-C3", 13: "ESP32-C6", 23: "ESP32-C5"}
+    if chip_id is not None and chip_id.is_integer() and int(chip_id) in names:
+        return names[int(chip_id)]
+    return record.chip.replace("ESP32C", "ESP32-C") if record.chip else "Unavailable"
+
+
+def _metric_groups(record: DeviceRecord) -> list[dict[str, Any]]:
+    """Create the ordered grouped metrics dashboard model for one device."""
+    stats = record.stats
+    info = record.system_info
+    rate_unavailable = "Unavailable" if not record.online else "Calculating…"
+    read_rate = record.stats_rates.get("read_bytes")
+    sent_rate = record.stats_rates.get("serial_bytes_sent")
+
+    online = _status_item(
+        "online",
+        "Status",
+        "Online" if record.online else "Offline",
+        "success" if record.online else "error",
+    )
+    connection_items = [
+        online,
+        _metric_item("ip", "Device IP", record.ip or "Unavailable"),
+        _metric_item("hostname", "Hostname", record.hostname or "Unavailable"),
+        _metric_item("source", "Discovered via", record.source or "Unavailable"),
+        _connection_count_item("tcp_connected", "TCP clients", stats.get("tcp_connected")),
+        _connection_count_item("udp_connected", "UDP destinations", stats.get("udp_connected")),
+        _metric_item(
+            "current_client_ip",
+            "Client IP",
+            str(stats.get("current_client_ip") or "Unavailable"),
+        ),
+        _rssi_item(stats.get("esp_rssi", stats.get("sta_rssi"))),
+        _metric_item(
+            "udp_clients",
+            "UDP clients",
+            _client_list(stats.get("udp_clients")),
+            wide=True,
+        ),
+    ]
+    if "connected_sta" in stats:
+        connection_items.append(
+            _metric_item(
+                "connected_sta",
+                "Connected stations",
+                _client_list(stats.get("connected_sta")),
+                wide=True,
+            )
+        )
+
+    serial_items = [
+        _metric_item("read_bytes", "FC → ESP32 total", _format_bytes(stats.get("read_bytes"))),
+        _metric_item(
+            "read_rate",
+            "FC → ESP32 rate",
+            _format_bytes(read_rate, per_second=True)
+            if read_rate is not None and record.online
+            else rate_unavailable,
+        ),
+        _metric_item(
+            "serial_bytes_sent",
+            "ESP32 → FC total",
+            _format_bytes(stats.get("serial_bytes_sent")),
+        ),
+        _metric_item(
+            "sent_rate",
+            "ESP32 → FC rate",
+            _format_bytes(sent_rate, per_second=True)
+            if sent_rate is not None and record.online
+            else rate_unavailable,
+        ),
+        _metric_item(
+            "serial_mav_msgs_received",
+            "Messages received",
+            _format_count(stats.get("serial_mav_msgs_received")),
+        ),
+        _metric_item(
+            "serial_mav_msgs_lost",
+            "Messages lost",
+            _loss_value(
+                stats.get("serial_mav_msgs_received"),
+                stats.get("serial_mav_msgs_lost"),
+            ),
+            tone="error" if (_number(stats.get("serial_mav_msgs_lost")) or 0) > 0 else "neutral",
+        ),
+    ]
+
+    voltage = _number(stats.get("battery_voltage"))
+    battery_voltage = (
+        "Unavailable"
+        if voltage is None or voltage == 65535
+        else _format_measurement(voltage, "V")
+    )
+    flight_items = [
+        _power_item(stats.get("fc_pw_state")),
+        _armed_item(stats.get("fc_armed_state")),
+        _metric_item("fc_sysid", "MAVLink system ID", _system_id(stats.get("fc_sysid"))),
+        _metric_item("battery_voltage", "Battery voltage", battery_voltage),
+        _metric_item(
+            "battery_current",
+            "Battery current",
+            _format_measurement(stats.get("battery_current"), "A"),
+        ),
+    ]
+
+    cpu = _number(stats.get("cpu_load"))
+    cpu_percent = cpu / 100 if cpu is not None and cpu >= 0 else None
+    cpu_tone = "muted"
+    if cpu_percent is not None:
+        cpu_tone = "error" if cpu_percent >= 85 else "warning" if cpu_percent >= 70 else "success"
+    health_items = [
+        _status_item(
+            "cpu_load",
+            "CPU load",
+            f"{cpu_percent:.2f}%" if cpu_percent is not None else "Unavailable",
+            cpu_tone,
+        )
+    ]
+
+    chip_name = _chip_display(record, info)
+    firmware_items = [
+        _metric_item(
+            "firmware",
+            "Firmware",
+            _firmware_display(record, info),
+            wide=True,
+        ),
+        _metric_item("db_build_version", "Build", record.dronebridge_version or "Unavailable"),
+        _metric_item("idf_version", "ESP-IDF", str(info.get("idf_version") or "Unavailable")),
+        _metric_item("esp_chip_model", "Chip", chip_name),
+        _binary_status("has_rf_switch", "RF switch", info.get("has_rf_switch")),
+        _binary_status("serial_via_JTAG", "Serial via JTAG", info.get("serial_via_JTAG")),
+        _metric_item(
+            "esp_mac",
+            "MAC address",
+            str(info.get("esp_mac") or record.mac or "Unavailable"),
+            wide=True,
+        ),
+    ]
+
+    license_type = str(info.get("license_type") or record.activation_status or "Unavailable")
+    license_tone = (
+        "success"
+        if license_type.upper() == "ACTIVATED"
+        else "warning"
+        if license_type.upper() == "EVALUATION"
+        else "muted"
+    )
+    license_items = [
+        _status_item("license_type", "License type", license_type, license_tone),
+        _metric_item(
+            "expiration_date",
+            "Expires",
+            str(info.get("expiration_date") or "Unavailable"),
+        ),
+        _metric_item(
+            "activation_key",
+            "Activation key",
+            str(
+                info.get("activation_key")
+                or info.get("key")
+                or record.activation_key
+                or "Unavailable"
+            ),
+            wide=True,
+        ),
+    ]
+
+    groups = [
+        {"id": "connection", "title": "CONNECTION", "items": connection_items},
+        {"id": "serial", "title": "SERIAL & MAVLINK", "items": serial_items},
+        {"id": "flight_controller", "title": "FLIGHT CONTROLLER", "items": flight_items},
+        {"id": "health", "title": "DEVICE HEALTH", "items": health_items},
+        {"id": "firmware", "title": "FIRMWARE & HARDWARE", "items": firmware_items},
+        {"id": "license", "title": "LICENSE", "items": license_items},
+    ]
+
+    other_items = [
+        _metric_item(
+            f"system.{key}",
+            f"System · {str(key).replace('_', ' ').title()}",
+            _format_unknown(value),
+            wide=isinstance(value, (dict, list, tuple)),
+        )
+        for key, value in sorted(info.items())
+        if key not in KNOWN_SYSTEM_METRICS
+    ]
+    other_items.extend(
+        _metric_item(
+            f"runtime.{key}",
+            f"Runtime · {str(key).replace('_', ' ').title()}",
+            _format_unknown(value),
+            wide=isinstance(value, (dict, list, tuple)),
+        )
+        for key, value in sorted(stats.items())
+        if key not in KNOWN_RUNTIME_METRICS
+    )
+    if other_items:
+        groups.append({"id": "other", "title": "OTHER", "items": other_items})
+    return groups
+
+
+class FleetController(QObject):
+    """Coordinate QML state, persisted preferences, and background workflows."""
+
+    stateChanged = Signal()
+    inspectorChanged = Signal()
+    webUrlChanged = Signal()
+    columnsChanged = Signal()
+    inspectorWidthChanged = Signal()
+    scanSettingsChanged = Signal()
+    csvTemplateChanged = Signal()
+    csvTemplateReady = Signal()
+    otaReleasesChanged = Signal()
+    toastRequested = Signal(str, str)
+    resultReady = Signal(str, str, bool)
+
+    def __init__(self) -> None:
+        """Create fleet models, timers, settings, and operation state."""
+        super().__init__()
+        self.settings = QSettings("DroneBridge", "DLSECommercialSupportSuite")
+        self.pool = QThreadPool.globalInstance()
+        self.source_model = DeviceTableModel()
+        self.fleet_model = DeviceFilterProxyModel()
+        self.fleet_model.setSourceModel(self.source_model)
+        self.card_model = DeviceCardModel(self.fleet_model)
+
+        self._scanning_enabled = False
+        self._scan_running = False
+        self._discovery_status = "STOPPED"
+        self._stats_poll_running = False
+        self._stats_worker: StatsPollingWorker | None = None
+        self._system_info_refresh_worker: SystemInfoRefreshWorker | None = None
+        self._settings_refresh_worker: SettingsRefreshWorker | None = None
+        self._pending_settings_refresh: dict[str, str] = {}
+        self._stats_round_started_at = 0.0
+        self._stats_polling_status = (
+            "WAITING" if self._scan_values()["stats_enabled"] else "DISABLED"
+        )
+        self._fleet_generation = 0
+        self._license_check_running = False
+        self._license_status = "unknown"
+        self._unifi_poll_running = False
+        self._unifi_worker: UnifiPollingWorker | None = None
+        self._unifi_generation = 0
+        self._unifi_byte_samples: dict[str, tuple[float, float, float]] = {}
+        unifi_settings = self._unifi_values()
+        if not unifi_settings["enabled"]:
+            self._unifi_status = "DISABLED"
+        elif not unifi_settings["api_token"]:
+            self._unifi_status = "NOT CONFIGURED"
+        else:
+            self._unifi_status = "WAITING"
+        self._status_text = "IDLE"
+        self._active_worker: Any = None
+        self._active_operation = ""
+        self._active_targets: set[str] = set()
+        self._inspected_identity = ""
+        self._last_web_url = ""
+        self._setting_edits: dict[str, Any] = {}
+        self._csv_template: dict[str, Any] = {}
+        self._failed_identities: set[str] = set()
+        self._retry_context: tuple[str, dict[str, Any]] | None = None
+        self._ota_releases: list[dict[str, Any]] = []
+        self._ota_release_lookup: dict[str, dict[str, Any]] = {}
+        self._ota_release_status = "Not loaded"
+        self._ota_release_refresh_running = False
+        self._ota_pending_options: dict[str, Any] | None = None
+
+        self.source_model.inventoryChanged.connect(self._inventory_changed)
+        self.source_model.selectionChanged.connect(self.stateChanged)
+        self._restore_columns()
+
+        self.scan_timer = QTimer(self)
+        self.scan_timer.timeout.connect(self.startScan)
+        self._restart_scan_timer()
+        self.stats_timer = QTimer(self)
+        self.stats_timer.setSingleShot(True)
+        self.stats_timer.timeout.connect(self.startStatsPolling)
+        if self._scan_values()["stats_enabled"]:
+            self.stats_timer.start(self._scan_values()["stats_interval"] * 1000)
+        self.settings_refresh_timer = QTimer(self)
+        self.settings_refresh_timer.setSingleShot(True)
+        self.settings_refresh_timer.timeout.connect(self._start_settings_refresh)
+        self.license_timer = QTimer(self)
+        self.license_timer.setInterval(30_000)
+        self.license_timer.timeout.connect(self.checkLicenseServer)
+        self.license_timer.start()
+        self.unifi_timer = QTimer(self)
+        self.unifi_timer.setSingleShot(True)
+        self.unifi_timer.timeout.connect(self.startUnifiPolling)
+        self._schedule_next_unifi_poll()
+        QTimer.singleShot(250, self.checkLicenseServer)
+        QTimer.singleShot(350, self.startUnifiPolling)
+
+    @Property(str, constant=True)
+    def suiteVersion(self) -> str:
+        """Return the installed suite version or ``local``."""
+        try:
+            return version("DLSECommercialSupportSuite")
+        except PackageNotFoundError:
+            return "local"
+
+    @Property(bool, notify=stateChanged)
+    def scanning(self) -> bool:
+        """Return whether recurring discovery is enabled."""
+        return self._scanning_enabled
+
+    @Property(bool, notify=stateChanged)
+    def scanRunning(self) -> bool:
+        """Return whether a discovery pass is currently active."""
+        return self._scan_running
+
+    @Property(str, notify=stateChanged)
+    def discoveryStatus(self) -> str:
+        """Return ``STOPPED``, ``WAITING``, ``SCANNING``, or ``ERROR``."""
+        return self._discovery_status
+
+    @Property(str, notify=stateChanged)
+    def statsPollingStatus(self) -> str:
+        """Return ``DISABLED``, ``WAITING``, ``POLLING``, or ``ERROR``."""
+        return self._stats_polling_status
+
+    @Property(str, notify=stateChanged)
+    def statusText(self) -> str:
+        """Return the concise fleet status shown in the footer."""
+        return self._status_text
+
+    @Property(str, notify=stateChanged)
+    def licenseStatus(self) -> str:
+        """Return ``online``, ``offline``, ``checking``, or ``unknown``."""
+        return self._license_status
+
+    @Property(str, notify=stateChanged)
+    def unifiStatus(self) -> str:
+        """Return the current UniFi connection state for the footer."""
+        return self._unifi_status
+
+    @Property(int, notify=stateChanged)
+    def detectedCount(self) -> int:
+        """Return the number of retained session devices."""
+        return self.source_model.rowCount()
+
+    @Property(int, notify=stateChanged)
+    def visibleCount(self) -> int:
+        """Return the number of devices accepted by the current filter."""
+        return self.fleet_model.rowCount()
+
+    @Property(int, notify=stateChanged)
+    def selectedCount(self) -> int:
+        """Return the number of explicitly selected devices."""
+        return len(self.source_model.selected_records())
+
+    @Property(int, notify=stateChanged)
+    def eligibleSysIdAlignmentCount(self) -> int:
+        """Return selected devices licensed for the SYS ID alignment operation."""
+        return len(self._sys_id_alignment_records())
+
+    @Property(int, notify=stateChanged)
+    def ineligibleSysIdAlignmentCount(self) -> int:
+        """Return selected devices excluded from SYS ID alignment by license status."""
+        return self.selectedCount - self.eligibleSysIdAlignmentCount
+
+    @Property(int, notify=stateChanged)
+    def selectedVisibleStaticIpCount(self) -> int:
+        """Return selected devices currently visible in the filtered table."""
+        return len(self._selected_visible_records())
+
+    @Property(int, notify=stateChanged)
+    def eligibleStaticIpCount(self) -> int:
+        """Return visible selected devices eligible for static-IP assignment."""
+        return len(self._static_ip_records())
+
+    @Property(int, notify=stateChanged)
+    def ineligibleStaticIpCount(self) -> int:
+        """Return visible selected devices excluded by license status."""
+        return self.selectedVisibleStaticIpCount - self.eligibleStaticIpCount
+
+    @Property(int, notify=stateChanged)
+    def filteredStaticIpCount(self) -> int:
+        """Return selected devices hidden by the current table filter."""
+        return max(0, self.selectedCount - self.selectedVisibleStaticIpCount)
+
+    @Property(str, notify=stateChanged)
+    def activeOperation(self) -> str:
+        """Return the currently active fleet operation name."""
+        return self._active_operation
+
+    @Property(bool, notify=stateChanged)
+    def canCancel(self) -> bool:
+        """Return whether the active worker supports queued-work cancellation."""
+        return callable(getattr(self._active_worker, "cancel", None))
+
+    @Property(str, notify=stateChanged)
+    def environmentToken(self) -> str:
+        """Return the session-only token supplied through the environment."""
+        return os.environ.get("DRONEBRIDGE_SECRET_TOKEN", "")
+
+    @Property("QVariantList", notify=otaReleasesChanged)
+    def otaReleases(self) -> list[dict[str, Any]]:
+        """Return UI-safe cached and online release choices for OTA updates."""
+        visible_releases = []
+        for option in self._ota_releases:
+            visible_releases.append({
+                key: value
+                for key, value in option.items()
+                if key != "release"
+            })
+        return visible_releases
+
+    @Property(str, notify=otaReleasesChanged)
+    def otaReleaseStatus(self) -> str:
+        """Return the current release-listing or release-preflight status."""
+        return self._ota_release_status
+
+    @Property("QVariantMap", notify=scanSettingsChanged)
+    def scanSettings(self) -> dict[str, Any]:
+        """Return persisted discovery settings with field-safe defaults."""
+        unifi = self._unifi_values()
+        return {
+            **self._scan_values(),
+            "unifi_enabled": unifi["enabled"],
+            "unifi_gateway_url": unifi["gateway_url"],
+            "unifi_api_token": unifi["api_token"],
+            "unifi_site": unifi["site"],
+            "unifi_verify_tls": unifi["verify_tls"],
+        }
+
+    @Property("QVariantList", notify=columnsChanged)
+    def columns(self) -> list[dict[str, Any]]:
+        """Return ordered configurable column metadata for the QML dialog."""
+        visible_keys = self.source_model.visible_column_keys()
+        visible = set(visible_keys)
+        ordered_keys = visible_keys + [
+            key
+            for key, _title, _width in DeviceTableModel.COLUMNS
+            if key not in visible
+        ]
+        definitions = {
+            key: (title, width)
+            for key, title, width in DeviceTableModel.COLUMNS
+        }
+        return [
+            {
+                "key": key,
+                "title": definitions[key][0],
+                "width": self._column_width_for_key(key),
+                "visible": key in visible,
+                "canMoveUp": key in visible and visible_keys.index(key) > 0,
+                "canMoveDown": (
+                    key in visible
+                    and visible_keys.index(key) < len(visible_keys) - 1
+                ),
+            }
+            for key in ordered_keys
+        ]
+
+    @Property("QVariantMap", notify=inspectorChanged)
+    def selectedDevice(self) -> dict[str, Any]:
+        """Return complete flattened data for the inspected device."""
+        record = self._inspected_record()
+        if record is None:
+            return {}
+        return {
+            "identity": record.identity,
+            "ip": record.ip,
+            "hostname": record.hostname,
+            "activationStatus": record.activation_status,
+            "firmwareVersion": record.firmware_version,
+            "chip": record.chip,
+            "dronebridgeVersion": record.dronebridge_version,
+            "mavlinkSysId": record.mavlink_sys_id,
+            "fcSysId": record.fc_sys_id,
+            "wifiSsid": record.wifi_ssid,
+            "wifiChannel": record.wifi_channel,
+            "rssi": record.rssi,
+            "apRssi": record.ap_rssi,
+            "apChannel": record.ap_channel,
+            "apBand": record.ap_band,
+            "apWifiStandard": record.ap_wifi_standard,
+            "apLiveThroughput": record.ap_live_throughput,
+            "apRxRate": record.ap_rx_rate,
+            "apTxRate": record.ap_tx_rate,
+            "apSignalBalance": record.ap_signal_balance,
+            "batteryVoltage": record.battery_voltage,
+            "activationKey": record.activation_key,
+            "mac": record.mac,
+            "source": record.source,
+            "online": record.online,
+            "operation": record.operation,
+            "operationProgress": record.operation_progress,
+            "systemInfo": record.system_info,
+            "settings": record.settings,
+            "stats": record.stats,
+            "apMetrics": record.ap_metrics,
+            "errors": record.errors,
+        }
+
+    @Property(str, notify=inspectorChanged)
+    def inspectedIdentity(self) -> str:
+        """Return the stable identity currently shown in the inspector."""
+        return self._inspected_identity
+
+    @Property("QVariantList", notify=inspectorChanged)
+    def settingsFields(self) -> list[dict[str, Any]]:
+        """Return typed, dirty-aware setting editor definitions."""
+        record = self._inspected_record()
+        if record is None:
+            return []
+        fields = []
+        for key in sorted(record.settings):
+            if key == "data_types":
+                continue
+            original = record.settings[key]
+            current = self._setting_edits.get(key, original)
+            fields.append(
+                {
+                    "key": key,
+                    "label": key,
+                    "value": current,
+                    "original": original,
+                    "metadataType": str(record.settings.get(f"{key}_type", "")),
+                    "editor": self._editor_type(key, original),
+                    "dirty": current != original,
+                }
+            )
+        return fields
+
+    @Property("QVariantList", notify=inspectorChanged)
+    def metrics(self) -> list[dict[str, Any]]:
+        """Return grouped, display-ready device metrics for the inspector."""
+        record = self._inspected_record()
+        if record is None:
+            return []
+        return _metric_groups(record)
+
+    @Property(str, notify=webUrlChanged)
+    def webUrl(self) -> str:
+        """Return the selected online device web-interface URL."""
+        record = self._inspected_record()
+        return f"http://{record.ip}" if record and record.online and record.ip else ""
+
+    @Property(int, notify=inspectorWidthChanged)
+    def inspectorWidth(self) -> int:
+        """Return the persisted right-side configuration panel width."""
+        return self._inspector_width()
+
+    @Property("QVariantList", notify=csvTemplateChanged)
+    def csvParameters(self) -> list[dict[str, Any]]:
+        """Return imported template parameters and default exclusions."""
+        multi_device = len(self._target_records("selected_or_visible")) > 1
+        defaults = DEFAULT_BULK_EXCLUSIONS if multi_device else set()
+        return [
+            {
+                "key": key,
+                "value": str(value),
+                "excluded": key in defaults,
+            }
+            for key, value in sorted(self._csv_template.items())
+        ]
+
+    @Slot()
+    def toggleScanning(self) -> None:
+        """Start or stop recurring non-overlapping discovery."""
+        self._scanning_enabled = not self._scanning_enabled
+        self._status_text = "SCANNING..." if self._scanning_enabled else "STOPPED"
+        if not self._scanning_enabled and not self._scan_running:
+            self._discovery_status = "STOPPED"
+        self.stateChanged.emit()
+        if self._scanning_enabled:
+            self.startScan()
+
+    @Slot()
+    def startScan(self) -> None:
+        """Start one discovery pass when scanning is enabled and idle."""
+        if not self._scanning_enabled or self._scan_running:
+            return
+        values = self._scan_values()
+        self._scan_running = True
+        self._discovery_status = "SCANNING"
+        self._status_text = "SCANNING..."
+        self.stateChanged.emit()
+        worker = DiscoveryWorker(
+            values["subnet"],
+            values["mavlink"],
+            values["http"],
+            values["esp32_port"],
+            values["local_port"],
+            values["http_timeout"],
+            values["workers"],
+        )
+        worker.signals.finished.connect(self._scan_finished)
+        worker.signals.progress.connect(self._scan_progress)
+        worker.signals.error.connect(self._scan_failed)
+        self.pool.start(worker)
+
+    @Slot()
+    def startStatsPolling(self) -> None:
+        """
+        Start one bounded stats round when retained devices are available.
+
+        :return: None. Calls made during an active round are ignored; an empty
+            fleet reschedules the next check without creating a worker.
+        """
+        values = self._scan_values()
+        if not values["stats_enabled"]:
+            self.stats_timer.stop()
+            self._stats_polling_status = "DISABLED"
+            self.stateChanged.emit()
+            return
+        if self._stats_poll_running:
+            return
+        records = self.source_model.all_records()
+        if not records:
+            self._stats_polling_status = "WAITING"
+            self.stats_timer.start(values["stats_interval"] * 1000)
+            self.stateChanged.emit()
+            return
+        generation = self._fleet_generation
+        worker = StatsPollingWorker(
+            records,
+            timeout=values["stats_timeout"],
+            workers=values["stats_workers"],
+        )
+        self.stats_timer.stop()
+        self._stats_poll_running = True
+        self._stats_worker = worker
+        self._stats_round_started_at = monotonic()
+        self._stats_polling_status = "POLLING"
+        worker.signals.progress.connect(
+            lambda payload, active_generation=generation:
+                self._stats_progress(payload, active_generation)
+        )
+        worker.signals.finished.connect(
+            lambda results, active_generation=generation:
+                self._stats_finished(results, active_generation)
+        )
+        worker.signals.error.connect(
+            lambda message, active_generation=generation:
+                self._stats_failed(message, active_generation)
+        )
+        self.stateChanged.emit()
+        self.pool.start(worker)
+
+    @Slot(
+        str,
+        bool,
+        bool,
+        int,
+        int,
+        int,
+        float,
+        int,
+        bool,
+        int,
+        float,
+        int,
+        int,
+        bool,
+        str,
+        str,
+        str,
+        bool,
+        result=bool,
+    )
+    def saveScanSettings(
+        self,
+        subnet: str,
+        mavlink_enabled: bool,
+        http_enabled: bool,
+        esp32_port: int,
+        local_port: int,
+        interval: int,
+        http_timeout: float,
+        workers: int,
+        stats_enabled: bool,
+        stats_interval: int,
+        stats_timeout: float,
+        stats_workers: int,
+        stats_failure_threshold: int,
+        unifi_enabled: bool = False,
+        unifi_gateway_url: str = DEFAULT_UNIFI_GATEWAY_URL,
+        unifi_api_token: str = "",
+        unifi_site: str = "default",
+        unifi_verify_tls: bool = False,
+    ) -> bool:
+        """
+        Validate, persist, and apply discovery, stats, and UniFi settings.
+
+        :return: ``True`` when all settings were accepted. Validation failures
+            emit a user-facing toast and preserve the previous configuration.
+        """
+        try:
+            network = ipaddress.ip_network(subnet.strip(), strict=False)
+        except ValueError:
+            self.toastRequested.emit("error", "Enter a valid IPv4 CIDR subnet.")
+            return False
+        if network.version != 4:
+            self.toastRequested.emit("error", "Only IPv4 discovery ranges are supported.")
+            return False
+        if network.num_addresses > 65536:
+            self.toastRequested.emit(
+                "error",
+                "The discovery range is too large. Use an IPv4 /16 or smaller range.",
+            )
+            return False
+        if not (mavlink_enabled or http_enabled):
+            self.toastRequested.emit("error", "Enable MAVLink or HTTP discovery.")
+            return False
+        if not 1 <= esp32_port <= 65535 or not 1 <= local_port <= 65535:
+            self.toastRequested.emit("error", "Ports must be between 1 and 65535.")
+            return False
+        api_token = unifi_api_token.strip()
+        site = unifi_site.strip() or "default"
+        try:
+            gateway_url, _host, _port = _parse_unifi_gateway_url(
+                unifi_gateway_url or DEFAULT_UNIFI_GATEWAY_URL
+            )
+        except ValueError as exc:
+            self.toastRequested.emit("error", str(exc))
+            return False
+        if unifi_enabled and not api_token:
+            self.toastRequested.emit("error", "Enter a UniFi API token.")
+            return False
+        if any(character in site for character in "/?#"):
+            self.toastRequested.emit("error", "Enter a valid UniFi site name.")
+            return False
+        values = {
+            "subnet": str(network),
+            "mavlink": mavlink_enabled,
+            "http": http_enabled,
+            "esp32_port": esp32_port,
+            "local_port": local_port,
+            "interval": max(5, min(interval, 3600)),
+            "http_timeout": max(0.1, min(http_timeout, 30.0)),
+            "workers": max(1, min(workers, 64)),
+            "stats_enabled": stats_enabled,
+            "stats_interval": max(1, min(stats_interval, 3600)),
+            "stats_timeout": max(0.1, min(stats_timeout, 30.0)),
+            "stats_workers": max(1, min(stats_workers, 64)),
+            "stats_failure_threshold": max(
+                1,
+                min(stats_failure_threshold, 20),
+            ),
+        }
+        was_stats_enabled = self._scan_values()["stats_enabled"]
+        for key, value in values.items():
+            self.settings.setValue(f"scan/{key}", value)
+        self.settings.setValue("unifi/enabled", unifi_enabled)
+        self.settings.setValue("unifi/gateway_url", gateway_url)
+        self.settings.setValue("unifi/api_token", api_token)
+        self.settings.setValue("unifi/site", site)
+        self.settings.setValue("unifi/verify_tls", unifi_verify_tls)
+        self._restart_scan_timer()
+        if not stats_enabled:
+            self._fleet_generation += 1
+            if self._stats_worker is not None:
+                self._stats_worker.cancel()
+            self._stats_poll_running = False
+            self._stats_worker = None
+            self.stats_timer.stop()
+            self._stats_polling_status = "DISABLED"
+        elif not was_stats_enabled:
+            self._stats_polling_status = "WAITING"
+            self.startStatsPolling()
+        elif not self._stats_poll_running:
+            self._stats_polling_status = "WAITING"
+            self._schedule_next_stats_round()
+        self.unifi_timer.stop()
+        self._unifi_generation += 1
+        self._unifi_poll_running = False
+        self._unifi_worker = None
+        self._unifi_byte_samples.clear()
+        if unifi_enabled:
+            self._unifi_status = "WAITING"
+            self.startUnifiPolling()
+        else:
+            self._unifi_status = "DISABLED"
+            self.source_model.apply_ap_clients([])
+        self.scanSettingsChanged.emit()
+        self.stateChanged.emit()
+        return True
+
+    @Slot(str)
+    def setSearchText(self, text: str) -> None:
+        """Apply full-record filtering to both fleet views."""
+        self.fleet_model.setFilterText(text)
+        self.stateChanged.emit()
+
+    @Slot(int, bool)
+    def sortByColumn(self, column: int, ascending: bool) -> None:
+        """Sort the visible table by one projected column."""
+        order = Qt.AscendingOrder if ascending else Qt.DescendingOrder
+        self.fleet_model.sort(column, order)
+
+    @Slot(int, result=int)
+    def columnWidth(self, column: int) -> int:
+        """Return the preferred width for one projected table column."""
+        return self._column_width_for_key(self.source_model.column_key(column))
+
+    @Slot(int, int, result=int)
+    def setColumnWidth(self, column: int, width: int) -> int:
+        """Persist one manually resized visible data-column width and return it."""
+        key = self.source_model.column_key(column)
+        if key == "selected" or self.source_model.column_definition(key) is None:
+            return self.columnWidth(column)
+        try:
+            requested = int(width)
+        except (TypeError, ValueError):
+            requested = self._default_column_width(key)
+        bounded = max(MIN_COLUMN_WIDTH, min(MAX_COLUMN_WIDTH, requested))
+        default_width = self._default_column_width(key)
+        if bounded == default_width:
+            self.settings.remove(f"columns/width/{key}")
+        else:
+            self.settings.setValue(f"columns/width/{key}", bounded)
+        self.columnsChanged.emit()
+        return bounded
+
+    @Slot(int, result=int)
+    def resetColumnWidth(self, column: int) -> int:
+        """Reset one visible data-column width to its default value."""
+        key = self.source_model.column_key(column)
+        if key != "selected":
+            self.settings.remove(f"columns/width/{key}")
+            self.columnsChanged.emit()
+        return self.columnWidth(column)
+
+    @Slot()
+    def resetColumnWidths(self) -> None:
+        """Remove all persisted fleet-table data-column widths."""
+        for key, _title, _width in DeviceTableModel.COLUMNS:
+            self.settings.remove(f"columns/width/{key}")
+        self.columnsChanged.emit()
+
+    @Slot(int, result=int)
+    def setInspectorWidth(self, width: int) -> int:
+        """Persist a bounded right-side configuration panel width and return it."""
+        try:
+            requested = int(width)
+        except (TypeError, ValueError):
+            requested = DEFAULT_INSPECTOR_WIDTH
+        bounded = max(MIN_INSPECTOR_WIDTH, min(MAX_INSPECTOR_WIDTH, requested))
+        self.settings.setValue("inspector/width", bounded)
+        self.inspectorWidthChanged.emit()
+        return bounded
+
+    @Slot(result=int)
+    def resetInspectorWidth(self) -> int:
+        """Reset the right-side configuration panel width to its default."""
+        self.settings.remove("inspector/width")
+        self.inspectorWidthChanged.emit()
+        return self.inspectorWidth
+
+    @Slot(str, bool)
+    def setColumnVisible(self, key: str, visible: bool) -> None:
+        """Persist one column visibility choice while preserving custom order."""
+        keys = self.source_model.visible_column_keys()
+        if visible and key not in keys:
+            keys.append(key)
+        elif not visible and key in keys and len(keys) > 1:
+            keys.remove(key)
+        self._apply_visible_columns(keys)
+
+    @Slot(str, int)
+    def moveColumn(self, key: str, offset: int) -> None:
+        """Move one visible data column by a bounded offset and persist the order."""
+        keys = self.source_model.visible_column_keys()
+        if key not in keys or offset == 0:
+            return
+        index = keys.index(key)
+        target = max(0, min(len(keys) - 1, index + offset))
+        if target == index:
+            return
+        keys.pop(index)
+        keys.insert(target, key)
+        self._apply_visible_columns(keys)
+
+    @Slot("QVariantList")
+    def setColumnOrder(self, keys: list[Any]) -> None:
+        """
+        Persist an absolute order for the currently visible data columns.
+
+        :param keys: Stable column keys in the desired visible order. Unknown,
+            hidden, and duplicate keys are ignored; currently visible keys not
+            included in the request keep their previous relative order.
+        :return: None. No change is emitted when the normalized order is
+            identical to the existing projection.
+        """
+        visible_keys = self.source_model.visible_column_keys()
+        visible = set(visible_keys)
+        ordered = []
+        for key in keys:
+            key = str(key)
+            if key in visible and key not in ordered:
+                ordered.append(key)
+        ordered.extend(key for key in visible_keys if key not in ordered)
+        if ordered == visible_keys:
+            return
+        self._apply_visible_columns(ordered)
+
+    @Slot(str)
+    def inspectDevice(self, identity: str) -> None:
+        """Select one device as the inspector data source."""
+        if identity == self._inspected_identity:
+            return
+        self._inspected_identity = identity
+        self._setting_edits.clear()
+        self._emit_web_url_if_changed()
+        self.inspectorChanged.emit()
+
+    @Slot(str)
+    def toggleSelection(self, identity: str) -> None:
+        """Toggle one device checkbox using its stable identity."""
+        self.source_model.toggle_selected(identity)
+
+    @Slot(bool)
+    def selectAll(self, selected: bool) -> None:
+        """Select or clear every retained session device."""
+        identities = {record.identity for record in self.source_model.all_records()}
+        self.source_model.set_selected_identities(identities, selected)
+
+    @Slot(bool)
+    def selectVisible(self, selected: bool) -> None:
+        """Select or clear all currently filtered devices."""
+        identities = {record.identity for record in self.fleet_model.visible_records()}
+        self.source_model.set_selected_identities(identities, selected)
+
+    @Slot()
+    def clearFleet(self) -> None:
+        """Clear retained devices and cancel queued stats polling requests."""
+        self._fleet_generation += 1
+        if self._stats_worker is not None:
+            self._stats_worker.cancel()
+        self._pending_settings_refresh.clear()
+        self.settings_refresh_timer.stop()
+        self.source_model.clear()
+        self._inspected_identity = ""
+        self._setting_edits.clear()
+        self._emit_web_url_if_changed()
+        self.inspectorChanged.emit()
+
+    @Slot(str, "QVariant")
+    def setSettingValue(self, key: str, value: Any) -> None:
+        """Store one inspector edit without mutating cached device settings."""
+        record = self._inspected_record()
+        if record is None or key not in record.settings:
+            return
+        self._setting_edits[key] = value
+        self.inspectorChanged.emit()
+
+    @Slot()
+    def discardSettingChanges(self) -> None:
+        """Discard all pending edits for the inspected device."""
+        if self._setting_edits:
+            self._setting_edits.clear()
+            self.inspectorChanged.emit()
+
+    @Slot()
+    def applyEditedSettings(self) -> None:
+        """Validate and apply dirty settings to the inspected device."""
+        record = self._inspected_record()
+        if record is None:
+            self.toastRequested.emit("info", "Select a device first.")
+            return
+        changed: dict[str, Any] = {}
+        try:
+            for key, edited in self._setting_edits.items():
+                original = record.settings.get(key)
+                converted = self._convert_setting(edited, original)
+                if converted != original:
+                    changed[key] = converted
+        except (TypeError, ValueError) as exc:
+            self.toastRequested.emit("error", f"Invalid setting value: {exc}")
+            return
+        if not changed:
+            self.toastRequested.emit("info", "No settings have changed.")
+            return
+        self._start_settings([record], changed, remember=True)
+
+    @Slot(str)
+    def exportSettings(self, file_url: str) -> None:
+        """Export inspected settings to an NVS-compatible local CSV file."""
+        record = self._inspected_record()
+        path = self._local_path(file_url)
+        if record is None or not record.settings:
+            self.toastRequested.emit("info", "Select a device with loaded settings.")
+            return
+        if path is None:
+            self.toastRequested.emit("error", "Choose a valid local CSV path.")
+            return
+        if db_settings_to_csv(record.settings, path):
+            self.toastRequested.emit("success", f"Settings exported to {path.name}.")
+        else:
+            self.toastRequested.emit("error", "The settings CSV could not be written.")
+
+    @Slot(str)
+    def prepareCsvImport(self, file_url: str) -> None:
+        """Parse a local CSV template and expose its exclusion preview."""
+        path = self._local_path(file_url)
+        parameters = db_settings_from_csv(path) if path else None
+        if parameters is None:
+            self.toastRequested.emit("error", "The CSV file is malformed or unsupported.")
+            return
+        self._csv_template = parameters
+        self.csvTemplateChanged.emit()
+        self.csvTemplateReady.emit()
+
+    @Slot("QVariantList", str)
+    def applyCsvTemplate(self, excluded_keys: list[Any], scope: str) -> None:
+        """Apply imported settings after QML exclusion selection."""
+        records = self._target_records(scope)
+        if not records:
+            self.toastRequested.emit("info", "No target devices are available.")
+            return
+        excluded = {str(key) for key in excluded_keys}
+        settings = {
+            key: value
+            for key, value in self._csv_template.items()
+            if key not in excluded
+        }
+        if not settings:
+            self.toastRequested.emit("info", "All template parameters are excluded.")
+            return
+        self._start_settings(records, settings, remember=True)
+
+    @Slot(str, result="QVariantList")
+    def defaultCsvExclusions(self, scope: str) -> list[str]:
+        """Return unique-device exclusions for a multi-device target scope."""
+        if len(self._target_records(scope)) <= 1:
+            return []
+        return [
+            key
+            for key in sorted(DEFAULT_BULK_EXCLUSIONS)
+            if key in self._csv_template
+        ]
+
+    @Slot(str, str, str)
+    def startActivation(self, token: str, scope: str, license_type: str) -> None:
+        """Start sequential permanent or evaluation activation."""
+        records = self._target_records(scope)
+        active_token = token.strip() or os.environ.get("DRONEBRIDGE_SECRET_TOKEN", "")
+        if not active_token:
+            self.toastRequested.emit("error", "A license server token is required.")
+            return
+        if not records:
+            self.toastRequested.emit("info", "No target devices are available.")
+            return
+        enum_value = (
+            DBLicenseType.EVALUATION
+            if license_type.lower() == "evaluation"
+            else DBLicenseType.ACTIVATED
+        )
+        self._launch_activation(records, active_token, enum_value, remember=True)
+
+    @Slot(str, str)
+    def startReboot(self, scope: str, method: str) -> None:
+        """Start bounded REST reboot or an explicit all-online MAVLink broadcast."""
+        mavlink = method.lower() == "mavlink"
+        records = self._target_records("visible" if mavlink else scope)
+        if mavlink:
+            records = [record for record in records if record.online]
+        if not records:
+            self.toastRequested.emit("info", "No target devices are available.")
+            return
+        self._launch_reboot(records, mavlink=mavlink, remember=not mavlink)
+
+    @Slot(str, str, str, result=bool)
+    def startStaticIpAssignment(
+        self,
+        start_ip: str,
+        netmask: str,
+        gateway: str,
+    ) -> bool:
+        """Validate and start static-IP assignment for visible selected eligible devices."""
+        if not self.source_model.selected_records():
+            self.toastRequested.emit("info", "Select at least one device first.")
+            return False
+        records = self._static_ip_records()
+        if not records:
+            self.toastRequested.emit(
+                "info",
+                "Only visible selected Evaluation or Activated devices can receive static IPs.",
+            )
+            return False
+        try:
+            assignments, normalized_mask, normalized_gateway = (
+                StaticIpAssignmentWorker.prepare_assignments(
+                    records,
+                    self.source_model.all_records(),
+                    start_ip,
+                    netmask,
+                    gateway,
+                )
+            )
+        except ValueError as exc:
+            self.toastRequested.emit("error", str(exc))
+            return False
+        if not self._operation_available():
+            return False
+        self._launch_static_ip_assignment(
+            records,
+            assignments,
+            normalized_mask,
+            normalized_gateway,
+            remember=True,
+        )
+        return True
+
+    @Slot(result=bool)
+    def clearStaticIpAssignments(self) -> bool:
+        """Clear static-IP, gateway, and netmask values for eligible selected devices.
+
+        :return: ``True`` after the clear operation is queued. ``False`` when no
+            eligible target is selected or another fleet operation is active.
+        """
+        if not self.source_model.selected_records():
+            self.toastRequested.emit("info", "Select at least one device first.")
+            return False
+        records = self._static_ip_records()
+        if not records:
+            self.toastRequested.emit(
+                "info",
+                "Only visible selected Evaluation or Activated devices can manage static IPs.",
+            )
+            return False
+        if not self._operation_available():
+            return False
+        self._launch_static_ip_assignment(
+            records,
+            {record.identity: "" for record in records},
+            "",
+            "",
+            remember=True,
+        )
+        return True
+
+    @Slot(str)
+    def startSysIdAlignment(self, mode: str) -> None:
+        """
+        Align SYS IDs for selected Evaluation or Activated DLSE devices only.
+
+        :param mode: ``ip``, ``fc``, or ``manual`` source selection from QML.
+        :return: None. Invalid modes or empty eligible selections show a toast.
+        """
+        normalized_mode = mode.strip().lower()
+        if normalized_mode not in SysIdAlignmentWorker.MODES:
+            self.toastRequested.emit("error", "Select a valid SYS ID alignment mode.")
+            return
+        if not self.source_model.selected_records():
+            self.toastRequested.emit("info", "Select at least one device first.")
+            return
+        records = self._sys_id_alignment_records()
+        if not records:
+            self.toastRequested.emit(
+                "info",
+                "Only selected Evaluation or Activated devices can be aligned.",
+            )
+            return
+        self._launch_sys_id_alignment(records, normalized_mode, remember=True)
+
+    @Slot(str, str, str, str, int, str)
+    def startOta(
+        self,
+        release_url: str,
+        www_url: str,
+        firmware_url: str,
+        target_version: str,
+        workers: int,
+        scope: str,
+    ) -> None:
+        """Validate local OTA inputs and start bounded parallel updates."""
+        records = self._target_records(scope)
+        if not records:
+            self.toastRequested.emit("info", "Select at least one target device.")
+            return
+        release = self._local_path(release_url)
+        www = self._local_path(www_url)
+        firmware = self._local_path(firmware_url)
+        valid_release = bool(
+            release
+            and release.is_dir()
+            and db_check_release_binaries_present(str(release))
+        )
+        valid_custom = bool(www and www.is_file() and firmware and firmware.is_file())
+        if not (valid_release or valid_custom):
+            self.toastRequested.emit(
+                "error",
+                "Choose a valid release folder or both OTA binary files.",
+            )
+            return
+        self._launch_ota(
+            records,
+            release if valid_release else None,
+            www if not valid_release else None,
+            firmware if not valid_release else None,
+            max(1, min(workers, 64)),
+            target_version,
+            remember=True,
+        )
+
+    @Slot(str)
+    def refreshOtaReleases(self, token: str) -> None:
+        """
+        Refresh cached and account release choices for the OTA dialog.
+
+        :param token: Optional session-only token. Empty values still list
+            cached releases from the local release cache.
+        :return: None. Results update ``otaReleases`` asynchronously.
+        """
+        if self._ota_release_refresh_running:
+            return
+        self._ota_release_refresh_running = True
+        self._ota_release_status = "Loading releases..."
+        self.otaReleasesChanged.emit()
+        active_token = token.strip() or os.environ.get("DRONEBRIDGE_SECRET_TOKEN", "")
+        worker = OtaReleaseListWorker(active_token)
+        worker.signals.finished.connect(self._ota_releases_loaded)
+        worker.signals.error.connect(self._ota_releases_failed)
+        self.pool.start(worker)
+
+    @Slot(str, str, str, int, str)
+    def startOtaFromRelease(
+        self,
+        selection_id: str,
+        token: str,
+        target_version: str,
+        workers: int,
+        scope: str,
+    ) -> None:
+        """
+        Resolve a cached or online release, then start OTA with its local root.
+
+        :param selection_id: Stable release option id from ``otaReleases``.
+        :param token: Optional session-only token used only for online downloads.
+        :param target_version: Optional exact current firmware version filter.
+        :param workers: Requested parallel upload limit, clamped to 1 through 64.
+        :param scope: ``selected`` or ``visible`` target scope.
+        :return: None. Device queuing starts only after release validation passes.
+        """
+        records = self._target_records(scope)
+        if not records:
+            self.toastRequested.emit("info", "Select at least one target device.")
+            return
+        option = self._ota_release_lookup.get(selection_id)
+        if option is None:
+            self.toastRequested.emit("error", "Select a valid DLSE release.")
+            return
+        if not self._operation_available():
+            return
+
+        self._ota_pending_options = {
+            "records": records,
+            "workers": max(1, min(workers, 64)),
+            "target_version": target_version,
+        }
+        active_token = token.strip() or os.environ.get("DRONEBRIDGE_SECRET_TOKEN", "")
+        worker = OtaReleaseResolveWorker(option, active_token)
+        self._active_worker = worker
+        self._active_operation = "ota release"
+        self._active_targets = {record.identity for record in records}
+        self._failed_identities.clear()
+        self._status_text = "RESOLVING RELEASE..."
+        self._ota_release_status = "Resolving selected release..."
+        worker.signals.finished.connect(self._ota_release_resolved)
+        worker.signals.error.connect(self._ota_release_failed)
+        self.stateChanged.emit()
+        self.otaReleasesChanged.emit()
+        self.pool.start(worker)
+
+    @Slot()
+    def cancelActiveOperation(self) -> None:
+        """Cancel queued work while allowing active transfers to finish."""
+        cancel = getattr(self._active_worker, "cancel", None)
+        if callable(cancel):
+            cancel()
+            self._status_text = "CANCELLING QUEUED WORK..."
+            self.stateChanged.emit()
+
+    @Slot()
+    def retryFailed(self) -> None:
+        """Retry the last retryable operation for failed devices only."""
+        if not self._retry_context or not self._failed_identities:
+            self.toastRequested.emit("info", "There are no failed devices to retry.")
+            return
+        kind, options = self._retry_context
+        records = [
+            record
+            for record in self.source_model.all_records()
+            if record.identity in self._failed_identities
+        ]
+        if not records:
+            self.toastRequested.emit("info", "Failed devices are no longer available.")
+            return
+        if kind == "activation":
+            self._launch_activation(records, options["token"], options["license_type"], False)
+        elif kind == "ota":
+            self._launch_ota(records, remember=False, **options)
+        elif kind == "settings":
+            self._start_settings(records, options["settings"], remember=False)
+        elif kind == "static_ip":
+            eligible = [
+                record
+                for record in records
+                if record.identity in options["assignments"]
+            ]
+            if eligible:
+                self._launch_static_ip_assignment(
+                    eligible,
+                    options["assignments"],
+                    options["netmask"],
+                    options["gateway"],
+                    remember=False,
+                )
+        elif kind == "reboot":
+            self._launch_reboot(records, mavlink=False, remember=False)
+        elif kind == "sys_id_alignment":
+            eligible = [
+                record
+                for record in records
+                if self._is_sys_id_alignment_eligible(record)
+            ]
+            if eligible:
+                self._launch_sys_id_alignment(
+                    eligible,
+                    options["mode"],
+                    remember=False,
+                )
+
+    @Slot()
+    def checkLicenseServer(self) -> None:
+        """Start a 30-second non-overlapping license-server check."""
+        if self._license_check_running:
+            return
+        self._license_check_running = True
+        self._license_status = "checking"
+        self.stateChanged.emit()
+        worker = LicenseStatusWorker()
+        worker.signals.finished.connect(self._license_checked)
+        worker.signals.error.connect(self._license_failed)
+        self.pool.start(worker)
+
+    @Slot(object)
+    def _ota_releases_loaded(self, payload: Any) -> None:
+        """
+        Store release choices returned by the release listing worker.
+
+        :param payload: Mapping containing ``options`` and ``status``.
+        :return: None. Malformed payloads are treated as an empty release list.
+        """
+        self._ota_release_refresh_running = False
+        options = []
+        if isinstance(payload, dict) and isinstance(payload.get("options"), list):
+            options = [
+                option
+                for option in payload["options"]
+                if isinstance(option, dict) and option.get("id")
+            ]
+        self._ota_releases = options
+        self._ota_release_lookup = {
+            str(option["id"]): option
+            for option in options
+        }
+        status = str(payload.get("status") or "") if isinstance(payload, dict) else ""
+        self._ota_release_status = status or f"{len(options)} releases available"
+        if not options:
+            self._ota_release_status = f"{self._ota_release_status}; no valid releases found"
+        self.otaReleasesChanged.emit()
+
+    @Slot(str)
+    def _ota_releases_failed(self, message: str) -> None:
+        """
+        Recover from a failed release-list refresh without changing old choices.
+
+        :param message: Failure detail to sanitize before display.
+        :return: None.
+        """
+        self._ota_release_refresh_running = False
+        self._ota_release_status = "Release refresh failed"
+        self.otaReleasesChanged.emit()
+        self.toastRequested.emit("error", self._sanitize_error(message))
+
+    @Slot(object)
+    def _ota_release_resolved(self, payload: Any) -> None:
+        """
+        Launch OTA after release preflight produced a validated local root.
+
+        :param payload: Mapping containing the resolved ``release_path``.
+        :return: None. Missing pending state or paths abort without queuing.
+        """
+        pending = self._ota_pending_options
+        self._ota_pending_options = None
+        self._active_worker = None
+        self._active_operation = ""
+        self._active_targets.clear()
+        self._status_text = "SCANNING..." if self._scanning_enabled else "IDLE"
+        if not pending or not isinstance(payload, dict) or not payload.get("release_path"):
+            self.stateChanged.emit()
+            self.toastRequested.emit("error", "Release preflight did not return a valid folder.")
+            return
+        release_path = Path(str(payload["release_path"]))
+        self._ota_release_status = f"Using {release_path}"
+        self.otaReleasesChanged.emit()
+        self.stateChanged.emit()
+        self._launch_ota(
+            pending["records"],
+            release_path,
+            None,
+            None,
+            pending["workers"],
+            pending["target_version"],
+            remember=True,
+        )
+
+    @Slot(str)
+    def _ota_release_failed(self, message: str) -> None:
+        """
+        Recover from a failed release preflight without starting OTA uploads.
+
+        :param message: Failure detail to sanitize before display.
+        :return: None. Target device operation labels are left untouched.
+        """
+        self._ota_pending_options = None
+        self._active_worker = None
+        self._active_operation = ""
+        self._active_targets.clear()
+        self._status_text = "ERROR"
+        self._ota_release_status = "Release preflight failed"
+        self.stateChanged.emit()
+        self.otaReleasesChanged.emit()
+        self.resultReady.emit("OTA Firmware Upgrade", self._sanitize_error(message), False)
+
+    def _launch_activation(
+        self,
+        records: list[DeviceRecord],
+        token: str,
+        license_type: DBLicenseType,
+        remember: bool,
+    ) -> None:
+        """Create and launch a sequential activation worker."""
+        if not self._operation_available():
+            return
+        for record in records:
+            self.source_model.update_operation(record.identity, "queued", 0)
+        worker = ActivationWorker(records, token, license_type)
+        if remember:
+            self._retry_context = (
+                "activation",
+                {"token": token, "license_type": license_type},
+            )
+        self._begin_worker("activation", worker)
+
+    def _launch_reboot(
+        self,
+        records: list[DeviceRecord],
+        mavlink: bool,
+        remember: bool,
+    ) -> None:
+        """Create and launch a REST or MAVLink reboot worker."""
+        if not self._operation_available():
+            return
+        values = self._scan_values()
+        for record in records:
+            self.source_model.update_operation(record.identity, "rebooting", 0)
+        worker = RebootWorker(
+            records,
+            workers=values["workers"],
+            mavlink_subnet=values["subnet"] if mavlink else None,
+            mavlink_port=values["esp32_port"],
+        )
+        if remember:
+            self._retry_context = ("reboot", {})
+        self._begin_worker("reboot", worker)
+
+    def _launch_ota(
+        self,
+        records: list[DeviceRecord],
+        release_path: Path | None,
+        www_path: Path | None,
+        firmware_path: Path | None,
+        workers: int,
+        target_version: str,
+        remember: bool,
+    ) -> None:
+        """Create and launch a bounded OTA worker."""
+        if not self._operation_available():
+            return
+        for record in records:
+            self.source_model.update_operation(record.identity, "queued", 0)
+        options = {
+            "release_path": release_path,
+            "www_path": www_path,
+            "firmware_path": firmware_path,
+            "workers": workers,
+            "target_version": target_version,
+        }
+        worker = OtaWorker(records, **options)
+        if remember:
+            self._retry_context = ("ota", options)
+        self._begin_worker("ota", worker)
+
+    def _start_settings(
+        self,
+        records: list[DeviceRecord],
+        settings: dict[str, Any],
+        remember: bool,
+    ) -> None:
+        """Validate and launch a bounded settings worker."""
+        error = self._validate_settings(settings)
+        if error:
+            self.toastRequested.emit("error", error)
+            return
+        if not self._operation_available():
+            return
+        for record in records:
+            self.source_model.update_operation(record.identity, "applying settings", 0)
+        worker = SettingsWorker(records, settings, self._scan_values()["workers"])
+        if remember:
+            self._retry_context = ("settings", {"settings": settings})
+        self._begin_worker("settings", worker)
+
+    def _launch_static_ip_assignment(
+        self,
+        records: list[DeviceRecord],
+        assignments: dict[str, str],
+        netmask: str,
+        gateway: str,
+        remember: bool,
+    ) -> None:
+        """Create and launch the selected static-IP assignment worker."""
+        if not self._operation_available():
+            return
+        for record in records:
+            self.source_model.update_operation(record.identity, "queued static IP", 0)
+        worker = StaticIpAssignmentWorker(
+            records,
+            assignments,
+            netmask,
+            gateway,
+            workers=self._scan_values()["workers"],
+        )
+        if remember:
+            self._retry_context = (
+                "static_ip",
+                {
+                    "assignments": dict(assignments),
+                    "netmask": netmask,
+                    "gateway": gateway,
+                },
+            )
+        self._begin_worker("static_ip", worker)
+
+    def _launch_sys_id_alignment(
+        self,
+        records: list[DeviceRecord],
+        mode: str,
+        remember: bool,
+    ) -> None:
+        """
+        Create and launch the UI-only selected-device SYS ID alignment worker.
+
+        :param records: Selected, license-eligible records to process.
+        :param mode: Valid ``ip``, ``fc``, or ``manual`` source mode.
+        :param remember: Whether failed records can use the shared retry action.
+        :return: None. An active operation prevents launch.
+        """
+        if not self._operation_available():
+            return
+        values = self._scan_values()
+        for record in records:
+            self.source_model.update_operation(record.identity, "queued SYS ID alignment", 0)
+        worker = SysIdAlignmentWorker(
+            records,
+            mode,
+            fallback_port=values["esp32_port"],
+            workers=values["workers"],
+        )
+        if remember:
+            self._retry_context = ("sys_id_alignment", {"mode": mode})
+        self._begin_worker("sys_id_alignment", worker)
+
+    def _begin_worker(self, kind: str, worker: Any) -> None:
+        """Connect common worker signals and start one fleet operation."""
+        self._active_worker = worker
+        self._active_operation = kind
+        self._active_targets = {
+            record.identity for record in getattr(worker, "records", [])
+        }
+        self._failed_identities.clear()
+        self._status_text = kind.upper()
+        worker.signals.progress.connect(self._operation_progress)
+        worker.signals.finished.connect(
+            lambda results, operation=kind: self._operation_finished(operation, results)
+        )
+        worker.signals.error.connect(self._operation_failed)
+        self.stateChanged.emit()
+        self.pool.start(worker)
+
+    def _operation_available(self) -> bool:
+        """Reject overlapping destructive fleet operations."""
+        if self._active_worker is not None:
+            self.toastRequested.emit(
+                "warning",
+                f"Wait for the active {self._active_operation} operation to finish.",
+            )
+            return False
+        return True
+
+    @Slot(object)
+    def _scan_finished(self, records: list[DeviceRecord]) -> None:
+        """Merge one additive discovery cycle without changing device health."""
+        self._scan_running = False
+        self._discovery_status = (
+            "WAITING" if self._scanning_enabled else "STOPPED"
+        )
+        self.source_model.upsert_many(records)
+        self._status_text = "SCANNING..." if self._scanning_enabled else "IDLE"
+        self.stateChanged.emit()
+        self.startStatsPolling()
+
+    @Slot(object)
+    def _scan_progress(self, payload: Any) -> None:
+        """Merge hydrated devices incrementally during discovery."""
+        if isinstance(payload, DeviceRecord):
+            self.source_model.upsert_many([payload])
+            self.startStatsPolling()
+
+    @Slot(str)
+    def _scan_failed(self, message: str) -> None:
+        """Recover from one discovery worker failure."""
+        self._scan_running = False
+        self._discovery_status = "ERROR"
+        self._status_text = "SCAN ERROR"
+        self.stateChanged.emit()
+        self.toastRequested.emit("error", self._sanitize_error(message))
+
+    def _stats_progress(self, payload: Any, generation: int) -> None:
+        """
+        Apply one incremental stats result when it belongs to this fleet.
+
+        :param payload: Worker result containing identity, IP, status, and stats.
+        :param generation: Fleet generation captured when the round started.
+        :return: None. Stale or unresolvable results are ignored safely.
+        """
+        if generation != self._fleet_generation or not isinstance(payload, dict):
+            return
+        identity = str(payload.get("identity") or "")
+        if self.source_model.record_by_identity(identity) is None:
+            identity = self._identity_for_ip(str(payload.get("ip") or ""))
+        if not identity:
+            return
+        self.source_model.apply_stats_result(
+            identity,
+            bool(payload.get("success")),
+            payload.get("stats") if isinstance(payload.get("stats"), dict) else None,
+            self._sanitize_error(str(payload.get("error") or "Stats request failed")),
+            self._scan_values()["stats_failure_threshold"],
+        )
+
+    def _stats_finished(self, _results: Any, _generation: int) -> None:
+        """
+        Release the overlap guard and schedule the next stats round.
+
+        :param _results: Completed per-device results; updates were already emitted.
+        :param _generation: Fleet generation retained for signal compatibility.
+        :return: None.
+        """
+        if _generation != self._fleet_generation:
+            return
+        self._stats_poll_running = False
+        self._stats_worker = None
+        self._stats_polling_status = "WAITING"
+        self._schedule_next_stats_round()
+        self.stateChanged.emit()
+
+    def _stats_failed(self, message: str, generation: int) -> None:
+        """
+        Recover from an unexpected worker-level polling failure.
+
+        :param message: Failure detail to sanitize for the UI.
+        :param generation: Fleet generation that produced the failure.
+        :return: None. Stale failures are rescheduled without displaying a toast.
+        """
+        if generation != self._fleet_generation:
+            return
+        self._stats_poll_running = False
+        self._stats_worker = None
+        self._stats_polling_status = "ERROR"
+        self._schedule_next_stats_round()
+        self.stateChanged.emit()
+        self.toastRequested.emit("error", self._sanitize_error(message))
+
+    def _start_system_info_refresh(self, records: list[DeviceRecord]) -> None:
+        """
+        Start a best-effort static-info refresh for completed OTA/activation records.
+
+        :param records: Devices that emitted an actual operation result.
+        :return: None. Empty device lists do not create a worker.
+        """
+        if not records:
+            return
+        generation = self._fleet_generation
+        worker = SystemInfoRefreshWorker(
+            records,
+            workers=self._scan_values()["workers"],
+        )
+        self._system_info_refresh_worker = worker
+        worker.signals.progress.connect(
+            lambda payload, active_generation=generation:
+                self._system_info_refresh_progress(payload, active_generation)
+        )
+        worker.signals.finished.connect(
+            lambda _results, active_generation=generation:
+                self._system_info_refresh_finished(active_generation)
+        )
+        worker.signals.error.connect(
+            lambda message, active_generation=generation, refresh_records=list(records):
+                self._system_info_refresh_failed(
+                    message,
+                    active_generation,
+                    refresh_records,
+                )
+        )
+        self.pool.start(worker)
+
+    def _system_info_refresh_progress(self, payload: Any, generation: int) -> None:
+        """
+        Apply one UI-owned system-info refresh result to the current fleet.
+
+        :param payload: Worker result containing identity, IP, and system info.
+        :param generation: Fleet generation captured when the refresh started.
+        :return: None. Stale or unresolvable results are ignored safely.
+        """
+        if generation != self._fleet_generation or not isinstance(payload, dict):
+            return
+        identity = str(payload.get("identity") or "")
+        if self.source_model.record_by_identity(identity) is None:
+            identity = self._identity_for_ip(str(payload.get("ip") or ""))
+        if not identity:
+            return
+        self.source_model.apply_system_info_result(
+            identity,
+            bool(payload.get("success")),
+            payload.get("system_info")
+            if isinstance(payload.get("system_info"), dict)
+            else None,
+            self._sanitize_error(
+                str(payload.get("error") or "System info request failed")
+            ),
+        )
+
+    def _system_info_refresh_finished(self, generation: int) -> None:
+        """
+        Release the UI-owned info-refresh worker reference after completion.
+
+        :param generation: Fleet generation captured when the refresh started.
+        :return: None. Stale completions only release the worker reference.
+        """
+        if generation == self._fleet_generation:
+            self._system_info_refresh_worker = None
+
+    def _system_info_refresh_failed(
+        self,
+        message: str,
+        generation: int,
+        records: list[DeviceRecord],
+    ) -> None:
+        """
+        Preserve device values while recording a worker-level refresh failure.
+
+        :param message: Failure detail to sanitize before storing.
+        :param generation: Fleet generation captured when the refresh started.
+        :param records: Snapshot of devices submitted to the worker.
+        :return: None. Stale failures are ignored.
+        """
+        if generation != self._fleet_generation:
+            return
+        error = self._sanitize_error(message)
+        for record in records:
+            self.source_model.apply_system_info_result(
+                record.identity,
+                False,
+                error=error,
+            )
+        self._system_info_refresh_worker = None
+
+    def _queue_settings_refresh(self, targets: dict[str, str]) -> None:
+        """
+        Queue accepted settings changes for a delayed REST refresh.
+
+        :param targets: Identity-to-IP mapping for devices whose settings update
+            was accepted. The timer is restarted so every queued device receives
+            at least the configured reboot grace period before being queried.
+        :return: None. Missing inventory identities are ignored.
+        """
+        for identity, target_ip in targets.items():
+            record = self.source_model.record_by_identity(identity)
+            if record is None:
+                continue
+            self._pending_settings_refresh[identity] = target_ip or record.ip
+            self.source_model.update_operation(identity, "waiting for reboot", 0)
+        if not self._pending_settings_refresh:
+            return
+        self.settings_refresh_timer.start(SETTINGS_REFRESH_DELAY_MS)
+        self.stateChanged.emit()
+
+    @Slot()
+    def _start_settings_refresh(self) -> None:
+        """
+        Start the delayed targeted ``/api/settings`` refresh when idle.
+
+        :return: None. A refresh already in progress is left untouched and the
+            pending queue is retried after another reboot grace interval.
+        """
+        if self._settings_refresh_worker is not None:
+            if self._pending_settings_refresh:
+                self.settings_refresh_timer.start(SETTINGS_REFRESH_DELAY_MS)
+            return
+        pending = self._pending_settings_refresh
+        self._pending_settings_refresh = {}
+        if not pending:
+            return
+
+        records: list[DeviceRecord] = []
+        target_ips: dict[str, str] = {}
+        for identity, target_ip in pending.items():
+            record = self.source_model.record_by_identity(identity)
+            if record is None:
+                continue
+            records.append(record)
+            target_ips[identity] = target_ip or record.ip
+        if not records:
+            return
+
+        generation = self._fleet_generation
+        for record in records:
+            self.source_model.update_operation(record.identity, "refreshing settings", 0)
+        worker = SettingsRefreshWorker(
+            records,
+            target_ips=target_ips,
+            timeout=self._scan_values()["http_timeout"],
+            workers=self._scan_values()["workers"],
+        )
+        self._settings_refresh_worker = worker
+        worker.signals.progress.connect(
+            lambda payload, active_generation=generation:
+            self._settings_refresh_progress(payload, active_generation)
+        )
+        worker.signals.finished.connect(
+            lambda results, active_generation=generation:
+            self._settings_refresh_finished(results, active_generation)
+        )
+        worker.signals.error.connect(
+            lambda message, active_generation=generation, refresh_records=list(records):
+            self._settings_refresh_failed(
+                message,
+                active_generation,
+                refresh_records,
+            )
+        )
+        self.stateChanged.emit()
+        self.pool.start(worker)
+
+    @Slot()
+    def startUnifiPolling(self) -> None:
+        """
+        Start one non-overlapping UniFi AP observation request.
+
+        :return: None. Disabled or incomplete settings update the footer without
+            starting network I/O; all other results arrive asynchronously.
+        """
+        if self._unifi_poll_running:
+            return
+        values = self._unifi_values()
+        self.unifi_timer.stop()
+        if not values["enabled"]:
+            self._unifi_status = "DISABLED"
+            self.stateChanged.emit()
+            return
+        if not values["api_token"]:
+            self._unifi_status = "NOT CONFIGURED"
+            self.stateChanged.emit()
+            return
+        try:
+            _url, host, port = _parse_unifi_gateway_url(values["gateway_url"])
+        except ValueError:
+            self._unifi_status = "ERROR"
+            self.stateChanged.emit()
+            return
+        worker = UnifiPollingWorker(
+            host,
+            port,
+            values["api_token"],
+            site=values["site"],
+            timeout=values["timeout"],
+            verify_tls=values["verify_tls"],
+        )
+        # Keep the runnable alive until one of its signals is delivered.  A
+        # local-only reference can be collected while the thread-pool job is
+        # still running, which drops the WorkerSignals object and leaves the
+        # footer stuck at CHECKING even though the request completed.
+        self._unifi_worker = worker
+        self._unifi_poll_running = True
+        self._unifi_status = "CHECKING"
+        generation = self._unifi_generation
+        worker.signals.finished.connect(
+            lambda clients, active_generation=generation:
+                self._unifi_finished(clients, active_generation)
+        )
+        worker.signals.error.connect(
+            lambda message, active_generation=generation:
+                self._unifi_failed(message, active_generation)
+        )
+        self.stateChanged.emit()
+        self.pool.start(worker)
+
+    def _settings_refresh_progress(self, payload: Any, generation: int) -> None:
+        """
+        Apply one delayed settings refresh result to the current fleet.
+
+        :param payload: Worker result containing identity, IP, settings, and status.
+        :param generation: Fleet generation captured when the worker started.
+        :return: None. Stale or unresolvable results are ignored safely.
+        """
+        if generation != self._fleet_generation or not isinstance(payload, dict):
+            return
+        identity = str(payload.get("identity") or "")
+        if self.source_model.record_by_identity(identity) is None:
+            identity = self._identity_for_ip(str(payload.get("ip") or ""))
+        if not identity:
+            return
+        success = bool(payload.get("success")) and isinstance(
+            payload.get("settings"),
+            dict,
+        )
+        self.source_model.apply_settings_result(
+            identity,
+            success,
+            payload.get("settings") if isinstance(payload.get("settings"), dict) else None,
+            ip=str(payload.get("ip") or "").strip() or None,
+            error=self._sanitize_error(
+                str(payload.get("error") or "Settings request failed")
+            ),
+        )
+        if success:
+            self.source_model.update_operation(identity, "complete", 100)
+            if identity == self._inspected_identity and self._setting_edits:
+                self._setting_edits.clear()
+                self.inspectorChanged.emit()
+        else:
+            self.source_model.update_operation(identity, "settings refresh failed", 0)
+
+    def _settings_refresh_finished(self, results: Any, generation: int) -> None:
+        """
+        Complete a delayed settings refresh and report per-device failures.
+
+        :param results: Per-device refresh payloads already applied incrementally.
+        :param generation: Fleet generation captured when the worker started.
+        :return: None. Pending changes are scheduled for a later refresh pass.
+        """
+        self._settings_refresh_worker = None
+        if generation != self._fleet_generation:
+            return
+        items = results if isinstance(results, list) else [results]
+        failures = sum(not self._result_success(item) for item in items)
+        if failures:
+            self.toastRequested.emit(
+                "warning",
+                f"Settings refresh finished with {failures} failed device(s).",
+            )
+        if self._pending_settings_refresh:
+            self.settings_refresh_timer.start(SETTINGS_REFRESH_DELAY_MS)
+        self.stateChanged.emit()
+
+    def _settings_refresh_failed(
+        self,
+        message: str,
+        generation: int,
+        records: list[DeviceRecord],
+    ) -> None:
+        """
+        Preserve cached values and mark devices when the refresh worker fails.
+
+        :param message: Worker-level failure detail to sanitize before storage.
+        :param generation: Fleet generation captured when the worker started.
+        :param records: Devices submitted to the failed refresh worker.
+        :return: None. Pending changes remain queued for a later attempt.
+        """
+        self._settings_refresh_worker = None
+        if generation != self._fleet_generation:
+            return
+        error = self._sanitize_error(message)
+        for record in records:
+            self.source_model.apply_settings_result(
+                record.identity,
+                False,
+                error=error,
+            )
+            self.source_model.update_operation(
+                record.identity,
+                "settings refresh failed",
+                0,
+            )
+        if self._pending_settings_refresh:
+            self.settings_refresh_timer.start(SETTINGS_REFRESH_DELAY_MS)
+        self.stateChanged.emit()
+        self.toastRequested.emit("warning", f"Settings refresh failed: {error}")
+
+    def _schedule_next_stats_round(self) -> None:
+        """
+        Schedule the next round at least two seconds after the prior start.
+
+        :return: None. Long rounds restart immediately instead of overlapping.
+        """
+        values = self._scan_values()
+        if not values["stats_enabled"]:
+            self.stats_timer.stop()
+            return
+        elapsed = monotonic() - self._stats_round_started_at
+        delay_ms = max(
+            0,
+            math.ceil((values["stats_interval"] - elapsed) * 1000),
+        )
+        self.stats_timer.start(delay_ms)
+
+    @Slot(object)
+    def _operation_progress(self, payload: dict[str, Any]) -> None:
+        """Apply generic worker progress to the matching inventory record."""
+        identity = str(payload.get("identity") or "")
+        status = str(payload.get("status") or "")
+        result = payload.get("result")
+        if not identity and result is not None:
+            identity = self._identity_for_ip(str(getattr(result, "device_ip", "")))
+        if isinstance(result, dict):
+            success = result.get("success")
+            result_message = str(result.get("message") or status)
+        else:
+            success = getattr(result, "success", payload.get("success"))
+            result_message = str(
+                getattr(result, "message", payload.get("message") or status)
+            )
+        percent = int(
+            payload.get(
+                "percent",
+                100 if success or status in {"activated", "already_activated", "complete"} else 0,
+            )
+        )
+        if identity:
+            if success is False:
+                status = f"failed: {result_message}"
+                self._failed_identities.add(identity)
+            self.source_model.update_operation(identity, status, percent)
+
+    def _operation_finished(self, kind: str, results: Any) -> None:
+        """Summarize results, update reboot grace, and notify QML."""
+        items = results if isinstance(results, list) else [results]
+        info_refresh_records = self._system_info_refresh_records(kind, items)
+        applied_settings = getattr(self._active_worker, "settings", {})
+        if not isinstance(applied_settings, dict):
+            applied_settings = {}
+        settings_refresh_targets = (
+            self._settings_refresh_targets(items, applied_settings)
+            if kind == "settings"
+            else {}
+        )
+        successes = 0
+        failed: set[str] = set(self._failed_identities)
+        for item in items:
+            success = self._result_success(item)
+            successes += int(success)
+            identity = self._result_identity(item)
+            if identity and not success:
+                failed.add(identity)
+            if identity and success:
+                if kind == "static_ip" and isinstance(item, dict):
+                    target_ip = str(item.get("target_ip") or "").strip()
+                    settings = item.get("settings")
+                    if isinstance(settings, dict):
+                        record = self.source_model.record_by_identity(identity)
+                        if record is not None:
+                            self.source_model.update_static_network(
+                                identity,
+                                target_ip or record.ip,
+                                settings,
+                            )
+                label = "reboot accepted" if kind == "reboot" else "complete"
+                self.source_model.update_operation(identity, label, 100)
+        if kind == "reboot" and isinstance(results, dict) and results.get("mavlink"):
+            visible_records = [
+                record
+                for record in self.fleet_model.visible_records()
+                if record.identity in self._active_targets
+            ]
+            command_success = bool(results.get("success"))
+            successes = len(visible_records) if command_success else 0
+            items = [results] * max(1, successes or int(results.get("count", 1)))
+            for record in visible_records:
+                self.source_model.update_operation(
+                    record.identity,
+                    "MAVLink command sent" if command_success else "MAVLink command failed",
+                    100 if command_success else 0,
+                )
+        if kind in {"reboot", "static_ip"} and successes:
+            successful_ids = {
+                self._result_identity(item)
+                for item in items
+                if self._result_success(item) and self._result_identity(item)
+            }
+            if not successful_ids and isinstance(results, dict) and results.get("mavlink"):
+                successful_ids = set(self._active_targets)
+            self.source_model.set_reboot_grace(successful_ids, 20)
+        self._failed_identities = failed
+        total = len(items)
+        failures = max(0, total - successes)
+        self._active_worker = None
+        self._active_operation = ""
+        self._active_targets.clear()
+        self._status_text = "SCANNING..." if self._scanning_enabled else "IDLE"
+        if kind == "settings" and settings_refresh_targets:
+            self._queue_settings_refresh(settings_refresh_targets)
+        elif kind == "settings" and not failures:
+            self._setting_edits.clear()
+            self.inspectorChanged.emit()
+        self.stateChanged.emit()
+        self._start_system_info_refresh(info_refresh_records)
+        self.resultReady.emit(
+            kind.replace("_", " ").title(),
+            f"Operation finished: {successes} succeeded, {failures} failed.",
+            bool(failures and self._retry_context),
+        )
+
+    @Slot(str)
+    def _operation_failed(self, message: str) -> None:
+        """Recover from an unhandled worker-level operation failure."""
+        title = self._active_operation.replace("_", " ").title() or "Operation"
+        self._active_worker = None
+        self._active_operation = ""
+        self._active_targets.clear()
+        self._status_text = "ERROR"
+        self.stateChanged.emit()
+        self.resultReady.emit(title, self._sanitize_error(message), False)
+
+    @Slot(object)
+    def _license_checked(self, online: bool) -> None:
+        """Update license-server state after a successful check."""
+        self._license_check_running = False
+        self._license_status = "online" if online else "offline"
+        self.stateChanged.emit()
+
+    @Slot(str)
+    def _license_failed(self, _message: str) -> None:
+        """Treat license-server worker failures as offline state."""
+        self._license_check_running = False
+        self._license_status = "offline"
+        self.stateChanged.emit()
+
+    def _unifi_finished(self, clients: Any, generation: int) -> None:
+        """
+        Apply one successful UniFi active-client response to the fleet.
+
+        :param clients: Normalized client dictionaries emitted by the worker.
+        :param generation: Configuration generation captured by the worker.
+        :return: None. Stale generations are ignored. Malformed top-level
+            responses are treated as empty while the connection remains online.
+        """
+        if generation != self._unifi_generation:
+            return
+        self._unifi_poll_running = False
+        self._unifi_worker = None
+        normalized = (
+            [client for client in clients if isinstance(client, dict)]
+            if isinstance(clients, list)
+            else []
+        )
+        self.source_model.apply_ap_clients(
+            self._decorate_unifi_clients(normalized)
+        )
+        self._unifi_status = "ONLINE"
+        self._schedule_next_unifi_poll()
+        self.stateChanged.emit()
+
+    def _unifi_failed(self, _message: str, generation: int) -> None:
+        """
+        Mark the UniFi connection offline and clear stale AP measurements.
+
+        :param _message: aiounifi failure detail, intentionally not surfaced on
+            every background cycle to avoid repetitive UI notifications.
+        :param generation: Configuration generation captured by the worker.
+        :return: None. Stale failures are ignored; current failures schedule the
+            next bounded polling attempt normally.
+        """
+        if generation != self._unifi_generation:
+            return
+        self._unifi_poll_running = False
+        self._unifi_worker = None
+        self._unifi_byte_samples.clear()
+        self._unifi_status = "OFFLINE"
+        self.source_model.apply_ap_clients([])
+        self._schedule_next_unifi_poll()
+        self.stateChanged.emit()
+
+    def _decorate_unifi_clients(
+        self,
+        clients: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Add live throughput rates calculated from consecutive UniFi polls.
+
+        UniFi firmware commonly exposes cumulative ``rx_bytes``/``tx_bytes``
+        counters but not a live byte-rate field.  The controller keeps one
+        bounded sample per active client and converts counter deltas to bits per
+        second.  A first sample intentionally remains ``Unavailable`` in the
+        table because no delta can be measured yet.
+        """
+        sampled_at = monotonic()
+        decorated: list[dict[str, Any]] = []
+        active_keys: set[str] = set()
+        for client in clients:
+            payload = dict(client)
+            key = _unifi_client_key(payload)
+            if not key:
+                decorated.append(payload)
+                continue
+            active_keys.add(key)
+            rx_bytes = _nonnegative_number(payload.get("rx_bytes"))
+            tx_bytes = _nonnegative_number(payload.get("tx_bytes"))
+            previous = self._unifi_byte_samples.get(key)
+            if rx_bytes is not None and tx_bytes is not None and previous:
+                previous_rx, previous_tx, previous_at = previous
+                elapsed = sampled_at - previous_at
+                if elapsed > 0:
+                    rx_rate = _counter_delta_rate(previous_rx, rx_bytes, elapsed)
+                    tx_rate = _counter_delta_rate(previous_tx, tx_bytes, elapsed)
+                    if payload.get("rx_bytes_rate") is None and rx_rate is not None:
+                        payload["rx_bytes_rate"] = rx_rate
+                    if payload.get("tx_bytes_rate") is None and tx_rate is not None:
+                        payload["tx_bytes_rate"] = tx_rate
+            if rx_bytes is not None and tx_bytes is not None:
+                self._unifi_byte_samples[key] = (rx_bytes, tx_bytes, sampled_at)
+            decorated.append(payload)
+        self._unifi_byte_samples = {
+            key: sample
+            for key, sample in self._unifi_byte_samples.items()
+            if key in active_keys
+        }
+        return decorated
+
+    @Slot()
+    def _inventory_changed(self) -> None:
+        """Refresh aggregate and inspector QML properties."""
+        if self._inspected_identity and not self._inspected_record():
+            self._inspected_identity = ""
+            self._setting_edits.clear()
+        self.stateChanged.emit()
+        self._emit_web_url_if_changed()
+        self.inspectorChanged.emit()
+
+    def _emit_web_url_if_changed(self) -> None:
+        """
+        Notify QML only when the selected device web URL actually changes.
+
+        :return: None. Routine stats updates keep the existing WebEngine page
+            loaded unless they change the selected device's online state or IP.
+        """
+        current_url = self.webUrl
+        if current_url == self._last_web_url:
+            return
+        self._last_web_url = current_url
+        self.webUrlChanged.emit()
+
+    def _target_records(self, scope: str) -> list[DeviceRecord]:
+        """Resolve selected, visible, or selected-then-visible operation scope."""
+        selected = self.source_model.selected_records()
+        visible = self.fleet_model.visible_records()
+        if scope == "selected":
+            return selected
+        if scope == "visible":
+            return visible
+        return selected or visible
+
+    def _selected_visible_records(self) -> list[DeviceRecord]:
+        """Return selected records in the current filtered table order."""
+        return [record for record in self.fleet_model.visible_records() if record.selected]
+
+    def _static_ip_records(self) -> list[DeviceRecord]:
+        """Return visible selected devices with an eligible license status."""
+        return [
+            record
+            for record in self._selected_visible_records()
+            if self._is_sys_id_alignment_eligible(record)
+        ]
+
+    def _sys_id_alignment_records(self) -> list[DeviceRecord]:
+        """
+        Return explicitly selected devices with an eligible license status.
+
+        :return: Selected records whose status is Evaluation or Activated.
+        """
+        return [
+            record
+            for record in self.source_model.selected_records()
+            if self._is_sys_id_alignment_eligible(record)
+        ]
+
+    @staticmethod
+    def _is_sys_id_alignment_eligible(record: DeviceRecord) -> bool:
+        """
+        Return whether a record has a license eligible for SYS ID alignment.
+
+        :param record: Retained device whose activation status is inspected.
+        :return: ``True`` only for Evaluation or Activated license values.
+        """
+        return record.activation_status.strip().upper() in {"EVALUATION", "ACTIVATED"}
+
+    def _inspected_record(self) -> DeviceRecord | None:
+        """Return the record currently shown in the inspector."""
+        return self.source_model.record_by_identity(self._inspected_identity)
+
+    def _identity_for_ip(self, device_ip: str) -> str:
+        """Resolve a worker result IP back to a stable inventory identity."""
+        return next(
+            (
+                record.identity
+                for record in self.source_model.all_records()
+                if record.ip == device_ip
+            ),
+            "",
+        )
+
+    def _result_identity(self, item: Any) -> str:
+        """Extract a stable identity from any supported worker result shape."""
+        if isinstance(item, dict):
+            if item.get("identity"):
+                return str(item["identity"])
+            result = item.get("result")
+            if result is not None:
+                return self._identity_for_ip(str(getattr(result, "device_ip", "")))
+            return ""
+        return self._identity_for_ip(str(getattr(item, "device_ip", "")))
+
+    def _settings_refresh_targets(
+        self,
+        items: list[Any],
+        applied_settings: dict[str, Any],
+    ) -> dict[str, str]:
+        """
+        Resolve successful settings results to post-reboot refresh addresses.
+
+        :param items: Per-device results emitted by ``SettingsWorker``.
+        :param applied_settings: Partial settings payload submitted to the devices.
+        :return: Identity-to-IP mapping for successful records. A valid ``ip_sta``
+            value is preferred because it may be the device's new address.
+        """
+        configured_ip = str(applied_settings.get("ip_sta") or "").strip()
+        try:
+            parsed_ip = ipaddress.ip_address(configured_ip) if configured_ip else None
+        except ValueError:
+            parsed_ip = None
+        if not isinstance(parsed_ip, ipaddress.IPv4Address):
+            configured_ip = ""
+
+        targets: dict[str, str] = {}
+        for item in items:
+            if not self._result_success(item):
+                continue
+            identity = self._result_identity(item)
+            record = self.source_model.record_by_identity(identity)
+            if not identity or record is None:
+                continue
+            targets[identity] = configured_ip or record.ip
+        return targets
+
+    def _system_info_refresh_records(
+        self,
+        kind: str,
+        items: list[Any],
+    ) -> list[DeviceRecord]:
+        """
+        Resolve processed OTA or activation results to current device records.
+
+        :param kind: Completed operation kind.
+        :param items: Per-device results emitted by the operation worker.
+        :return: Unique records that should receive a post-operation info request.
+            Skipped or never-started devices are absent because they emit no result.
+        """
+        if kind not in {"ota", "activation"}:
+            return []
+        records: list[DeviceRecord] = []
+        seen: set[str] = set()
+        for item in items:
+            identity = self._result_identity(item)
+            if not identity or identity in seen:
+                continue
+            record = self.source_model.record_by_identity(identity)
+            if record is None:
+                continue
+            seen.add(identity)
+            records.append(record)
+        return records
+
+    @staticmethod
+    def _result_success(item: Any) -> bool:
+        """Return success from a structured object or worker result mapping."""
+        if isinstance(item, dict):
+            result = item.get("result")
+            return bool(item.get("success", getattr(result, "success", False)))
+        return bool(getattr(item, "success", False))
+
+    def _scan_values(self) -> dict[str, Any]:
+        """Return persisted discovery settings with bounded defaults."""
+        return {
+            "subnet": str(self.settings.value("scan/subnet", "192.168.1.0/24")),
+            "mavlink": self.settings.value("scan/mavlink", True, bool),
+            "http": self.settings.value("scan/http", True, bool),
+            "esp32_port": int(self.settings.value("scan/esp32_port", 14555)),
+            "local_port": int(self.settings.value("scan/local_port", 14550)),
+            "interval": max(
+                5,
+                min(int(self.settings.value("scan/interval", 5)), 3600),
+            ),
+            "http_timeout": max(
+                0.1,
+                min(
+                    float(self.settings.value("scan/http_timeout", 1.0)),
+                    30.0,
+                ),
+            ),
+            "workers": max(
+                1,
+                min(int(self.settings.value("scan/workers", 20)), 64),
+            ),
+            "stats_enabled": self.settings.value(
+                "scan/stats_enabled",
+                True,
+                bool,
+            ),
+            "stats_interval": max(
+                1,
+                min(
+                    int(self.settings.value("scan/stats_interval", 2)),
+                    3600,
+                ),
+            ),
+            "stats_timeout": max(
+                0.1,
+                min(
+                    float(self.settings.value("scan/stats_timeout", 1.0)),
+                    30.0,
+                ),
+            ),
+            "stats_workers": max(
+                1,
+                min(
+                    int(self.settings.value("scan/stats_workers", 20)),
+                    64,
+                ),
+            ),
+            "stats_failure_threshold": max(
+                1,
+                min(
+                    int(
+                        self.settings.value(
+                            "scan/stats_failure_threshold",
+                            3,
+                        )
+                    ),
+                    20,
+                ),
+            ),
+        }
+
+    def _unifi_values(self) -> dict[str, Any]:
+        """Return persisted UniFi API settings with safe local defaults."""
+        return {
+            "enabled": self.settings.value("unifi/enabled", False, bool),
+            "gateway_url": str(
+                self.settings.value(
+                    "unifi/gateway_url",
+                    DEFAULT_UNIFI_GATEWAY_URL,
+                )
+            ),
+            "api_token": str(
+                self.settings.value(
+                    "unifi/api_token",
+                    os.environ.get("UNIFI_API_TOKEN", ""),
+                )
+            ),
+            "site": str(self.settings.value("unifi/site", "default")),
+            "verify_tls": self.settings.value(
+                "unifi/verify_tls",
+                False,
+                bool,
+            ),
+            "timeout": 5.0,
+        }
+
+    def _schedule_next_unifi_poll(self) -> None:
+        """Schedule the next UniFi refresh only when integration is configured."""
+        values = self._unifi_values()
+        if values["enabled"] and values["api_token"]:
+            self.unifi_timer.start(UNIFI_POLL_INTERVAL_MS)
+        else:
+            self.unifi_timer.stop()
+
+    def _restart_scan_timer(self) -> None:
+        """Apply the persisted rolling refresh interval."""
+        self.scan_timer.start(max(5, self._scan_values()["interval"]) * 1000)
+
+    def _restore_columns(self) -> None:
+        """Restore persisted keys and migrate newly introduced default columns once."""
+        stored = str(self.settings.value("columns/visible", "")).strip()
+        keys = [key for key in stored.split(",") if key] if stored else []
+        migrated = self.settings.value(
+            "columns/fc_sys_id_default_added",
+            False,
+            bool,
+        )
+        if not migrated:
+            if keys and "fc_sys_id" not in keys:
+                try:
+                    insert_at = keys.index("mavlink_sys_id") + 1
+                except ValueError:
+                    insert_at = len(keys)
+                keys.insert(insert_at, "fc_sys_id")
+                self.settings.setValue("columns/visible", ",".join(keys))
+            self.settings.setValue("columns/fc_sys_id_default_added", True)
+        ap_rssi_migrated = self.settings.value(
+            "columns/ap_rssi_default_added",
+            False,
+            bool,
+        )
+        if not ap_rssi_migrated:
+            if keys and "ap_rssi" not in keys:
+                try:
+                    insert_at = keys.index("rssi") + 1
+                except ValueError:
+                    insert_at = len(keys)
+                keys.insert(insert_at, "ap_rssi")
+                self.settings.setValue("columns/visible", ",".join(keys))
+            self.settings.setValue("columns/ap_rssi_default_added", True)
+        ap_metrics_migrated = self.settings.value(
+            "columns/ap_metrics_default_added",
+            False,
+            bool,
+        )
+        if not ap_metrics_migrated:
+            ap_metric_keys = [
+                "ap_wifi_standard",
+                "ap_live_throughput",
+                "ap_rx_rate",
+                "ap_tx_rate",
+            ]
+            if keys:
+                try:
+                    insert_at = keys.index("ap_rssi") + 1
+                except ValueError:
+                    insert_at = len(keys)
+                for key in ap_metric_keys:
+                    if key not in keys:
+                        keys.insert(insert_at, key)
+                        insert_at += 1
+                self.settings.setValue("columns/visible", ",".join(keys))
+            self.settings.setValue("columns/ap_metrics_default_added", True)
+        if "ap_signal_balance" in keys:
+            keys.remove("ap_signal_balance")
+            self.settings.setValue("columns/visible", ",".join(keys))
+        ap_channel_band_migrated = self.settings.value(
+            "columns/ap_channel_band_default_added",
+            False,
+            bool,
+        )
+        if not ap_channel_band_migrated:
+            ap_channel_band_keys = ["ap_channel", "ap_band"]
+            if keys:
+                try:
+                    insert_at = keys.index("ap_rssi") + 1
+                except ValueError:
+                    insert_at = len(keys)
+                for key in ap_channel_band_keys:
+                    if key not in keys:
+                        keys.insert(insert_at, key)
+                        insert_at += 1
+                self.settings.setValue("columns/visible", ",".join(keys))
+            self.settings.setValue("columns/ap_channel_band_default_added", True)
+        self.source_model.set_visible_columns(
+            keys or list(DeviceTableModel.DEFAULT_COLUMN_KEYS)
+        )
+
+    def _apply_visible_columns(self, keys: list[str]) -> None:
+        """Apply and persist ordered data-column keys for the fleet table."""
+        self.source_model.set_visible_columns(keys)
+        self.settings.setValue(
+            "columns/visible",
+            ",".join(self.source_model.visible_column_keys()),
+        )
+        self.columnsChanged.emit()
+
+    def _column_width_for_key(self, key: str) -> int:
+        """Return a clamped persisted width for one stable table column key."""
+        default_width = self._default_column_width(key)
+        if key == "selected":
+            return default_width
+        try:
+            stored = int(self.settings.value(f"columns/width/{key}", default_width))
+        except (TypeError, ValueError):
+            stored = default_width
+        return max(MIN_COLUMN_WIDTH, min(MAX_COLUMN_WIDTH, stored))
+
+    @staticmethod
+    def _default_column_width(key: str) -> int:
+        """Return the built-in width for a stable table column key."""
+        if key == "selected":
+            return 54
+        definition = DeviceTableModel.column_definition(key)
+        return definition[2] if definition else 100
+
+    def _inspector_width(self) -> int:
+        """Return a clamped persisted width for the configuration panel."""
+        try:
+            stored = int(self.settings.value("inspector/width", DEFAULT_INSPECTOR_WIDTH))
+        except (TypeError, ValueError):
+            stored = DEFAULT_INSPECTOR_WIDTH
+        return max(MIN_INSPECTOR_WIDTH, min(MAX_INSPECTOR_WIDTH, stored))
+
+    @staticmethod
+    def _local_path(file_url: str) -> Path | None:
+        """Convert a QML file URL or local path without accepting remote URLs."""
+        if not file_url:
+            return None
+        url = QUrl(file_url)
+        if url.isLocalFile():
+            return Path(url.toLocalFile()).expanduser()
+        if url.scheme():
+            return None
+        return Path(file_url).expanduser()
+
+    @staticmethod
+    def _editor_type(key: str, value: Any) -> str:
+        """Choose a QML editor from value type and high-risk field semantics."""
+        lowered = key.lower()
+        if "pass" in lowered or "secret" in lowered or "token" in lowered:
+            return "password"
+        if lowered in {
+            "ip_sta",
+            "ip_sta_gw",
+            "ip_sta_netmsk",
+            "ap_ip",
+            "udp_client_ip",
+        }:
+            return "ip"
+        if lowered.endswith("_port"):
+            return "port"
+        if isinstance(value, bool):
+            return "boolean"
+        if isinstance(value, int):
+            return "integer"
+        if isinstance(value, float):
+            return "number"
+        return "text"
+
+    @staticmethod
+    def _convert_setting(value: Any, original: Any) -> Any:
+        """Convert a QML editor value to the original REST value type."""
+        if isinstance(original, bool):
+            if isinstance(value, bool):
+                return value
+            return str(value).strip().lower() in {"1", "true", "yes", "on"}
+        if isinstance(original, int):
+            return int(value)
+        if isinstance(original, float):
+            return float(value)
+        return str(value)
+
+    @staticmethod
+    def _validate_settings(settings: dict[str, Any]) -> str | None:
+        """Validate risky network fields, passwords, and payload size."""
+        for key in ("ip_sta", "ip_sta_gw", "ap_ip", "udp_client_ip"):
+            value = settings.get(key)
+            if value:
+                try:
+                    ipaddress.ip_address(str(value))
+                except ValueError:
+                    return f"{key} is not a valid IP address."
+        netmask = settings.get("ip_sta_netmsk")
+        if netmask:
+            try:
+                ipaddress.IPv4Network(f"0.0.0.0/{netmask}")
+            except ValueError:
+                return "ip_sta_netmsk is not a valid IPv4 subnet mask."
+        for key, value in settings.items():
+            if key.lower().endswith("_port") and not 0 <= int(value) <= 65535:
+                return f"{key} must be between 0 and 65535."
+        for key in ("wifi_pass", "wifi_pass_ap"):
+            if key in settings and settings[key] and not 7 <= len(str(settings[key])) <= 64:
+                return f"{key} must contain 7 to 64 characters."
+        try:
+            if len(json.dumps(settings).encode("utf-8")) >= 10240:
+                return "Settings payload exceeds the 10,240 byte device limit."
+        except (TypeError, ValueError) as exc:
+            return f"Settings are not serializable: {exc}"
+        return None
+
+    def _sanitize_error(self, message: str) -> str:
+        """Remove session tokens and activation keys from diagnostic messages."""
+        sanitized = str(message)
+        secrets = [os.environ.get("DRONEBRIDGE_SECRET_TOKEN", "")]
+        secrets.extend(
+            record.activation_key
+            for record in self.source_model.all_records()
+            if record.activation_key
+        )
+        for secret in secrets:
+            if secret:
+                sanitized = sanitized.replace(secret, self._mask(secret))
+        return sanitized
+
+    @staticmethod
+    def _mask(value: str) -> str:
+        """Return a short masked representation for log-style diagnostics."""
+        if len(value) <= 6:
+            return "*" * len(value)
+        return f"{value[:3]}{'*' * (len(value) - 6)}{value[-3:]}"
