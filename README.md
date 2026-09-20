@@ -97,30 +97,30 @@ Run the installed commands from the folder where you want operational files to l
 ## Command Line Usage
 After installation, the following applications are available:
 
+Activates DLSE ESP32s over Wi-Fi:
 ```bash
 dlse-activate
 ```
-Activates DLSE ESP32s over Wi-Fi.
 
+Reboots DLSE ESP32s over Wi-Fi:
 ```bash
 dlse-reboot
 ```
-Reboots DLSE ESP32s over Wi-Fi.
 
+Updates the DLSE firmware of ESP32s over Wi-Fi:
 ```bash
 dlse-update --help
 ```
-Updates the DLSE firmware of ESP32s over Wi-Fi.
 
+Full installation, activation and configuration script for flashing a fleet of DLSE ESP32s over serial:
 ```bash
 dlse-install --help
 ```
-Full installation, activation and configuration script for flashing a fleet of DLSE ESP32s over serial.
 
+User interface application for convenient DLSE settings management. Covers the functionality of `dlse-update`, `dlse-reboot`, and `dlse-activate`. Can directly connect to UniFi Gateways:
 ```bash
 dlse-ui
 ```
-User interface application for convenient DLSE settings management. Covers the functionality of `dlse-update`, `dlse-reboot`, and `dlse-activate`. Can directly connect to UniFi Gateways.
 
 ### Example usage
 ```bash
