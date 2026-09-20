@@ -32,7 +32,7 @@ This suite provides tools and scripts to manage, configure, and license DroneBri
 *   Python 3.10 or higher
 *   A DroneBridge account and license token (for licensing features)
 
-## Installation
+## Installation & Quick Start
 
 ### Recommended Installation
 
@@ -95,8 +95,34 @@ Run the installed commands from the folder where you want operational files to l
 
 
 ## Command Line Usage
-Normal users should use the installed commands:
+After installation, the following applications are available:
 
+```bash
+dlse-activate
+```
+Activates DLSE ESP32s over Wi-Fi.
+
+```bash
+dlse-reboot
+```
+Reboots DLSE ESP32s over Wi-Fi.
+
+```bash
+dlse-update --help
+```
+Updates the DLSE firmware of ESP32s over Wi-Fi.
+
+```bash
+dlse-install --help
+```
+Full installation, activation and configuration script for flashing a fleet of DLSE ESP32s over serial.
+
+```bash
+dlse-ui
+```
+User interface application for convenient DLSE settings management. Covers the functionality of `dlse-update`, `dlse-reboot`, and `dlse-activate`. Can directly connect to UniFi Gateways.
+
+### Example usage
 ```bash
 dlse-activate --token <YOUR_SECRET_TOKEN> --subnetmask 192.168.1.0/24
 dlse-activate --token <YOUR_SECRET_TOKEN> -e
@@ -106,13 +132,11 @@ dlse-update --release-folder DroneBridge_ESP32DLSE_BETA5 --subnetmask 192.168.1.
 dlse-install --token <YOUR_SECRET_TOKEN> --release-folder DroneBridge_ESP32DLSE_BETA5 --settings-file my_parameters/dlse_my_params.csv --start-index 55
 ```
 
-The suite includes installable `dlse-*` commands for normal operation.
-
 Before running hardware workflows, stop Skybrush Live when using MAVLink discovery, reboot, or OTA update paths. Serial flashing also requires OS access to the ESP32 serial port.
 
-Before network operations, make sure the ESP32s are reachable, configured UDP ports match, and Skybrush Live is stopped when MAVLink ports are required. Test activation, settings, reboot, and OTA operations on a small hardware batch before using them on a production fleet. Hardware workflows were not exercised by the automated test suite.
+Before network operations, make sure the ESP32s are reachable, configured UDP ports match, and Skybrush Live is stopped when MAVLink ports are required. Test activation, settings, reboot, and OTA operations on a small hardware batch before using them on a production fleet.
 
-## Automated DLSE Batch Installation
+## CLI: Automated DLSE Batch Installation
 <img alt="Gemini_Generated_Image_kvejvukvejvukvej" src="https://github.com/user-attachments/assets/a069d8a4-fb42-4b4c-b2d6-70a67f0ac5ed" />
 This script allows for batch processing of drones for a show.
 
