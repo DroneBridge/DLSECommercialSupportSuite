@@ -1134,6 +1134,8 @@ class TestFleetUI(unittest.TestCase):
             list(DeviceTableModel.DEFAULT_COLUMN_KEYS),
             self.controller.source_model.visible_column_keys(),
         )
+        self.assertIn("operation", DeviceTableModel.DEFAULT_COLUMN_KEYS)
+        self.assertIn("operation_progress", DeviceTableModel.DEFAULT_COLUMN_KEYS)
         self.assertEqual(
             len(DeviceTableModel.DEFAULT_COLUMN_KEYS) + 1,
             self.controller.source_model.columnCount(),
@@ -1221,7 +1223,7 @@ class TestFleetUI(unittest.TestCase):
             "rssi,hostname,ip,activation_status,firmware_version,"
             "chip,dronebridge_version,mavlink_sys_id,fc_sys_id,wifi_ssid,wifi_channel,"
             "ap_rssi,ap_channel,ap_band,ap_wifi_standard,ap_live_throughput,"
-            "ap_rx_rate,ap_tx_rate,dlse_mode",
+            "ap_rx_rate,ap_tx_rate,dlse_mode,operation,operation_progress",
             self._test_settings.value("columns/visible"),
         )
         columns = self.controller.columns
@@ -1260,6 +1262,8 @@ class TestFleetUI(unittest.TestCase):
                 "ap_rx_rate",
                 "ap_tx_rate",
                 "dlse_mode",
+                "operation",
+                "operation_progress",
             ],
             self.controller.source_model.visible_column_keys(),
         )
@@ -1267,7 +1271,7 @@ class TestFleetUI(unittest.TestCase):
             "rssi,ip,hostname,activation_status,firmware_version,"
             "chip,dronebridge_version,mavlink_sys_id,fc_sys_id,wifi_ssid,wifi_channel,"
             "ap_rssi,ap_channel,ap_band,ap_wifi_standard,ap_live_throughput,"
-            "ap_rx_rate,ap_tx_rate,dlse_mode",
+            "ap_rx_rate,ap_tx_rate,dlse_mode,operation,operation_progress",
             self._test_settings.value("columns/visible"),
         )
 

@@ -70,6 +70,8 @@ The desktop Fleet Manager provides MAVLink and HTTP discovery, fleet table and
 matrix views, device inspection, settings management, OTA licensing, reboot,
 firmware updates, and optional UniFi observations. Serial flashing remains a
 command-line workflow.
+The fleet table shows the Operation and Progress columns by default; use
+Configure Columns to adjust the visible columns and their order.
 
 <img width="1377" height="836" alt="DLSE_UI1" src="https://github.com/user-attachments/assets/be8bb527-ab1b-4b7c-83c2-c37ccdaca1e1" />
 

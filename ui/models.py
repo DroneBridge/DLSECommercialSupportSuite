@@ -196,7 +196,10 @@ class DeviceTableModel(QAbstractTableModel):
         ("operation", "OPERATION", 150),
         ("operation_progress", "PROGRESS", 106),
     ]
-    DEFAULT_COLUMN_KEYS = tuple(column[0] for column in COLUMNS[:19])
+    DEFAULT_COLUMN_KEYS = tuple(column[0] for column in COLUMNS[:19]) + (
+        "operation",
+        "operation_progress",
+    )
 
     IdentityRole = Qt.UserRole + 1
     IpRole = Qt.UserRole + 2
