@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.1
+
+### Added
+
+- Bulk editing for compatible DLSE settings across checked Fleet Manager
+  devices.
+
+### Changed
+
+- The Settings panel now shows shared values across the checked set and marks
+  differences as mixed until explicitly edited.
+- Bulk edits include only settings available with compatible types on every
+  target, clear pending edits when the checked set changes, and require an
+  explicit confirmation before target devices reboot.
+
 ## 1.1.0
 
 ### Added
