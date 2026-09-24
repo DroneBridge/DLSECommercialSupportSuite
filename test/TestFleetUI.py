@@ -544,6 +544,47 @@ class TestFleetUI(unittest.TestCase):
         self.assertNotIn("TextInput.Password", source)
         self.assertNotIn("id: settingsList", source)
 
+    def test_mixed_boolean_setting_shows_a_neutral_choice(self):
+        """Mixed booleans do not default to enabled or disabled in the editor."""
+        self._enter_main_screen()
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="A",
+                ip="192.168.1.2",
+                activation_key="A",
+                settings={"wifi_enabled": True},
+            ),
+            DeviceRecord(
+                identity="B",
+                ip="192.168.1.3",
+                activation_key="B",
+                settings={"wifi_enabled": False},
+            ),
+        ])
+        self.controller.toggleSelection("A")
+        self.controller.toggleSelection("B")
+        self.app.processEvents()
+
+        settings_table = self.root.findChild(QQuickItem, "settingsTable")
+
+        def descendants(item):
+            for child in item.childItems():
+                yield child
+                yield from descendants(child)
+
+        editor = next(
+            (
+                item
+                for item in descendants(settings_table)
+                if item.objectName() == "mixedBooleanSettingsEditor"
+            ),
+            None,
+        )
+
+        self.assertIsNotNone(editor)
+        self.assertEqual(0, editor.property("currentIndex"))
+        self.assertEqual("Mixed values", editor.property("displayText"))
+
     def test_settings_empty_state_is_centered_in_the_tab(self):
         """The placeholder is centered while Settings actions remain at the bottom."""
         self._enter_main_screen()
@@ -1834,6 +1875,187 @@ class TestFleetUI(unittest.TestCase):
         records, settings = self.controller._start_settings.call_args.args[:2]
         self.assertEqual(["KEY"], [record.identity for record in records])
         self.assertEqual({"wifi_chan": 7}, settings)
+        self.assertEqual(1, self.controller.settingsTargetCount)
+        self.assertFalse(self.controller.settingsUsesSelection)
+
+    def test_bulk_settings_fields_aggregate_checked_devices(self):
+        """Bulk fields expose common keys, consensus values, and mixed blanks."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="A",
+                ip="192.168.1.2",
+                activation_key="A",
+                hostname="Alpha",
+                settings={
+                    "wifi_chan": 6,
+                    "wifi_hostname": "Drone",
+                    "only_a": 1,
+                    "type_mismatch": 1,
+                },
+            ),
+            DeviceRecord(
+                identity="B",
+                ip="192.168.1.3",
+                activation_key="B",
+                hostname="Bravo",
+                settings={
+                    "wifi_chan": 11,
+                    "wifi_hostname": "Drone",
+                    "only_b": 2,
+                    "type_mismatch": "1",
+                },
+            ),
+        ])
+        self.controller.toggleSelection("A")
+        self.controller.toggleSelection("B")
+        self.controller.fleet_model.setFilterText("Alpha")
+
+        fields = {field["key"]: field for field in self.controller.settingsFields}
+
+        self.assertEqual(1, self.controller.fleet_model.rowCount())
+        self.assertEqual(2, self.controller.settingsTargetCount)
+        self.assertTrue(self.controller.settingsUsesSelection)
+        self.assertEqual({"wifi_chan", "wifi_hostname"}, set(fields))
+        self.assertEqual("", fields["wifi_chan"]["value"])
+        self.assertTrue(fields["wifi_chan"]["mixed"])
+        self.assertFalse(fields["wifi_chan"]["dirty"])
+        self.assertEqual("Drone", fields["wifi_hostname"]["value"])
+        self.assertFalse(fields["wifi_hostname"]["mixed"])
+
+    def test_bulk_settings_are_unavailable_when_any_target_lacks_settings(self):
+        """Do not silently omit selected devices with unavailable settings."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="A",
+                ip="192.168.1.2",
+                activation_key="A",
+                settings={"wifi_chan": 6},
+            ),
+            DeviceRecord(
+                identity="B",
+                ip="192.168.1.3",
+                activation_key="B",
+                errors={"settings": "request failed"},
+            ),
+        ])
+        self.controller.toggleSelection("A")
+        self.controller.toggleSelection("B")
+
+        self.assertEqual([], self.controller.settingsFields)
+        self.assertIn("1 of 2 target device(s)", self.controller.settingsAvailabilityMessage)
+
+    def test_changing_checked_targets_discards_drafts_with_notice(self):
+        """Changing the target set clears pending edits and notifies the operator."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(identity="A", ip="192.168.1.2", activation_key="A", settings={"wifi_chan": 6}),
+            DeviceRecord(identity="B", ip="192.168.1.3", activation_key="B", settings={"wifi_chan": 11}),
+        ])
+        self.controller.toggleSelection("A")
+        self.controller.toggleSelection("B")
+        toasts = []
+        self.controller.toastRequested.connect(
+            lambda level, message: toasts.append((level, message))
+        )
+        self.controller.setSettingValue("wifi_chan", "7")
+        self.assertEqual(1, self.controller.settingsDirtyCount)
+
+        self.controller.toggleSelection("B")
+
+        self.assertEqual(0, self.controller.settingsDirtyCount)
+        self.assertIn("Pending settings edits were cleared", toasts[-1][1])
+
+    def test_bulk_settings_submission_sends_edited_common_fields_only(self):
+        """Bulk submission converts edited values and preserves untouched mixed fields."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="A",
+                ip="192.168.1.2",
+                activation_key="A",
+                settings={"wifi_chan": 6, "wifi_hostname": "Alpha"},
+            ),
+            DeviceRecord(
+                identity="B",
+                ip="192.168.1.3",
+                activation_key="B",
+                settings={"wifi_chan": 11, "wifi_hostname": "Bravo"},
+            ),
+        ])
+        self.controller.toggleSelection("A")
+        self.controller.toggleSelection("B")
+        self.controller.setSettingValue("wifi_chan", "7")
+        self.controller._start_settings = Mock(return_value=True)
+
+        self.controller.applyEditedSettings()
+
+        records, settings = self.controller._start_settings.call_args.args[:2]
+        self.assertEqual(["A", "B"], [record.identity for record in records])
+        self.assertEqual({"wifi_chan": 7}, settings)
+        self.assertEqual(0, self.controller.settingsDirtyCount)
+
+    def test_bulk_settings_can_explicitly_clear_a_text_value(self):
+        """Explicitly editing a mixed text field to blank submits an empty string."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="A",
+                ip="192.168.1.2",
+                activation_key="A",
+                settings={"wifi_hostname": "Alpha"},
+            ),
+            DeviceRecord(
+                identity="B",
+                ip="192.168.1.3",
+                activation_key="B",
+                settings={"wifi_hostname": "Bravo"},
+            ),
+        ])
+        self.controller.toggleSelection("A")
+        self.controller.toggleSelection("B")
+        self.controller.setSettingValue("wifi_hostname", "")
+        self.controller._start_settings = Mock(return_value=True)
+
+        self.controller.applyEditedSettings()
+
+        records, settings = self.controller._start_settings.call_args.args[:2]
+        self.assertEqual(2, len(records))
+        self.assertEqual({"wifi_hostname": ""}, settings)
+
+    def test_bulk_settings_confirmation_names_setting_and_device_counts(self):
+        """The existing confirmation reports the pending payload and target counts."""
+        self._enter_main_screen()
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity="A",
+                ip="192.168.1.2",
+                activation_key="A",
+                settings={"wifi_chan": 6, "wifi_hostname": "Alpha"},
+            ),
+            DeviceRecord(
+                identity="B",
+                ip="192.168.1.3",
+                activation_key="B",
+                settings={"wifi_chan": 11, "wifi_hostname": "Bravo"},
+            ),
+        ])
+        self.controller.toggleSelection("A")
+        self.controller.toggleSelection("B")
+        self.controller.setSettingValue("wifi_chan", "7")
+        self.controller.setSettingValue("wifi_hostname", "Fleet")
+        self.app.processEvents()
+
+        dialogs = self.root.findChild(QQuickItem, "fleetDialogs")
+        confirm_dialog = self.root.findChild(object, "confirmDialog")
+        confirm_text = self.root.findChild(QQuickItem, "confirmText")
+        self.assertIsNotNone(dialogs)
+        self.assertIsNotNone(confirm_dialog)
+        self.assertIsNotNone(confirm_text)
+
+        self.assertTrue(QMetaObject.invokeMethod(dialogs, "openApplySettings"))
+
+        self.assertTrue(confirm_dialog.property("opened"))
+        text = confirm_text.property("text")
+        self.assertIn("2 changed setting(s) to 2 selected device(s)", text)
+        self.assertIn("reboot automatically", text)
+        confirm_dialog.close()
 
     def test_csv_application_respects_custom_exclusions(self):
         """User-selected exclusions are removed before bulk submission."""

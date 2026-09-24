@@ -152,8 +152,21 @@ Item {
     }
 
     function openApplySettings() {
+        if (fleetController.settingsTargetCount <= 0) {
+            showToast("info", "Select a device before applying settings.")
+            return
+        }
+        if (fleetController.settingsDirtyCount <= 0) {
+            showToast("info", "Change at least one setting before applying.")
+            return
+        }
         confirmationKind = "settings"
-        confirmText.text = "Apply the changed settings? The ESP32 will reboot automatically."
+        const targetDescription = fleetController.settingsUsesSelection
+              ? fleetController.settingsTargetCount + " selected device(s)"
+              : "the inspected ESP32"
+        confirmText.text = "Apply " + fleetController.settingsDirtyCount
+              + " changed setting(s) to " + targetDescription
+              + "? Each ESP32 will reboot automatically after saving."
         center(confirmDialog)
         confirmDialog.open()
     }
@@ -1106,6 +1119,7 @@ Item {
 
     ModalDialog {
         id: confirmDialog
+        objectName: "confirmDialog"
         title: confirmationKind === "clear" ? "Clear Fleet"
              : confirmationKind === "settings" ? "Apply Settings"
              : confirmationKind === "static_ip_assign" ? "Assign Static IPs"
@@ -1115,6 +1129,7 @@ Item {
 
         Text {
             id: confirmText
+            objectName: "confirmText"
             Layout.fillWidth: true
             color: theme.primaryText
             wrapMode: Text.Wrap

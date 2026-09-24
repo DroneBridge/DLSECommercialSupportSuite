@@ -49,10 +49,10 @@ python -m pipx ensurepath
 Open a new terminal and install.
 
 ```bash
-pipx install https://github.com/DroneBridge/DLSECommercialSupportSuite/releases/download/v1.1.0/dlsecommercialsupportsuite-1.1.0-py3-none-any.whl
+pipx install --force https://github.com/DroneBridge/DLSECommercialSupportSuite/releases/download/v1.1.1/dlsecommercialsupportsuite-1.1.1-py3-none-any.whl
 ```
 
-For newer releases, replace `v1.1.0` and the wheel filename with the version shown on the GitHub Releases page.
+For newer releases, replace `v1.1.1` and the wheel filename with the version shown on the GitHub Releases page.
 
 Open a new terminal and verify the commands are available:
 
@@ -72,6 +72,10 @@ firmware updates, and optional UniFi observations. Serial flashing remains a
 command-line workflow.
 The fleet table shows the Operation and Progress columns by default; use
 Configure Columns to adjust the visible columns and their order.
+In the Settings panel, checked devices can be edited together for settings they
+all report. Differing values start blank with a Mixed values hint, and only
+fields the operator edits are applied. Each settings update is confirmed and
+reboots its target devices.
 
 <img width="1377" height="836" alt="DLSE_UI1" src="https://github.com/user-attachments/assets/be8bb527-ab1b-4b7c-83c2-c37ccdaca1e1" />
 
@@ -81,7 +85,7 @@ Start the application after installation with:
 dlse-ui
 ```
 
-Windows x64 is the validated desktop platform for v1.1.0. Linux and macOS are
+Windows x64 is the validated desktop platform for v1.1.1. Linux and macOS are
 expected to work but are not release-qualified. Python 3.10 and newer are
 supported; UniFi integration is guaranteed on Python 3.10 through 3.13 and is
 best-effort on newer Python versions.
@@ -438,10 +442,10 @@ If an existing local `build/` folder shadows the Python `build` module, run the 
 python -m build DLSECommercialSupportSuite
 ```
 
-Smoke-test the v1.1.0 wheel in an isolated `pipx` environment before publishing:
+Smoke-test the v1.1.1 wheel in an isolated `pipx` environment before publishing:
 
 ```bash
-pipx install --force dist/dlsecommercialsupportsuite-1.1.0-py3-none-any.whl
+pipx install --force dist/dlsecommercialsupportsuite-1.1.1-py3-none-any.whl
 dlse-activate --help
 dlse-reboot --help
 dlse-update --help

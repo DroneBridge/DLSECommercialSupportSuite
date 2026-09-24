@@ -645,6 +645,7 @@ class FleetController(QObject):
         self._inspected_identity = ""
         self._last_web_url = ""
         self._setting_edits: dict[str, Any] = {}
+        self._settings_selection_signature: frozenset[str] = frozenset()
         self._csv_template: dict[str, Any] = {}
         self._failed_identities: set[str] = set()
         self._retry_context: tuple[str, dict[str, Any]] | None = None
@@ -655,7 +656,7 @@ class FleetController(QObject):
         self._ota_pending_options: dict[str, Any] | None = None
 
         self.source_model.inventoryChanged.connect(self._inventory_changed)
-        self.source_model.selectionChanged.connect(self.stateChanged)
+        self.source_model.selectionChanged.connect(self._selection_changed)
         self._restore_columns()
 
         self.scan_timer = QTimer(self)
@@ -890,28 +891,98 @@ class FleetController(QObject):
 
     @Property("QVariantList", notify=inspectorChanged)
     def settingsFields(self) -> list[dict[str, Any]]:
-        """Return typed, dirty-aware setting editor definitions."""
-        record = self._inspected_record()
-        if record is None:
+        """Return common typed settings and edit state for the current targets."""
+        records = self._settings_target_records()
+        if not records or any(
+            not record.settings or record.errors.get("settings")
+            for record in records
+        ):
             return []
+
+        common_keys = set(records[0].settings)
+        for record in records[1:]:
+            common_keys.intersection_update(record.settings)
+        common_keys.discard("data_types")
+
         fields = []
-        for key in sorted(record.settings):
-            if key == "data_types":
+        for key in sorted(common_keys):
+            values = [record.settings[key] for record in records]
+            if any(type(value) is not type(values[0]) for value in values[1:]):
                 continue
-            original = record.settings[key]
-            current = self._setting_edits.get(key, original)
+            metadata_types = [
+                str(record.settings.get(f"{key}_type", ""))
+                for record in records
+            ]
+            if any(value != metadata_types[0] for value in metadata_types[1:]):
+                continue
+
+            original = values[0]
+            mixed = any(value != original for value in values[1:])
+            edited = key in self._setting_edits
+            current = self._setting_edits.get(
+                key,
+                "" if mixed else ("" if original is None else original),
+            )
+            dirty = False
+            if edited:
+                try:
+                    converted = self._convert_setting(current, original)
+                except (TypeError, ValueError):
+                    dirty = True
+                else:
+                    dirty = any(
+                        type(converted) is not type(value) or converted != value
+                        for value in values
+                    )
             fields.append(
                 {
                     "key": key,
                     "label": key,
                     "value": current,
-                    "original": original,
-                    "metadataType": str(record.settings.get(f"{key}_type", "")),
+                    "original": None if mixed else original,
+                    "metadataType": metadata_types[0],
                     "editor": self._editor_type(key, original),
-                    "dirty": current != original,
+                    "mixed": mixed,
+                    "dirty": dirty,
                 }
             )
         return fields
+
+    @Property(int, notify=inspectorChanged)
+    def settingsTargetCount(self) -> int:
+        """Return the number of devices represented by the settings editor."""
+        return len(self._settings_target_records())
+
+    @Property(bool, notify=inspectorChanged)
+    def settingsUsesSelection(self) -> bool:
+        """Return whether checked devices, rather than the inspected row, are targets."""
+        return bool(self.source_model.selected_records())
+
+    @Property(int, notify=inspectorChanged)
+    def settingsDirtyCount(self) -> int:
+        """Return the number of edited settings that would change at least one target."""
+        return sum(bool(field["dirty"]) for field in self.settingsFields)
+
+    @Property(str, notify=inspectorChanged)
+    def settingsAvailabilityMessage(self) -> str:
+        """Explain why settings cannot be edited for the current target set."""
+        records = self._settings_target_records()
+        if not records:
+            return "Select a device to inspect settings or check devices to edit them together."
+        unavailable = sum(
+            not record.settings or bool(record.errors.get("settings"))
+            for record in records
+        )
+        if unavailable:
+            return (
+                f"Settings are unavailable for {unavailable} of {len(records)} target device(s). "
+                "Rescan and wait for settings to load before editing."
+            )
+        if not self.settingsFields:
+            if len(records) > 1:
+                return "These devices have no compatible settings in common."
+            return "No settings are available for this ESP32."
+        return ""
 
     @Property("QVariantList", notify=inspectorChanged)
     def metrics(self) -> list[dict[str, Any]]:
@@ -1288,11 +1359,12 @@ class FleetController(QObject):
 
     @Slot(str)
     def inspectDevice(self, identity: str) -> None:
-        """Select one device as the inspector data source."""
+        """Select one device for inspection without changing checked bulk targets."""
         if identity == self._inspected_identity:
             return
         self._inspected_identity = identity
-        self._setting_edits.clear()
+        if not self.source_model.selected_records():
+            self._setting_edits.clear()
         self._emit_web_url_if_changed()
         self.inspectorChanged.emit()
 
@@ -1300,6 +1372,32 @@ class FleetController(QObject):
     def toggleSelection(self, identity: str) -> None:
         """Toggle one device checkbox using its stable identity."""
         self.source_model.toggle_selected(identity)
+
+    def _selection_changed(self) -> None:
+        """Refresh target-aware settings after checked devices change."""
+        signature = frozenset(
+            record.identity for record in self.source_model.selected_records()
+        )
+        if signature != self._settings_selection_signature:
+            had_edits = bool(self._setting_edits)
+            self._setting_edits.clear()
+            self._settings_selection_signature = signature
+            if had_edits:
+                self.toastRequested.emit(
+                    "info",
+                    "Checked devices changed. Pending settings edits were cleared; "
+                    "re-enter them for the new targets.",
+                )
+            self.inspectorChanged.emit()
+        self.stateChanged.emit()
+
+    def _settings_target_records(self) -> list[DeviceRecord]:
+        """Return checked devices, or the inspected device when none are checked."""
+        selected = self.source_model.selected_records()
+        if selected:
+            return selected
+        record = self._inspected_record()
+        return [record] if record is not None else []
 
     @Slot(bool)
     def selectAll(self, selected: bool) -> None:
@@ -1321,41 +1419,65 @@ class FleetController(QObject):
             self._stats_worker.cancel()
         self._pending_settings_refresh.clear()
         self.settings_refresh_timer.stop()
+        self._setting_edits.clear()
         self.source_model.clear()
         self._inspected_identity = ""
-        self._setting_edits.clear()
         self._emit_web_url_if_changed()
         self.inspectorChanged.emit()
 
     @Slot(str, "QVariant")
     def setSettingValue(self, key: str, value: Any) -> None:
-        """Store one inspector edit without mutating cached device settings."""
-        record = self._inspected_record()
-        if record is None or key not in record.settings:
+        """Store an explicit edit for a setting common to the current targets."""
+        if key not in {field["key"] for field in self.settingsFields}:
             return
-        self._setting_edits[key] = value
+        records = self._settings_target_records()
+        try:
+            converted = self._convert_setting(value, records[0].settings[key])
+        except (TypeError, ValueError):
+            self._setting_edits[key] = value
+        else:
+            if all(
+                type(converted) is type(record.settings[key])
+                and converted == record.settings[key]
+                for record in records
+            ):
+                self._setting_edits.pop(key, None)
+            else:
+                self._setting_edits[key] = value
         self.inspectorChanged.emit()
 
     @Slot()
     def discardSettingChanges(self) -> None:
-        """Discard all pending edits for the inspected device."""
+        """Discard all pending edits for the current settings target set."""
         if self._setting_edits:
             self._setting_edits.clear()
             self.inspectorChanged.emit()
 
     @Slot()
     def applyEditedSettings(self) -> None:
-        """Validate and apply dirty settings to the inspected device."""
-        record = self._inspected_record()
-        if record is None:
-            self.toastRequested.emit("info", "Select a device first.")
+        """Apply explicitly edited values to every current settings target."""
+        records = self._settings_target_records()
+        if not records:
+            self.toastRequested.emit("info", self.settingsAvailabilityMessage)
             return
+        if not self.settingsFields:
+            self.toastRequested.emit("info", self.settingsAvailabilityMessage)
+            return
+
+        fields = {field["key"]: field for field in self.settingsFields}
         changed: dict[str, Any] = {}
         try:
             for key, edited in self._setting_edits.items():
-                original = record.settings.get(key)
+                field = fields.get(key)
+                if field is None or not field["dirty"]:
+                    continue
+                original = records[0].settings[key]
                 converted = self._convert_setting(edited, original)
-                if converted != original:
+                if any(
+                    type(converted) is not type(record.settings[key])
+                    or converted != record.settings[key]
+                    for record in records
+                ):
                     changed[key] = converted
         except (TypeError, ValueError) as exc:
             self.toastRequested.emit("error", f"Invalid setting value: {exc}")
@@ -1363,7 +1485,9 @@ class FleetController(QObject):
         if not changed:
             self.toastRequested.emit("info", "No settings have changed.")
             return
-        self._start_settings([record], changed, remember=True)
+        if self._start_settings(records, changed, remember=True):
+            self._setting_edits.clear()
+            self.inspectorChanged.emit()
 
     @Slot(str)
     def exportSettings(self, file_url: str) -> None:
@@ -1891,20 +2015,28 @@ class FleetController(QObject):
         records: list[DeviceRecord],
         settings: dict[str, Any],
         remember: bool,
-    ) -> None:
-        """Validate and launch a bounded settings worker."""
+    ) -> bool:
+        """
+        Validate and launch a bounded settings worker.
+
+        :param records: Devices that receive the same partial settings payload.
+        :param settings: Typed settings values to apply to every target.
+        :param remember: Whether the operation should be available for retry.
+        :return: ``True`` when queued; ``False`` after validation or overlap rejection.
+        """
         error = self._validate_settings(settings)
         if error:
             self.toastRequested.emit("error", error)
-            return
+            return False
         if not self._operation_available():
-            return
+            return False
         for record in records:
             self.source_model.update_operation(record.identity, "applying settings", 0)
         worker = SettingsWorker(records, settings, self._scan_values()["workers"])
         if remember:
             self._retry_context = ("settings", {"settings": settings})
         self._begin_worker("settings", worker)
+        return True
 
     def _launch_static_ip_assignment(
         self,

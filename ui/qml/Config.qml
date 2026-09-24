@@ -48,9 +48,12 @@ Rectangle {
 
                 Text {
                     Layout.fillWidth: true
-                    text: fleetController.selectedDevice.ip
-                          ? "ESP32 Configuration  " + fleetController.selectedDevice.ip
-                          : "ESP32 Configuration"
+                    text: fleetController.settingsUsesSelection
+                          ? "ESP32 Configuration  " + fleetController.settingsTargetCount
+                            + " selected device(s)"
+                          : (fleetController.selectedDevice.ip
+                             ? "ESP32 Configuration  " + fleetController.selectedDevice.ip
+                             : "ESP32 Configuration")
                     color: theme.secondaryText
                     font.family: theme.bodyFont
                     font.pixelSize: theme.bodyTextSize
@@ -106,7 +109,7 @@ Rectangle {
                     anchors.centerIn: parent
                     width: parent.width - 40
                     visible: fleetController.settingsFields.length === 0
-                    text: "Select a detected ESP32 to inspect and edit its settings."
+                    text: fleetController.settingsAvailabilityMessage
                     color: theme.secondaryText
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.Wrap
@@ -196,9 +199,13 @@ Rectangle {
 
                                 Loader {
                                     id: editorLoader
+                                    objectName: "settingsEditorLoader"
                                     Layout.fillWidth: true
-                                    Layout.preferredHeight: 30
-                                    sourceComponent: modelData.editor === "boolean" ? booleanEditor : textEditor
+                                    Layout.preferredHeight: modelData.editor === "boolean" && modelData.mixed
+                                                           ? 34 : 30
+                                    sourceComponent: modelData.editor === "boolean"
+                                                     ? (modelData.mixed ? mixedBooleanEditor : booleanEditor)
+                                                     : textEditor
                                 }
                             }
 
@@ -215,10 +222,36 @@ Rectangle {
                                 id: textEditor
                                 AppTextField {
                                     text: String(modelData.value)
+                                    placeholderText: modelData.mixed && !modelData.dirty
+                                                     ? "Mixed values" : ""
                                     echoMode: TextInput.Normal
                                     inputMethodHints: modelData.editor === "integer" || modelData.editor === "port"
                                                       ? Qt.ImhDigitsOnly : Qt.ImhNone
-                                    onEditingFinished: fleetController.setSettingValue(modelData.key, text)
+                                    property bool userEdited: false
+                                    onTextEdited: userEdited = true
+                                    onEditingFinished: {
+                                        if (userEdited) {
+                                            fleetController.setSettingValue(modelData.key, text)
+                                            userEdited = false
+                                        }
+                                    }
+                                }
+                            }
+
+                            Component {
+                                id: mixedBooleanEditor
+                                AppComboBox {
+                                    objectName: "mixedBooleanSettingsEditor"
+                                    model: ["Mixed values", "Disabled", "Enabled"]
+                                    currentIndex: modelData.dirty
+                                                  ? (Boolean(modelData.value) ? 2 : 1) : 0
+                                    onActivated: function(index) {
+                                        if (index > 0)
+                                            fleetController.setSettingValue(
+                                                modelData.key,
+                                                index === 2
+                                            )
+                                    }
                                 }
                             }
                         }
@@ -252,9 +285,11 @@ Rectangle {
                     AppButton {
                         objectName: "configApplySettingsButton"
                         Layout.fillWidth: true
-                        text: "APPLY CHANGES"
+                        text: fleetController.settingsUsesSelection
+                              ? "APPLY TO SELECTED" : "APPLY CHANGES"
                         emphasized: true
-                        enabled: Boolean(fleetController.selectedDevice.ip)
+                        enabled: fleetController.settingsDirtyCount > 0
+                                 && fleetController.activeOperation.length === 0
                         onClicked: config.applyRequested()
                     }
                 }
