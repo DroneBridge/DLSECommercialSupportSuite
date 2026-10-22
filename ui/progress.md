@@ -1,6 +1,6 @@
 # Fleet Manager QML Progress
 
-Last updated: 2026-09-13
+Last updated: 2026-10-13
 
 ## QML Foundation
 
@@ -66,7 +66,24 @@ Last updated: 2026-09-13
 - [x] Offer retry-failed behavior for retryable operations.
 - [x] Support account release listing and download before Fleet Manager OTA uploads.
 
-## Verification
+## Serial Batch Flasher
+
+- [x] Add start-page entry and a dedicated guided QML page with native file/folder pickers.
+- [x] Support local, cached and account release sources using existing release workers.
+- [x] Support release defaults/exported CSV, permanent/evaluation/offline recovery modes, session-only tokens, baud and indexed assignments.
+- [x] Validate CSV schema/values, firmware maps/files, assignment previews and license signature/type/device match/expiry.
+- [x] Detect only new connections; initialize ports, process sequentially and skip completed duplicate devices.
+- [x] Show current stages, busy indicators, per-board outcomes, counters and sanitized timestamped activity/logs.
+- [x] Isolate workers and temporary artifacts; bound serial/licensing/NVS/flashing work with deadlines and descendant cleanup.
+- [x] Pause failures for explicit retry/skip and confirm index reservation after possible partial writes.
+- [x] Finish active work on Stop/Back/close while discarding queued devices.
+- [x] Persist non-secret preferences and next index; preserve existing CLI and main library unchanged.
+- [x] Add mocked pipeline/session, real-process preflight/protocol and offscreen QML navigation tests.
+- [x] Verify descendant termination and temporary-file cleanup after real worker deadlines.
+- [x] Verify rendered setup/review/results layouts and run the complete regression suite (hardware/network checks disabled).
+- [ ] Qualify physical C3/C5/C6 flashing, licensing/recovery, unplugging and serial permissions on supported operating systems.
+
+## Fleet Verification
 
 - [x] Add tests preventing QWidget UI code from being reintroduced.
 - [x] Add exact semantic-theme, normal-button, and status-badge color tests.

@@ -68,8 +68,8 @@ dlse-ui
 
 The desktop Fleet Manager provides MAVLink and HTTP discovery, fleet table and
 matrix views, device inspection, settings management, OTA licensing, reboot,
-firmware updates, and optional UniFi observations. Serial flashing remains a
-command-line workflow.
+firmware updates, and optional UniFi observations. The start page also offers a
+dedicated **Serial Batch Flasher** for installation, configuration and licensing.
 The fleet table shows the Operation and Progress columns by default; use
 Configure Columns to adjust the visible columns and their order.
 In the Settings panel, checked devices can be edited together for settings they
@@ -93,6 +93,67 @@ best-effort on newer Python versions.
 Before fleet operations, ensure the ESP32 devices are reachable and stop
 Skybrush Live when the selected workflow uses MAVLink ports. Test settings,
 activation, reboot, and OTA operations on a small non-production fleet first.
+
+### Serial Batch Flasher
+
+Launch `dlse-ui` (or `python -m ui` from a source checkout), then choose **Serial
+Batch Flasher** on the start page. The existing `dlse-install` CLI is unchanged.
+
+1. Choose an extracted release root folder, or refresh the cached/account release
+   list and select a release. Online downloads need a DroneBridge token. A release
+   must contain `db_show_params.csv` and `esp32c3_generic`, `esp32c5_generic` and
+   `esp32c6_generic` folders with `flash_args.txt` and all referenced binaries.
+2. Use release-default settings or choose an exported, self-contained NVS CSV
+   with the header `key,type,encoding,value`. Export a known working configuration
+   from a DLSE device first when provisioning a production fleet.
+3. Choose permanent activation, 60-day evaluation, or **offline permanent-license
+   recovery**. Online modes require a token; `DRONEBRIDGE_SECRET_TOKEN` supplies
+   the initial value. Tokens are masked and never saved in UI preferences.
+   Offline license recovery never contacts the license server and needs a valid matching
+   permanent license in `received_licenses/` or on the connected board. Permanent
+   activation also uses this recovery path when the server is unavailable.
+   Evaluation requires server access and its temporary licenses are not cached.
+   Account firmware listing/downloads are separate online operations, even when
+   offline license recovery is selected.
+4. Choose the starting index (initial default **18**) and baud (**460800**; lower
+   to **115200** for connection problems). Prepare the review, inspect assignment
+   previews and schema warnings, then confirm automatic monitoring.
+
+The flasher snapshots existing ports and processes **new connections only**.
+Reconnect already-attached boards after monitoring starts. Ports are checked
+every **one second**, with **two seconds** allowed for initialization. Install
+the board's USB/serial driver and ensure your OS account can access the port;
+close other programs using that serial port. Serial flashing itself does not
+require MAVLink access or stopping Skybrush Live unless it owns that port.
+
+The current-activity banner, per-board stages, outcome counts and timestamped
+history show what is happening. Busy indicators are indeterminate; no estimated
+flash percentage is shown. Firmware, settings and license are installed one
+board at a time. Keep each board connected until it completes.
+
+The index replaces the last static-IP octet when configured and replaces trailing
+numbers in the hostname and AP name. Blank static IP remains blank. Invalid or
+exhausted assignments stop processing instead of wrapping. The next index is
+saved after success. Failed boards pause the queue for explicit retry or skip;
+retry rechecks their identity. If writing began, skipping requires confirmation
+and reserves that index to avoid assigning it to another board. Unsupported chips
+and successfully processed duplicate devices are skipped automatically.
+
+**Stop**, Back and window close stop arrivals and discard queued work while the
+active board finishes. Worker deadlines are **120 seconds per serial-read stage**,
+**180 seconds for licensing**, **60 seconds for validation/settings/NVS generation**,
+**600 seconds for flashing**, and **900 seconds for release download/extraction**.
+Existing helpers retain their four identification attempts and three transient
+license-request attempts, including their network timeouts and backoff. Deadline
+failures terminate the worker and its descendants; interrupted flashing can leave
+a partially programmed board and is never retried automatically.
+
+Release binaries and source CSVs are not edited. Intermediate files are isolated
+per worker and removed afterward; permanent license backups remain in
+`received_licenses/`. Sanitized logs are written to `logs/dlse_serial_ui_*.log`.
+Non-secret flasher preferences and the next index persist; monitoring never starts
+automatically on launch. Physical C3/C5/C6 and Linux/macOS qualification remains
+pending; test a small batch before production use.
 
 
 ### Operational Folder

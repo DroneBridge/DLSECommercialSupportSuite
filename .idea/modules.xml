@@ -4,7 +4,9 @@
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/DLSECommercialSupportSuite.iml" filepath="$PROJECT_DIR$/.idea/DLSECommercialSupportSuite.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/DLSECommercialSupportSuite@1.iml" filepath="$PROJECT_DIR$/.idea/DLSECommercialSupportSuite@1.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/DLSECommercialSupportSuite@2.iml" filepath="$PROJECT_DIR$/.idea/DLSECommercialSupportSuite@2.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/esp_idf_nvs_partition_gen.iml" filepath="$PROJECT_DIR$/.idea/esp_idf_nvs_partition_gen.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/esp_idf_nvs_partition_gen@1.iml" filepath="$PROJECT_DIR$/.idea/esp_idf_nvs_partition_gen@1.iml" />
     </modules>
   </component>
 </project>

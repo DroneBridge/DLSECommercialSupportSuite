@@ -7,7 +7,7 @@
   - The user interface shall be designed to manage up to 5000 ESP32s. This shall be respected when considering the size and layout of the user interface, as well as the performance and update rates.
   - The user interface shall work on Windows, Linux and MacOS.
   - The primary interface to the ESP32s shall be the REST:API. In the future, there shall be an option to use the MAVLink interface or a Ubiquity interface or a combination of all.
-  - Flashing the ESP32s via serial shall not be in scope of this UI for now.
+  - Serial flashing is supported by a separate Serial Batch Flasher page, entered from the start screen; its session is independent of Fleet Manager inventory.
 
 ## Intermediate Goals
   - The user interface shall support the `batch_ota_license_activation.py` process.
@@ -55,12 +55,24 @@
 ## User Interface Framework
 - Use PySide6
 
+## Serial Batch Flasher
+- Enter a dedicated guided page from the start screen; preserve the existing CLI and public library APIs.
+- Choose local/cached/account firmware, default/exported settings CSV, license mode, session-only token, starting index and baud. Do not expose CLI esptool fallback.
+- Validate inputs and review indexed assignment previews and merge warnings before explicitly confirming automatic flashing of new connections.
+- Detect ports every second, initialize for two seconds and process one board at a time. Exclude initial connections and suppress completed duplicate devices.
+- Show current named activity, indeterminate busy indicators, per-board stages/outcomes, counts and bounded sanitized timestamped history.
+- Support permanent activation with server-unavailable recovery, 60-day evaluation, and explicit offline recovery without a token. Validate signature, device match, license type and evaluation expiry before flashing.
+- Isolate legacy helpers in QProcess workers with private temporary files; use stdin for secrets and worker deadlines to bound hangs.
+- Pause supported-device failures for explicit retry/skip. Preserve the index until success, or explicitly reserve it when skipping after writing began.
+- Stop monitoring and queued work while allowing the active board to finish; use the same behavior for Back/window close. Never start monitoring automatically.
+- Persist non-secret preferences and next index independently from Fleet Manager; preserve source CSVs, firmware binaries and permanent backups.
+
 ## Design Language
 
 - The user interface shall use material icons from google fonts: https://github.com/google/material-design-icons/tree/master/png - outlined with weight of 200 and no fill. Alternatively the symbols are available offline as `.ttf` files: `\ui\resources\Material_Symbols_Outlined`
   - material-symbols-outlined: font-variation-settings: 'FILL' 0, 'wght' 200, 'GRAD' 0, 'opsz' 24
   - preferred icons: `drone_2`, `key`, `upload`, `refresh`, `filter_alt`, `compare_arrows`
-- The user interface shall use the reference figma project `DLSE UI` at https://www.figma.com/design/889t8h0409KmMcAbd7ADur/DLSE-UI?t=F4ovEyqYbDApmbM9-0 as a design reference. I also put two screenshots of it inside the `ui` folder named `Start.png` and `MainScreen.png`. It contains the starting page `Start` where only the "Direct Standalone" button shall be implemented for now. Clicking this button will change the UI to the `MainScreen`
+- The user interface shall use the reference figma project `DLSE UI` at https://www.figma.com/design/889t8h0409KmMcAbd7ADur/DLSE-UI?t=F4ovEyqYbDApmbM9-0 as a design reference. I also put two screenshots of it inside the `ui` folder named `Start.png` and `MainScreen.png`. The starting page offers "Direct Standalone" for `MainScreen` and "Serial Batch Flasher" for the guided serial installation page. Monitoring Mode remains a future feature.
 - The design guide for colors and buttons is inside the figma make project `Drone Swarm UI Design Guide` at https://www.figma.com/make/GGjtL98SUnvGo4eEWUIiAD/Drone-Swarm-UI-Design-Guide?p=f&t=aOvzabvX2mUJwJfF-0 - I also added some exported resources of that to `\ui\design_guide`
 
 ## Implementation

@@ -3142,9 +3142,17 @@ class FleetController(QObject):
 
     @staticmethod
     def _local_path(file_url: str) -> Path | None:
-        """Convert a QML file URL or local path without accepting remote URLs."""
+        """Convert ``file_url`` to a local Path without accepting remote URLs.
+
+        Accepts QML file URLs and native paths, including absolute Windows
+        drive paths whose drive letter QUrl interprets as a URL scheme.
+        Returns None for empty/remote values; existence is checked by callers.
+        """
         if not file_url:
             return None
+        native_path = Path(file_url).expanduser()
+        if native_path.is_absolute():
+            return native_path
         url = QUrl(file_url)
         if url.isLocalFile():
             return Path(url.toLocalFile()).expanduser()

@@ -15,6 +15,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 
 from dlse_cli_utils import add_version_argument
 from ui.controller import FleetController
+from ui.serial_controller import SerialController
 
 
 UI_ROOT = Path(__file__).resolve().parent
@@ -75,14 +76,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def create_engine() -> tuple[QQmlApplicationEngine, FleetController]:
-    """Create the QML engine and expose stable controller/model properties."""
+    """Create QML controllers/models, preserving the existing returned fleet controller.
+
+    The serial controller is owned by the engine; no hardware work is started.
+    Returns the engine and fleet controller, even when QML loading fails.
+    """
     engine = QQmlApplicationEngine()
     controller = FleetController()
+    serial_controller = SerialController(controller, engine)
+    engine.serial_controller = serial_controller
     engine.addImportPath(str(QML_ROOT))
     context = engine.rootContext()
     context.setContextProperty("fleetController", controller)
     context.setContextProperty("fleetModel", controller.fleet_model)
     context.setContextProperty("fleetCardModel", controller.card_model)
+    context.setContextProperty("serialController", serial_controller)
+    context.setContextProperty("serialResultModel", serial_controller.result_model)
     engine.load(QUrl.fromLocalFile(str(QML_ROOT / "App.qml")))
     return engine, controller
 

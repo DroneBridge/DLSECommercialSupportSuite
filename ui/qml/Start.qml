@@ -7,6 +7,7 @@ Item {
     objectName: "startScreen"
 
     signal directStandaloneRequested()
+    signal serialFlasherRequested()
 
     Theme { id: theme }
 
@@ -82,6 +83,14 @@ Item {
                 enabled: false
                 opacity: 0.48
             }
+        }
+
+        AppButton {
+            objectName: "serialFlasherButton"
+            Layout.alignment: Qt.AlignHCenter
+            text: "Serial Batch Flasher"
+            iconSource: Qt.resolvedUrl("../resources/images/computer_arrow_up_24dp.svg")
+            onClicked: start.serialFlasherRequested()
         }
     }
 
