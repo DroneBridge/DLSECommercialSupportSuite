@@ -70,12 +70,14 @@ Item {
             spacing: 16
 
             ModeButtonBig {
+                objectName: "directStandaloneButton"
                 Layout.fillWidth: true
                 Layout.preferredHeight: 180
                 onClicked: start.directStandaloneRequested()
             }
 
             ModeButtonBig {
+                objectName: "monitoringModeButton"
                 Layout.fillWidth: true
                 Layout.preferredHeight: 180
                 title: "Monitoring Mode"
@@ -85,11 +87,13 @@ Item {
             }
         }
 
-        AppButton {
+        ModeButtonBig {
             objectName: "serialFlasherButton"
-            Layout.alignment: Qt.AlignHCenter
-            text: "Serial Batch Flasher"
-            iconSource: Qt.resolvedUrl("../resources/images/computer_arrow_up_24dp.svg")
+            Layout.fillWidth: true
+            Layout.preferredHeight: 90
+            centerContent: true
+            title: "Serial Batch Flasher"
+            description: "Install firmware, settings and licenses over USB."
             onClicked: start.serialFlasherRequested()
         }
     }

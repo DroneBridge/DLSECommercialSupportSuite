@@ -13,9 +13,10 @@ from typing import Any
 from uuid import uuid4
 
 import serial.tools.list_ports
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QObject, Property, QProcess, QProcessEnvironment, QSettings, QTimer, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import QAbstractListModel, QModelIndex, QObject, Property, QProcess, QProcessEnvironment, QSettings, QSortFilterProxyModel, QTimer, Qt, QUrl, Signal, Slot
+from PySide6.QtMultimedia import QSoundEffect
 
-from dlse_cli_utils import validate_activation_token
+from dlse_cli_utils import resolve_resource_path, validate_activation_token
 from ui.serial_worker import redact
 
 
@@ -45,14 +46,18 @@ class SerialResultModel(QAbstractListModel):
         """Insert a queued row for ``port`` and return its stable row number."""
         number = len(self.rows)
         self.beginInsertRows(QModelIndex(), number, number)
-        self.rows.append({'port': port, 'chip': '', 'index': '', 'ip': '', 'hostname': '', 'ap': '', 'stage': 'Queued', 'outcome': 'queued'})
+        self.rows.append({'port': port, 'chip': '', 'index': '', 'ip': '', 'activation_key': '', 'hostname': '', 'ap': '', 'stage': 'Queued', 'outcome': 'queued'})
         self.endInsertRows()
         return number
 
     def update(self, number: int, values: dict[str, Any]) -> None:
-        """Update a valid row with display-only ``values``; ignore unknown indexes."""
+        """Update known display fields, including the requested activation key.
+
+        Ignore unknown row indexes and fields; tokens and license payloads are
+        never model fields. Return None without writing diagnostics.
+        """
         if 0 <= number < len(self.rows):
-            self.rows[number].update({key: value for key, value in values.items() if key != 'activation_key'})
+            self.rows[number].update({key: value for key, value in values.items() if key in self.rows[number]})
             self.dataChanged.emit(self.index(number), self.index(number), [Qt.UserRole + 1])
 
     def clear(self) -> None:
@@ -60,6 +65,22 @@ class SerialResultModel(QAbstractListModel):
         self.beginResetModel()
         self.rows.clear()
         self.endResetModel()
+
+
+class SerialBoardFilterModel(QSortFilterProxyModel):
+    """Split live session rows from completed outcomes without copying records."""
+
+    def __init__(self, source: SerialResultModel, completed: bool, parent: QObject | None = None) -> None:
+        """Filter ``source`` for live or completed rows; return None."""
+        super().__init__(parent)
+        self.completed = completed
+        self.setSourceModel(source)
+        self.setFilterRole(Qt.UserRole + 1)
+
+    def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
+        """Return whether the source row belongs to this outcome group."""
+        record = self.sourceModel().data(self.sourceModel().index(source_row, 0, source_parent), Qt.UserRole + 1)
+        return (record['outcome'] in {'success', 'failed', 'skipped'}) == self.completed
 
 
 class SerialController(QObject):
@@ -74,6 +95,9 @@ class SerialController(QObject):
         self.fleet = fleet
         self.settings = QSettings('DroneBridge', 'DLSECommercialSupportSuite')
         self.result_model = SerialResultModel(self)
+        self.connected_model = SerialBoardFilterModel(self.result_model, False, self)
+        self.completed_model = SerialBoardFilterModel(self.result_model, True, self)
+        self._sounds: dict[str, QSoundEffect] = {}
         self._state = 'setup'
         self._activity = 'Choose firmware and settings to prepare a batch.'
         self._history: list[str] = []
@@ -180,7 +204,7 @@ class SerialController(QObject):
             except (TypeError, ValueError):
                 return default
         mode = str(self.settings.value('serial/mode', 'activated'))
-        return {'release': str(self.settings.value('serial/release', '')), 'settings': str(self.settings.value('serial/settings', '')), 'index': number('index', 18), 'baud': number('baud', 460800) or 460800, 'mode': mode if mode in {'activated', 'evaluation', 'offline'} else 'activated'}
+        return {'release': str(self.settings.value('serial/release', '')), 'settings': str(self.settings.value('serial/settings', '')), 'index': number('index', 1), 'baud': number('baud', 460800) or 460800, 'mode': mode if mode in {'activated', 'evaluation', 'offline'} else 'activated'}
 
     @staticmethod
     def _path(value: str) -> str:
@@ -221,7 +245,14 @@ class SerialController(QObject):
 
     @Slot(str, str, str, str, str, str, str)
     def prepare(self, release: str, settings: str, index: str, baud: str, mode: str, token: str, option_id: str) -> None:
-        """Validate form inputs and asynchronously prepare a review; failures stay in setup."""
+        """Validate inputs and prepare a review; allow tokenless permanent recovery.
+
+        ``release``/``settings`` are local paths, ``option_id`` selects a cached
+        or online release, and ``index``/``baud`` are numeric strings. Mode
+        ``none`` skips license installation; online licensing and account
+        downloads still require ``token``. Invalid inputs are reported in setup
+        without starting device work; return None.
+        """
         if self.locked:
             return
         self._review = {}
@@ -229,9 +260,9 @@ class SerialController(QObject):
         try:
             token = token.strip() or os.environ.get('DRONEBRIDGE_SECRET_TOKEN', '')
             self._secrets.append(token)
-            if mode not in {'activated', 'evaluation', 'offline'}:
+            if mode not in {'activated', 'evaluation', 'offline', 'none'}:
                 raise ValueError('Choose a valid license mode.')
-            if mode != 'offline':
+            if mode == 'evaluation' or (mode == 'activated' and token):
                 token = validate_activation_token(token)
             if int(index) < 0 or not 0 < int(baud) <= 4_000_000:
                 raise ValueError('Index must be nonnegative; baud must be between 1 and 4000000.')
@@ -241,7 +272,7 @@ class SerialController(QObject):
             if option and option['source'] == 'online':
                 token = validate_activation_token(token)
             if not option and not release.strip():
-                raise ValueError('Choose a firmware release folder.')
+                raise ValueError('Choose a firmware release folder or refresh and select a DLSE online release.')
             self._cleanup()
             self._session_dir = tempfile.TemporaryDirectory(prefix='dlse_serial_session_')
             self._config = {'release': self._path(release), 'settings': self._path(settings), 'index': int(index), 'baud': int(baud), 'mode': mode, 'token': token}
@@ -449,7 +480,12 @@ class SerialController(QObject):
         process.start(str(executable), ['-m', 'ui.serial_worker'])
 
     def _read_events(self) -> None:
-        """Decode bounded protocol lines and publish safe stage/log/result updates."""
+        """Decode bounded worker lines and publish stage/log/result updates.
+
+        Device activation keys are retained for the requested results display
+        and registered for log redaction. Invalid protocol terminates the worker
+        with a diagnostic; return None.
+        """
         if not self._process:
             return
         self._buffer += bytes(self._process.readAllStandardOutput())
@@ -473,6 +509,7 @@ class SerialController(QObject):
                     self._secrets.append(event['value'])
                     if self._current:
                         self._current['activation_key'] = event['value']
+                        self.result_model.update(self._current['row'], {'activation_key': event['value']})
                 elif kind == 'details' and self._current:
                     self.result_model.update(self._current['row'], {key: value for key, value in event.items() if key != 'event'})
                 elif kind == 'log':
@@ -499,7 +536,11 @@ class SerialController(QObject):
             self._finished(1, QProcess.NormalExit)
 
     def _finished(self, code: int, status: QProcess.ExitStatus) -> None:
-        """Consume the final result, update indices/outcomes, and advance or pause."""
+        """Consume worker exit/result, update outcomes, play a cue and advance or pause.
+
+        ``code`` and ``status`` identify failed workers. Device failures stay
+        paused for operator action; sound failures never affect flashing. Return None.
+        """
         if not self._process:
             return
         self._read_events()
@@ -521,6 +562,7 @@ class SerialController(QObject):
             row = self._current['row']
             self.result_model.update(row, result)
             self._current.update(result)
+            self._play_result_sound(result['outcome'])
             if result['outcome'] == 'success':
                 self._processed_keys.add(result['activation_key'])
                 self._increment_index()
@@ -546,6 +588,28 @@ class SerialController(QObject):
         else:
             self._advance()
             self.changed.emit()
+
+    def _play_result_sound(self, outcome: str) -> None:
+        """Play the original success/failure WAV asynchronously for ``outcome``.
+
+        Skipped boards are silent. Missing resources or unavailable audio are
+        best effort and never change the board's result; return None.
+        """
+        filenames = {'success': 'new-notification-011-364050.wav', 'failed': 'system-notification-04-206493.wav'}
+        if outcome not in filenames:
+            return
+        try:
+            if outcome not in self._sounds:
+                path = resolve_resource_path(Path('resources') / filenames[outcome])
+                if path is None:
+                    return
+                sound = QSoundEffect(self)
+                sound.setSource(QUrl.fromLocalFile(str(path)))
+                sound.setVolume(0.7)
+                self._sounds[outcome] = sound
+            self._sounds[outcome].play()
+        except Exception:
+            pass
 
     def _deadline(self) -> None:
         """Fail a hung stage and terminate owned descendants without automatic retries."""

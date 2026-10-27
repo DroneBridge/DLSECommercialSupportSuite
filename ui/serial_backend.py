@@ -154,6 +154,8 @@ def process_device(config: dict[str, Any], work: Path, emit: Callable[[dict[str,
     """Install one board using existing helpers, emitting stages and returning a result.
 
     ``config`` supplies port, baud, index, mode, token and prepared template.
+    Mode ``none`` skips license acquisition and embedding, and strips existing
+    license entries from the working CSV before generating NVS.
     Failures return structured status; no flash is attempted before validation.
     """
     port, baud, index = config['port'], int(config['baud']), int(config['index'])
@@ -174,7 +176,7 @@ def process_device(config: dict[str, Any], work: Path, emit: Callable[[dict[str,
         if chip not in {item.value for item in db.DLSESupportedChips}:
             result.update(outcome='skipped', chip=str(chip), message=f'Unsupported chip ID {chip}.')
             return result
-        result['chip'] = db.DLSESupportedChips(chip).name
+        result['chip'] = db.DLSESupportedChips(chip).name.replace('ESP32', 'ESP32-')
         emit({'event': 'details', 'chip': result['chip']})
         progress('activation_key', 'Reading activation key')
         key = db.db_get_activation_key(port, baud)
@@ -191,58 +193,77 @@ def process_device(config: dict[str, Any], work: Path, emit: Callable[[dict[str,
             result.update(outcome='skipped', message='Device already completed in this session.')
             return result
         mode = config['mode']
-        license_type = db.DBLicenseType.EVALUATION if mode == 'evaluation' else db.DBLicenseType.ACTIVATED
-        progress('license', 'Checking license server' if mode != 'offline' else 'Looking for cached permanent license', 180)
-        online = mode != 'offline' and db.db_is_dlse_lic_server_available()
         license_path = None
-        if online:
-            progress('license', 'Requesting license from server', 180)
-            token = validate_activation_token(config.get('token'))
-            # Stage downloads privately, then publish only validated permanent licenses.
-            license_path = db.db_api_request_license_file(key, token, _output_path=str(work / 'licenses'), _license_type=license_type, _validity_days=60 if mode == 'evaluation' else 0)
-        elif mode == 'evaluation':
-            raise ValueError('Evaluation licensing requires the license server.')
-        else:
-            progress('license', 'Looking for cached permanent license', 180)
-            license_path = db.db_get_dlse_lic_from_local_storage(key)
+        if mode != 'none':
+            license_type = db.DBLicenseType.EVALUATION if mode == 'evaluation' else db.DBLicenseType.ACTIVATED
+            progress('license', 'Checking license server' if mode != 'offline' else 'Looking for cached permanent license', 180)
+            online = mode != 'offline' and db.db_is_dlse_lic_server_available()
+            if online:
+                progress('license', 'Requesting license from server', 180)
+                token = validate_activation_token(config.get('token'))
+                # Stage downloads privately, then publish only validated permanent licenses.
+                license_path = db.db_api_request_license_file(key, token, _output_path=str(work / 'licenses'), _license_type=license_type, _validity_days=60 if mode == 'evaluation' else 0)
+            elif mode == 'evaluation':
+                raise ValueError('Evaluation licensing requires the license server.')
+            else:
+                progress('license', 'Looking for cached permanent license', 180)
+                license_path = db.db_get_dlse_lic_from_local_storage(key)
+                if not license_path:
+                    progress('license', 'Recovering license from device', 120)
+                    license_path = db.db_get_dlse_lic_via_serial(port, baud)
             if not license_path:
-                progress('license', 'Recovering license from device', 120)
-                license_path = db.db_get_dlse_lic_via_serial(port, baud)
-        if not license_path:
-            raise ValueError('No license could be acquired; flashing has not started.')
-        progress('validate_license', 'Validating license signature and device match', 180)
-        valid, info = db.db_dlse_validate_license(license_path, match_activation_key=key)
-        if not valid or not info or info.get('license_type') != license_type.value:
-            raise ValueError('License is invalid, mismatched or has the wrong type.')
-        if mode == 'evaluation' and int(info.get('valid_till', 0)) <= time.time():
-            raise ValueError('Evaluation license has expired.')
-        if mode != 'evaluation':
-            cache = Path(db.DLSE_LICENSE_FOLDER).resolve()
-            cache.mkdir(parents=True, exist_ok=True)
-            cached_path = cache / (key.replace('/', '_') + '.dlselic')
-            if Path(license_path).resolve() != cached_path:
-                shutil.copyfile(license_path, cached_path)
+                raise ValueError('No license could be acquired; flashing has not started.')
+            progress('validate_license', 'Validating license signature and device match', 180)
+            valid, info = db.db_dlse_validate_license(license_path, match_activation_key=key)
+            if not valid or not info or info.get('license_type') != license_type.value:
+                raise ValueError('License is invalid, mismatched or has the wrong type.')
+            if mode == 'evaluation' and int(info.get('valid_till', 0)) <= time.time():
+                raise ValueError('Evaluation license has expired.')
+            if mode != 'evaluation':
+                cache = Path(db.DLSE_LICENSE_FOLDER).resolve()
+                cache.mkdir(parents=True, exist_ok=True)
+                cached_path = cache / (key.replace('/', '_') + '.dlselic')
+                if Path(license_path).resolve() != cached_path:
+                    shutil.copyfile(license_path, cached_path)
         progress('settings', 'Preparing indexed settings', 60)
         assignment = assign_settings(Path(config['template']), index, work / 'device.csv')
         result.update(assignment)
         emit({'event': 'details', **assignment})
-        progress('embed', 'Embedding license in settings', 60)
-        # The legacy embedding helper uses '#' quoting, while merge/update/NVS
-        # use normal CSV quoting. Normalize only this disposable working copy.
-        device_csv = work / 'device.csv'
-        rows = read_settings(device_csv)
-        with device_csv.open('w', newline='', encoding='utf-8') as output:
-            writer = csv.DictWriter(output, fieldnames=['key', 'type', 'encoding', 'value'], quotechar='#')
-            writer.writeheader()
-            writer.writerows(rows)
-        combined = db.db_embed_license_in_settings_csv(str(device_csv), str(license_path))
-        if not combined:
-            raise ValueError('Could not embed the license into settings.')
-        with Path(combined).open(newline='', encoding='utf-8') as source:
-            embedded_rows = list(csv.reader(source, quotechar='#'))
-        with Path(combined).open('w', newline='', encoding='utf-8') as output:
-            csv.writer(output).writerows(embedded_rows)
-        read_settings(Path(combined))
+        combined = str(work / 'device.csv')
+        if mode != 'none':
+            progress('embed', 'Embedding license in settings', 60)
+            # The legacy embedding helper uses '#' quoting, while merge/update/NVS
+            # use normal CSV quoting. Normalize only this disposable working copy.
+            device_csv = work / 'device.csv'
+            rows = read_settings(device_csv)
+            with device_csv.open('w', newline='', encoding='utf-8') as output:
+                writer = csv.DictWriter(output, fieldnames=['key', 'type', 'encoding', 'value'], quotechar='#')
+                writer.writeheader()
+                writer.writerows(rows)
+            combined = db.db_embed_license_in_settings_csv(str(device_csv), str(license_path))
+            if not combined:
+                raise ValueError('Could not embed the license into settings.')
+            with Path(combined).open(newline='', encoding='utf-8') as source:
+                embedded_rows = list(csv.reader(source, quotechar='#'))
+            with Path(combined).open('w', newline='', encoding='utf-8') as output:
+                csv.writer(output).writerows(embedded_rows)
+            read_settings(Path(combined))
+        else:
+            # Settings replace the entire NVS partition. Explicitly exclude any
+            # license already present in an exported template or release defaults.
+            rows = read_settings(Path(combined))
+            clean_rows = []
+            namespace = ''
+            for row in rows:
+                if row['type'] == 'namespace':
+                    namespace = row['key']
+                if namespace != 'license' and row['key'] != 'db_lic_key':
+                    clean_rows.append(row)
+            with Path(combined).open('w', newline='', encoding='utf-8') as output:
+                writer = csv.DictWriter(output, fieldnames=['key', 'type', 'encoding', 'value'])
+                writer.writeheader()
+                writer.writerows(clean_rows)
+            read_settings(Path(combined))
         progress('nvs', 'Generating NVS settings partition', 60)
         binary = db.db_parameters_generate_binary(combined, '0x6000')
         if not binary or not Path(binary).is_file() or Path(binary).stat().st_size != db.DLSE_SETTINGS_PARTITION_SIZE:
@@ -260,7 +281,7 @@ def process_device(config: dict[str, Any], work: Path, emit: Callable[[dict[str,
         if not db.db_flash_binaries(port, mapping, baud_rate=baud):
             raise ValueError('Flashing failed; board may be partially programmed.')
         progress('complete', 'Board completed successfully', 60)
-        result.update(outcome='success', message='Firmware, settings and license installed.')
+        result.update(outcome='success', message='Firmware and settings installed without a license.' if mode == 'none' else 'Firmware, settings and license installed.')
     except Exception as exc:
         result['message'] = str(exc)
     finally:

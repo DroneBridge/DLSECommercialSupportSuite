@@ -106,11 +106,50 @@ class TestSerialBackend(unittest.TestCase):
         self.recover.assert_not_called()
 
     def test_server_unavailable_activated_uses_recovery(self):
-        """Permanent activation preserves server-unavailable license recovery."""
+        """Permanent activation recovers automatically without a token when offline."""
+        self.config['token'] = ''
         self.server.return_value = False
         self.assertEqual('success', self.run_device()['outcome'])
         self.request.assert_not_called()
         self.recover.assert_called_once()
+
+    def test_online_activation_without_token_stops_before_flashing(self):
+        """Tokenless preparation never permits anonymous online activation or flashing."""
+        self.config['token'] = ''
+        self.assertEqual('failed', self.run_device()['outcome'])
+        self.request.assert_not_called()
+        self.recover.assert_not_called()
+        self.flash.assert_not_called()
+
+    def test_without_licensing_skips_license_helpers_and_strips_template_payload(self):
+        """No-license mode generates NVS without a license or any licensing operation."""
+        original = CSV + 'license,namespace,,\ndb_lic_key,data,base64,ZmFrZS1saWNlbnNl\n'
+        self.template.write_text(original)
+        self.config.update(mode='none', token='')
+        with patch.object(backend.db, 'db_embed_license_in_settings_csv') as embed:
+            result = self.run_device()
+        self.assertEqual('success', result['outcome'])
+        self.assertIn('without a license', result['message'])
+        for helper in (self.server, self.request, self.cache, self.recover, self.validate, embed):
+            helper.assert_not_called()
+        generated_csv = Path(self.generate.call_args.args[0])
+        rows = backend.read_settings(generated_csv)
+        self.assertFalse(any(row['key'] in {'license', 'db_lic_key'} for row in rows))
+        self.assertEqual('192.168.1.18', result['ip'])
+        self.assertEqual(KEY, result['activation_key'])
+        self.assertEqual(original, self.template.read_text())
+        self.assertFalse((self.root / 'cache').exists())
+        self.flash.assert_called_once()
+
+    def test_supported_chip_ids_have_display_names(self):
+        """Each supported numeric chip ID resolves to the ESP32-Cx display name."""
+        for chip in backend.db.DLSESupportedChips:
+            with self.subTest(chip=chip):
+                self.chip.return_value = chip.value
+                self.key.return_value = base64.b64encode(struct.pack('<6sBH', b'\x01\x02\x03\x04\x05\x06', chip.value, 1)).decode()
+                result = self.run_device()
+                self.assertEqual('success', result['outcome'])
+                self.assertEqual(chip.name.replace('ESP32', 'ESP32-'), result['chip'])
 
     def test_online_license_failure_does_not_fall_back(self):
         """A reachable server rejecting a request does not silently switch license policy."""
@@ -237,6 +276,9 @@ class TestSerialController(unittest.TestCase):
 
     def setUp(self):
         """Construct a controller using temporary settings and an inert fleet."""
+        sounds = patch('ui.serial_controller.QSoundEffect')
+        self.sound_factory = sounds.start()
+        self.addCleanup(sounds.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.settings = QSettings(str(Path(self.temp.name) / 'settings.ini'), QSettings.IniFormat)
@@ -315,6 +357,81 @@ class TestSerialController(unittest.TestCase):
         self.assertEqual(19, self.controller.preferences['index'])
         self.assertIn(KEY, self.controller._processed_keys)
         self.assertEqual(1, self.controller.counts['success'])
+
+    def test_board_tables_follow_outcomes_and_retry_without_duplicate_rows(self):
+        """Separate live/results models track failure, retry and success on one row."""
+        live = self.controller.connected_model
+        completed = self.controller.completed_model
+        self.controller.arm()
+        self.ports = {'COM1': ('one',), 'COM2': ('two',)}
+        self.controller.pollPorts()
+        self.assertEqual((2, 0), (live.rowCount(), completed.rowCount()))
+        self.finish_device({'outcome': 'failed', 'flash_started': False, 'message': 'Read failed', 'index': 18})
+        self.assertEqual((1, 1), (live.rowCount(), completed.rowCount()))
+        self.assertEqual(18, completed.data(completed.index(0, 0), Qt.UserRole + 1)['index'])
+        self.controller.retry()
+        self.assertEqual((2, 0), (live.rowCount(), completed.rowCount()))
+        self.finish_device({'outcome': 'success', 'activation_key': KEY, 'message': 'Done', 'index': 18})
+        self.assertEqual((1, 1), (live.rowCount(), completed.rowCount()))
+        self.controller.stop()
+        self.assertEqual((0, 2), (live.rowCount(), completed.rowCount()))
+        self.assertEqual(['success', 'skipped'], [completed.data(completed.index(i, 0), Qt.UserRole + 1)['outcome'] for i in range(2)])
+        self.controller.result_model.clear()
+        self.assertEqual((0, 0), (live.rowCount(), completed.rowCount()))
+
+    def test_permanent_recovery_preparation_allows_missing_token(self):
+        """Local permanent recovery can reach validation without online credentials."""
+        with patch.dict(os.environ, {'DRONEBRIDGE_SECRET_TOKEN': ''}):
+            self.controller.prepare('release', '', '18', '460800', 'activated', '', '')
+        self.assertEqual('prepare', self.jobs[0]['action'])
+        self.assertEqual('activated', self.jobs[0]['mode'])
+        self.assertEqual('', self.jobs[0]['token'])
+        self.controller._cleanup()
+
+    def test_online_release_preparation_still_requires_token(self):
+        """Removing the offline mode selector must not allow anonymous downloads."""
+        self.controller._releases = [{'id': 'account-release', 'source': 'online'}]
+        with patch.dict(os.environ, {'DRONEBRIDGE_SECRET_TOKEN': ''}):
+            self.controller.prepare('', '', '18', '460800', 'activated', '', 'account-release')
+        self.assertEqual([], self.jobs)
+        self.assertIn('token', self.controller.activity)
+
+    def test_without_licensing_preparation_needs_no_token(self):
+        """No-license mode passes through preflight without requiring activation credentials."""
+        with patch.dict(os.environ, {'DRONEBRIDGE_SECRET_TOKEN': ''}):
+            self.controller.prepare('release', '', '0', '460800', 'none', '', '')
+        self.assertEqual('none', self.jobs[0]['mode'])
+        self.assertEqual(0, self.jobs[0]['index'])
+        self.controller._cleanup()
+
+    def test_original_notification_sounds_are_nonblocking_and_skips_are_silent(self):
+        """Success/failure use the original WAVs via cached async Qt sound effects."""
+        success, failed = Mock(), Mock()
+        self.sound_factory.side_effect = [success, failed]
+        for outcome in ('success', 'success', 'failed', 'skipped'):
+            self.controller._play_result_sound(outcome)
+        self.assertEqual(2, self.sound_factory.call_count)
+        self.assertTrue(success.setSource.call_args.args[0].toLocalFile().endswith('new-notification-011-364050.wav'))
+        self.assertTrue(failed.setSource.call_args.args[0].toLocalFile().endswith('system-notification-04-206493.wav'))
+        self.assertEqual(2, success.play.call_count)
+        failed.play.assert_called_once()
+
+    def test_result_key_is_visible_but_secrets_stay_out_of_history(self):
+        """Results expose the requested device key, while diagnostics still redact it."""
+        self.controller.arm()
+        self.ports = {'COM1': ('one',)}
+        self.controller.pollPorts()
+        self.controller._secrets.append(KEY)
+        self.finish_device({'outcome': 'success', 'activation_key': KEY, 'ip': '192.168.1.18', 'chip': 'ESP32-C3', 'message': 'Done ' + KEY, 'index': 18})
+        row = self.controller.completed_model.data(self.controller.completed_model.index(0, 0), Qt.UserRole + 1)
+        self.assertEqual(KEY, row['activation_key'])
+        self.assertEqual('192.168.1.18', row['ip'])
+        self.assertEqual('ESP32-C3', row['chip'])
+        self.assertNotIn(KEY, '\n'.join(self.controller.history))
+        self.assertNotIn(KEY, Path(self.controller.logPath).read_text())
+        self.controller.result_model.update(0, {'token': 'private', 'license_payload': 'private'})
+        self.assertNotIn('token', self.controller.result_model.rows[0])
+        self.assertNotIn('license_payload', self.controller.result_model.rows[0])
 
     def test_failure_pause_retry_and_confirmed_reservation(self):
         """Failures retain the index; only an explicitly confirmed partial-write skip reserves it."""
@@ -406,6 +523,72 @@ class TestSerialController(unittest.TestCase):
         if serial.busy:
             serial._kill_process_tree()
             self.fail('Serial worker did not finish within test deadline.')
+
+    def test_serial_layout_defaults_status_and_baud_selection(self):
+        """Render both window sizes and verify live status, layout and submitted UI values."""
+        self.settings.setValue('serial/baud', 123456)
+        self.settings.setValue('serial/mode', 'evaluation')
+        with patch('ui.controller.QSettings', return_value=self.settings), patch('ui.serial_controller.QSettings', return_value=self.settings), patch('ui.controller.QTimer.singleShot'):
+            engine, fleet = create_engine()
+        for timer in (fleet.license_timer, fleet.scan_timer, fleet.stats_timer, fleet.unifi_timer):
+            timer.stop()
+        root = engine.rootObjects()[0]
+        self.addCleanup(root.close)
+        self.addCleanup(engine.deleteLater)
+        QTest.qWait(50)
+        card = root.findChild(QQuickItem, 'serialFlasherButton')
+        direct = root.findChild(QQuickItem, 'directStandaloneButton')
+        monitoring = root.findChild(QQuickItem, 'monitoringModeButton')
+        self.assertAlmostEqual(direct.width() + monitoring.width() + 16, card.width())
+        self.assertAlmostEqual(monitoring.height() / 2, card.height())
+        QMetaObject.invokeMethod(root.findChild(object, 'startScreen'), 'serialFlasherRequested', Qt.DirectConnection)
+        QTest.qWait(50)
+        serial = engine.serial_controller
+        self.assertEqual(1, root.findChild(object, 'serialReleaseSource').property('currentIndex'))
+        baud = root.findChild(object, 'serialBaudSelector')
+        self.assertEqual(5, baud.property('count'))
+        self.assertEqual('460800', baud.property('currentText'))
+        index_picker = root.findChild(object, 'serialIndexField')
+        self.assertEqual(0, index_picker.property('from'))
+        self.assertTrue(index_picker.property('editable'))
+        license_toggle = root.findChild(object, 'serialLicenseToggle')
+        self.assertTrue(license_toggle.property('checked'))
+        self.assertIsNone(root.findChild(object, 'serialState'))
+        self.assertIsNone(root.findChild(object, 'serialLicenseMode'))
+        self.assertEqual('Check and Validate Configuration', root.findChild(object, 'serialPrepareButton').property('text'))
+        for status in ('online', 'offline', 'checking'):
+            fleet._license_status = status
+            fleet.stateChanged.emit()
+            self.app.processEvents()
+            self.assertIn('Checking' if status == 'checking' else status.title(), root.findChild(object, 'serialLicenseStatus').property('text'))
+        for width, height in ((1298, 804), (1180, 720)):
+            root.setWidth(width)
+            root.setHeight(height)
+            QTest.qWait(50)
+            connected = root.findChild(QQuickItem, 'serialConnectedPanel')
+            completed = root.findChild(QQuickItem, 'serialCompletedPanel')
+            history = root.findChild(QQuickItem, 'serialHistoryPanel')
+            self.assertGreater(history.height(), connected.height())
+            self.assertGreater(history.height(), completed.height())
+            self.assertLessEqual(history.y() + history.height(), history.parentItem().height() + 1)
+            self.assertGreater(root.findChild(QQuickItem, 'serialSettingsPanel').width(), 640)
+        # UI always submits permanent activation, including with old evaluation preferences.
+        serial._releases = [{'id': 'cached-release', 'source': 'cached', 'label': 'Fixture release'}]
+        serial.changed.emit()
+        baud.setProperty('currentIndex', 0)
+        submitted = []
+        serial._launch = submitted.append
+        with patch.dict(os.environ, {'DRONEBRIDGE_SECRET_TOKEN': ''}):
+            QMetaObject.invokeMethod(root.findChild(object, 'serialFlasherScreen'), 'prepareReview', Qt.DirectConnection)
+        self.assertEqual('activated', submitted[0]['mode'])
+        self.assertEqual(115200, submitted[0]['baud'])
+        license_toggle.setProperty('checked', False)
+        index_picker.setProperty('value', 0)
+        with patch.dict(os.environ, {'DRONEBRIDGE_SECRET_TOKEN': ''}):
+            QMetaObject.invokeMethod(root.findChild(object, 'serialFlasherScreen'), 'prepareReview', Qt.DirectConnection)
+        self.assertEqual('none', submitted[1]['mode'])
+        self.assertEqual(0, submitted[1]['index'])
+        serial._cleanup()
 
     def test_real_worker_preflight_protocol_and_qml_navigation(self):
         """Run only file preparation in a real worker and verify the guided QML page."""

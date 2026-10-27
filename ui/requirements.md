@@ -57,11 +57,16 @@
 
 ## Serial Batch Flasher
 - Enter a dedicated guided page from the start screen; preserve the existing CLI and public library APIs.
-- Choose local/cached/account firmware, default/exported settings CSV, license mode, session-only token, starting index and baud. Do not expose CLI esptool fallback.
+- Default to DLSE online releases (cached/account), with a local-folder alternative, release defaults/Custom Settings CSV, a session-only token, starting index and five common baud choices (115200 through 1500000, default 460800). Do not expose CLI esptool fallback.
 - Validate inputs and review indexed assignment previews and merge warnings before explicitly confirming automatic flashing of new connections.
 - Detect ports every second, initialize for two seconds and process one board at a time. Exclude initial connections and suppress completed duplicate devices.
-- Show current named activity, indeterminate busy indicators, per-board stages/outcomes, counts and bounded sanitized timestamped history.
-- Support permanent activation with server-unavailable recovery, 60-day evaluation, and explicit offline recovery without a token. Validate signature, device match, license type and evaluation expiry before flashing.
+- Show current named activity, indeterminate busy indicators, a compact active-board table, a separate indexed Success/Fail/Skipped results table, outcome counts without a queued counter, and a larger bounded sanitized timestamped activity history. Give Firmware and Settings approximately twice its original width, adapting to smaller windows.
+- Use permanent activation with automatic server-unavailable recovery from cache or board, including tokenless offline recovery. Hide evaluation and explicit offline mode options in the serial UI. Validate signature, device match and permanent license type before flashing. Show the shared color-coded license-server reachability check (30-second interval, five-second HTTP timeout) beneath Firmware and Settings.
+- Use numbered title-case section headings, label the assignment list Config preview, and require Check and Validate Configuration then Start flashing with confirmation. Place Back above the page title; omit the redundant session-state badge. Match the start-page serial button to the other mode cards, spanning their combined width at half their height.
+- Center Back's text and vertically center the serial start card's title/description. Use an editable starting-index number picker with minimum zero.
+- Enable Flash license by default. Disabling it skips all licensing helpers and removes template license entries from the generated settings partition; explicitly warn that any on-board license is removed. Keep online firmware download authentication separate.
+- Show index, resolved ESP32 chip name, configured IP, activation key and outcome in completed results; omit Port there. Keep activation keys redacted in logs/history.
+- Play the original bundled success/failure sounds asynchronously for completed device attempts; skip silently and tolerate unavailable audio. Defer a firmware byte-percentage bar until the isolated esptool helper exposes write progress.
 - Isolate legacy helpers in QProcess workers with private temporary files; use stdin for secrets and worker deadlines to bound hangs.
 - Pause supported-device failures for explicit retry/skip. Preserve the index until success, or explicitly reserve it when skipping after writing began.
 - Stop monitoring and queued work while allowing the active board to finish; use the same behavior for Back/window close. Never start monitoring automatically.

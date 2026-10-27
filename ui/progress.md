@@ -70,7 +70,15 @@ Last updated: 2026-10-13
 
 - [x] Add start-page entry and a dedicated guided QML page with native file/folder pickers.
 - [x] Support local, cached and account release sources using existing release workers.
-- [x] Support release defaults/exported CSV, permanent/evaluation/offline recovery modes, session-only tokens, baud and indexed assignments.
+- [x] Support release defaults/Custom Settings CSV, permanent activation with automatic offline recovery, session-only tokens, five baud choices and indexed assignments; preserve legacy backend modes.
+- [x] Default to DLSE online releases, show shared license-server status, widen setup, split compact active/completed tables and expand Activity History.
+- [x] Match the full-width start-page serial card to the other mode cards, clarify Config preview and flashing actions, normalize section headings and move Back above the page title.
+- [x] Center Back and the serial start-card contents; add a nonnegative starting-index number picker and default-on Flash license toggle with explicit no-license review/confirmation.
+- [x] Skip all licensing operations and strip existing template license entries when licensing is disabled; preserve source templates and permanent backups.
+- [x] Restore asynchronous original success/failure WAV cues and show chip name, configured IP and activation key in results while redacting keys from diagnostics.
+- [x] Verify optional licensing/NVS contents, chip-name resolution, key redaction, audio dispatch, number-picker/toggle submission and both rendered window sizes; 126 serial/Fleet UI regression tests passed. Physical flashing and audible playback qualification remain pending.
+- [ ] Add a real firmware write-percentage bar when the isolated esptool helper exposes byte progress (deferred as requested).
+- [x] Verify refreshed setup/review/results layouts at 1298×804 and 1180×720, live/results row transitions through retry/skip, and tokenless automatic recovery. Serial/Fleet UI/worker regression run: 145 passed; one unrelated UniFi asyncio test skipped because the Windows sandbox blocks its internal socket pair.
 - [x] Validate CSV schema/values, firmware maps/files, assignment previews and license signature/type/device match/expiry.
 - [x] Detect only new connections; initialize ports, process sequentially and skip completed duplicate devices.
 - [x] Show current stages, busy indicators, per-board outcomes, counters and sanitized timestamped activity/logs.

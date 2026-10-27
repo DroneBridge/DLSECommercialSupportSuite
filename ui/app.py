@@ -78,7 +78,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def create_engine() -> tuple[QQmlApplicationEngine, FleetController]:
     """Create QML controllers/models, preserving the existing returned fleet controller.
 
-    The serial controller is owned by the engine; no hardware work is started.
+    The serial controller and live/completed board models are owned by the
+    engine; no hardware work is started.
     Returns the engine and fleet controller, even when QML loading fails.
     """
     engine = QQmlApplicationEngine()
@@ -92,6 +93,8 @@ def create_engine() -> tuple[QQmlApplicationEngine, FleetController]:
     context.setContextProperty("fleetCardModel", controller.card_model)
     context.setContextProperty("serialController", serial_controller)
     context.setContextProperty("serialResultModel", serial_controller.result_model)
+    context.setContextProperty("serialConnectedModel", serial_controller.connected_model)
+    context.setContextProperty("serialCompletedModel", serial_controller.completed_model)
     engine.load(QUrl.fromLocalFile(str(QML_ROOT / "App.qml")))
     return engine, controller
 

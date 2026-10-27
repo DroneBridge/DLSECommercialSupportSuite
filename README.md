@@ -99,25 +99,39 @@ activation, reboot, and OTA operations on a small non-production fleet first.
 Launch `dlse-ui` (or `python -m ui` from a source checkout), then choose **Serial
 Batch Flasher** on the start page. The existing `dlse-install` CLI is unchanged.
 
-1. Choose an extracted release root folder, or refresh the cached/account release
-   list and select a release. Online downloads need a DroneBridge token. A release
+1. **DLSE online releases** is selected by default. Refresh the release list and
+   choose a cached or account release, or select **Local release folder** for an
+   extracted release root. Online downloads need a DroneBridge token. A release
    must contain `db_show_params.csv` and `esp32c3_generic`, `esp32c5_generic` and
    `esp32c6_generic` folders with `flash_args.txt` and all referenced binaries.
-2. Use release-default settings or choose an exported, self-contained NVS CSV
+2. Use release-default settings or choose **Custom Settings CSV**, a self-contained NVS CSV
    with the header `key,type,encoding,value`. Export a known working configuration
    from a DLSE device first when provisioning a production fleet.
-3. Choose permanent activation, 60-day evaluation, or **offline permanent-license
-   recovery**. Online modes require a token; `DRONEBRIDGE_SECRET_TOKEN` supplies
-   the initial value. Tokens are masked and never saved in UI preferences.
-   Offline license recovery never contacts the license server and needs a valid matching
-   permanent license in `received_licenses/` or on the connected board. Permanent
-   activation also uses this recovery path when the server is unavailable.
-   Evaluation requires server access and its temporary licenses are not cached.
-   Account firmware listing/downloads are separate online operations, even when
-   offline license recovery is selected.
-4. Choose the starting index (initial default **18**) and baud (**460800**; lower
-   to **115200** for connection problems). Prepare the review, inspect assignment
-   previews and schema warnings, then confirm automatic monitoring.
+3. **Flash license** is enabled by default. With it enabled, the UI uses permanent activation and automatically falls back to a valid,
+   matching permanent license in `received_licenses/`, then the connected board,
+   when the license server is unavailable. No separate recovery mode is needed.
+   Online activation requires a token; `DRONEBRIDGE_SECRET_TOKEN` supplies the
+   initial value. Tokens are masked and never saved in UI preferences. A local
+   or cached release can be validated without a token for offline recovery;
+   online activation still fails safely without one. Account firmware listing
+   and downloads are separate online operations. The color-coded **License server**
+   indicator uses the existing background HTTP reachability check every **30 seconds**
+   with a **five-second** request timeout; it does not validate the token.
+   Disable **Flash license** to install firmware and settings without acquiring,
+   validating, recovering or embedding a license. Any license payload already
+   in the settings template is omitted from the generated NVS partition.
+   **This replaces the board's settings partition and removes any existing
+   on-board license.** Local permanent backups are left untouched. The review
+   and final confirmation explicitly show that licensing is disabled. Online
+   firmware downloads still need a token; local/cached firmware does not.
+4. Choose the starting index using the number picker (initial default **1**,
+   minimum **0**; static-IP subnet/network-address checks still apply) and flash baud from
+   **115200**, **230400**, **460800** (default), **921600**, or **1500000**.
+   Supported baud preferences persist; older custom values fall back to 460800
+   in the dropdown. Use 115200 for connection problems. Select **Check and Validate
+   Configuration**, inspect **Config preview** and schema warnings, then select
+   **Start flashing…** and confirm. Validation only previews assignments; it
+   does not flash a board.
 
 The flasher snapshots existing ports and processes **new connections only**.
 Reconnect already-attached boards after monitoring starts. Ports are checked
@@ -126,10 +140,23 @@ the board's USB/serial driver and ensure your OS account can access the port;
 close other programs using that serial port. Serial flashing itself does not
 require MAVLink access or stopping Skybrush Live unless it owns that port.
 
-The current-activity banner, per-board stages, outcome counts and timestamped
-history show what is happening. Busy indicators are indeterminate; no estimated
+The compact **Newly Connected Boards** table shows waiting and active boards.
+**Flashed Boards / Results** lists completed outcomes with index, resolved chip
+name (for example ESP32-C5), configured IP, activation key and Success/Fail/Skipped
+status, including boards skipped before flashing. Fields not yet read or assigned
+remain empty. Activation keys are visible in this table as requested, but remain
+redacted in diagnostic logs and Activity History. Failed
+rows return to the active table during an explicit retry. The larger **Activity
+History**, current-activity banner and outcome counts show what is happening.
+Simultaneous arrivals wait internally while the current board finishes; there
+is no queued counter in the UI. Busy indicators are indeterminate; no estimated
 flash percentage is shown. Firmware, settings and license are installed one
 board at a time. Keep each board connected until it completes.
+The original success and failure WAV notifications play asynchronously through
+Qt audio support after each device result. Skipped boards are silent; missing
+audio resources or unavailable audio output do not fail flashing. The current
+isolated esptool helper does not report byte progress to the UI, so the Stage
+column remains the flashing indicator without an estimated percentage.
 
 The index replaces the last static-IP octet when configured and replaces trailing
 numbers in the hostname and AP name. Blank static IP remains blank. Invalid or

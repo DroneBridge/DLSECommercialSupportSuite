@@ -6,6 +6,7 @@ Button {
 
     property string title: "Direct Standalone"
     property string description: "The application detects and directly connects to each drone.\nUse for updating, activating, and configuring a DLSE fleet."
+    property bool centerContent: false
 
     implicitWidth: 400
     implicitHeight: 180
@@ -26,8 +27,11 @@ Button {
             id: titleText
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.margins: 24
+            anchors.top: control.centerContent ? undefined : parent.top
+            y: control.centerContent ? (parent.height - height - descriptionText.height - 8) / 2 : 0
+            anchors.leftMargin: 24
+            anchors.rightMargin: 24
+            anchors.topMargin: 24
             text: control.title
             color: "#f0f0f0"
             font.family: theme.bodyFont
@@ -36,10 +40,11 @@ Button {
         }
 
         Text {
+            id: descriptionText
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: titleText.bottom
-            anchors.topMargin: 18
+            anchors.topMargin: control.height <= 100 ? 8 : 18
             anchors.leftMargin: 24
             anchors.rightMargin: 24
             text: control.description
