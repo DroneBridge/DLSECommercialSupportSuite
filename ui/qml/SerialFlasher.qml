@@ -36,35 +36,34 @@ Item {
     }
 
     Rectangle { anchors.fill: parent; color: theme.background }
-    ColumnLayout {
-        anchors.fill: parent
-        anchors.margins: 20
-        spacing: 14
-
-        AppButton {
-            id: backButton
-            objectName: "serialBackButton"; text: "‹ Back"; quiet: true
-            Layout.alignment: Qt.AlignLeft
-            implicitWidth: 64; leftPadding: 0; rightPadding: 0
-            contentItem: Text {
-                text: backButton.text; color: backButton.foregroundColor
-                font.family: theme.bodyFont; font.pixelSize: theme.bodyTextSize; font.bold: true
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-            }
-            onClicked: page.backRequested()
-        }
+    Rectangle {
+        id: serialHeader
+        objectName: "serialHeader"
+        anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
+        height: 64; color: theme.panel
         RowLayout {
-            Layout.fillWidth: true
-            Text { text: "Serial Batch Flasher"; color: theme.primaryText; font.family: theme.bodyFont; font.pixelSize: theme.headingTextSize; font.bold: true }
+            anchors.fill: parent; spacing: 12
+            ModeHeaderLeft {
+                modeLabel: "SERIAL BATCH FLASHER"
+                modeButtonObjectName: "serialModeButton"
+                modeButtonWidth: 190
+                onBackRequested: page.backRequested()
+            }
             Item { Layout.fillWidth: true }
             AppButton {
                 objectName: "serialStopButton"
+                Layout.rightMargin: 20
                 text: serialController.state === "stopping" ? "Stopping…" : "Stop"
                 enabled: serialController.locked && serialController.state !== "stopping"
                 onClicked: serialController.stop()
             }
         }
+    }
+    ColumnLayout {
+        anchors.top: serialHeader.bottom
+        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+        anchors.margins: 20
+        spacing: 14
 
         Rectangle {
             Layout.fillWidth: true

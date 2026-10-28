@@ -69,6 +69,7 @@ Last updated: 2026-10-13
 ## Serial Batch Flasher
 
 - [x] Compact the starting-index picker to match adjacent controls and explain how to populate an empty release selector.
+- [x] Share the Standalone logo and mode button in the serial header, retaining Stop and guarded navigation during active work.
 - [x] Give the setup and review groups modestly more vertical spacing while keeping the form compact and scrollable.
 - [x] Open the serial release list wider than its field, bounded by the window, to show more of cached paths and online release names.
 - [x] Balance setup and results, distinguish the current activity and history from the tables, shorten guidance, add on-demand license details, and use warning colors for material risks.
@@ -78,8 +79,8 @@ Last updated: 2026-10-13
 - [x] Support local, cached and account release sources using existing release workers.
 - [x] Support release defaults/Custom Settings CSV, permanent activation with automatic offline recovery, session-only tokens, five baud choices and indexed assignments; preserve legacy backend modes.
 - [x] Default to DLSE online releases, show shared license-server status, widen setup, split compact active/completed tables and expand Activity History.
-- [x] Match the full-width start-page serial card to the other mode cards, clarify Config preview and flashing actions, normalize section headings and move Back above the page title.
-- [x] Center Back and the serial start-card contents; add a nonnegative starting-index number picker and default-on Flash license toggle with explicit no-license review/confirmation.
+- [x] Match the full-width start-page serial card to the other mode cards, clarify Config preview and flashing actions, and normalize section headings.
+- [x] Center the serial start-card contents; add a nonnegative starting-index number picker and default-on Flash license toggle with explicit no-license review/confirmation.
 - [x] Skip all licensing operations and strip existing template license entries when licensing is disabled; preserve source templates and permanent backups.
 - [x] Restore asynchronous original success/failure WAV cues and show chip name, configured IP and activation key in results while redacting keys from diagnostics.
 - [x] Verify optional licensing/NVS contents, chip-name resolution, key redaction, audio dispatch, number-picker/toggle submission and both rendered window sizes; 126 serial/Fleet UI regression tests passed. Physical flashing and audible playback qualification remain pending.
@@ -90,7 +91,7 @@ Last updated: 2026-10-13
 - [x] Show current stages, busy indicators, per-board outcomes, counters and sanitized timestamped activity/logs.
 - [x] Isolate workers and temporary artifacts; bound serial/licensing/NVS/flashing work with deadlines and descendant cleanup.
 - [x] Pause failures for explicit retry/skip and confirm index reservation after possible partial writes.
-- [x] Finish active work on Stop/Back/close while discarding queued devices.
+- [x] Finish active work on Stop, mode-button navigation or close while discarding queued devices.
 - [x] Persist non-secret preferences and next index; preserve existing CLI and main library unchanged.
 - [x] Add mocked pipeline/session, real-process preflight/protocol and offscreen QML navigation tests.
 - [x] Verify descendant termination and temporary-file cleanup after real worker deadlines.

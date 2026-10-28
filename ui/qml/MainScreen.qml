@@ -66,57 +66,8 @@ Item {
                 anchors.fill: parent
                 spacing: 12
 
-                Item {
-                    Layout.leftMargin: 12
-                    Layout.preferredWidth: 136
-                    Layout.fillHeight: true
-
-                    Image {
-                        anchors.centerIn: parent
-                        width: 122
-                        height: 32
-                        source: Qt.resolvedUrl("assets/droneBridgeLogo_1.png")
-                        fillMode: Image.PreserveAspectFit
-                        sourceSize.width: 122
-                        sourceSize.height: 32
-                    }
-                }
-
-                FocusScope {
-                    id: standaloneModeButton
-                    objectName: "standaloneModeButton"
-                    Layout.preferredWidth: 150
-                    Layout.preferredHeight: 30
-                    activeFocusOnTab: true
-
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: 5
-                        color: standaloneModeMouse.containsMouse || standaloneModeButton.activeFocus
-                               ? theme.hover : "#35322e"
-
-                        Text {
-                            anchors.centerIn: parent
-                            text: "STANDALONE MODE"
-                            color: theme.accent
-                            font.family: theme.bodyFont
-                            font.pixelSize: theme.smallTextSize
-                            font.bold: true
-                        }
-                    }
-
-                    MouseArea {
-                        id: standaloneModeMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onPressed: standaloneModeButton.forceActiveFocus()
-                        onClicked: mainScreen.backRequested()
-                    }
-
-                    Keys.onSpacePressed: mainScreen.backRequested()
-                    Keys.onReturnPressed: mainScreen.backRequested()
-                    Keys.onEnterPressed: mainScreen.backRequested()
+                ModeHeaderLeft {
+                    onBackRequested: mainScreen.backRequested()
                 }
 
                 Text {

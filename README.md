@@ -98,6 +98,9 @@ activation, reboot, and OTA operations on a small non-production fleet first.
 
 Launch `dlse-ui` (or `python -m ui` from a source checkout), then choose **Serial
 Batch Flasher** on the start page. The existing `dlse-install` CLI is unchanged.
+The **Serial Batch Flasher** mode button in the header returns to the start page.
+If a serial session or preparation job is active, it first offers to stop and
+leave; the current board or job finishes before the page closes.
 
 1. **DLSE online releases** is selected by default. Refresh the release list and
    choose a cached or account release, or select **Local release folder** for an
@@ -172,7 +175,7 @@ retry rechecks their identity. If writing began, skipping requires confirmation
 and reserves that index to avoid assigning it to another board. Unsupported chips
 and successfully processed duplicate devices are skipped automatically.
 
-**Stop**, Back and window close stop arrivals and discard queued work while the
+**Stop**, the mode button and window close stop arrivals and discard queued work while the
 active board finishes. Worker deadlines are **120 seconds per serial-read stage**,
 **180 seconds for licensing**, **60 seconds for validation/settings/NVS generation**,
 **600 seconds for flashing**, and **900 seconds for release download/extraction**.
