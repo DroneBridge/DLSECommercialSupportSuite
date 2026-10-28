@@ -100,6 +100,9 @@ Last updated: 2026-10-13
 
 ## Fleet Verification
 
+- [x] Match fleet-table headers to the serial flasher's typography, sentence case and alignment while retaining sorting and column resizing.
+- [x] Use the same readable casing for the column chooser and selection toolbar.
+- [x] Match the selection checkbox label fonts to the Configure columns button.
 - [x] Add tests preventing QWidget UI code from being reintroduced.
 - [x] Add exact semantic-theme, normal-button, and status-badge color tests.
 - [x] Add offscreen QML shell, navigation, polling, column, validation, and exclusion tests.

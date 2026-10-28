@@ -462,6 +462,39 @@ class TestFleetUI(unittest.TestCase):
         self.assertNotIn("row %", table_block)
         self.assertNotIn("#091a2a", table_block)
 
+    def test_fleet_headers_match_flasher_style_and_keep_sorting(self):
+        """Fleet headers use the flasher typography and retain clickable sorting."""
+        self._enter_main_screen()
+        QTest.qWait(100)
+        def visual_item(name):
+            """Find a virtualized header by visual parent; return None if absent."""
+            items = [self.root.contentItem()]
+            while items:
+                item = items.pop()
+                if item.objectName() == name:
+                    return item
+                items.extend(item.childItems())
+            return None
+
+        hostname = visual_item("fleetHeaderText_1")
+        ip = visual_item("fleetHeaderText_2")
+        activation = visual_item("fleetHeaderText_3")
+        self.assertIsNotNone(hostname)
+        self.assertEqual("Geist", hostname.property("font").family())
+        self.assertEqual(12, hostname.property("font").pixelSize())
+        self.assertTrue(hostname.property("font").bold())
+        self.assertEqual("#deceb9", self._color_name(hostname.property("color")))
+        self.assertTrue(hostname.property("text").startswith("Hostname"))
+        self.assertEqual("IP", ip.property("text"))
+        self.assertEqual("Activation\nstatus", activation.property("text"))
+        header_cell = visual_item("fleetHeaderCell_2")
+        self._click_item(header_cell)
+        main_screen = self.root.findChild(QQuickItem, "mainScreen")
+        self.assertEqual(2, main_screen.property("sortColumn"))
+        self.assertTrue(main_screen.property("sortAscending"))
+        self._click_item(header_cell)
+        self.assertFalse(main_screen.property("sortAscending"))
+
     def test_readable_text_uses_three_theme_font_sizes(self):
         """All QML text sizes use the three semantic typography tokens."""
         theme_source = (self.QML_ROOT / "Theme.qml").read_text(encoding="utf-8")

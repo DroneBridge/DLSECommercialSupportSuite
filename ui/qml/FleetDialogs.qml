@@ -13,6 +13,7 @@ Item {
     property string resultMessage: ""
     property bool resultRetryable: false
     property bool csvSelectedOnly: false
+    property var formatColumnTitle: function(value) { return value }
 
     function center(dialog) {
         dialog.x = Math.max(24, (dialogs.width - dialog.width) / 2)
@@ -105,7 +106,7 @@ Item {
         for (let i = 0; i < columns.length; ++i) {
             columnOrderModel.append({
                 "columnKey": columns[i].key,
-                "columnTitle": columns[i].title,
+                "columnTitle": dialogs.formatColumnTitle(columns[i].title.replace(/\n/g, " ")),
                 "columnVisible": columns[i].visible
             })
         }

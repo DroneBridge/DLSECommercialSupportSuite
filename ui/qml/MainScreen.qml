@@ -31,6 +31,19 @@ Item {
         return theme.secondaryText
     }
 
+    /** Return a sentence-case header for the model value, preserving technical abbreviations. */
+    function formatFleetHeader(value) {
+        const abbreviations = {
+            ap: "AP", apmode: "AP mode", cts: "CTS", db: "DB", dlse: "DLSE", esp: "ESP",
+            fc: "FC", gpio: "GPIO", id: "ID", ip: "IP", led: "LED", mac: "MAC", mavlink: "MAVLink",
+            rssi: "RSSI", rts: "RTS", rx: "RX", ssid: "SSID", sys: "SYS", tx: "TX", udp: "UDP", wifi: "Wi-Fi"
+        }
+        return String(value).toLowerCase().replace(/[a-z]+/g, function(word, offset) {
+            if (abbreviations[word]) return abbreviations[word]
+            return offset === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word
+        })
+    }
+
     function dlseParameterWarning(columnKey, display) {
         const value = String(display).trim()
         if (columnKey === "power_mgmt"
@@ -539,19 +552,25 @@ Item {
                 spacing: 14
 
                 AppCheckBox {
-                    text: "SELECT ALL"
+                    objectName: "selectAllCheckbox"
+                    text: "Select all"
+                    labelFont.family: theme.bodyFont
+                    labelFont.pixelSize: theme.bodyTextSize
                     onClicked: fleetController.selectAll(checked)
                 }
 
                 AppCheckBox {
-                    text: "SELECT VISIBLE"
+                    objectName: "selectVisibleCheckbox"
+                    text: "Select visible"
+                    labelFont.family: theme.bodyFont
+                    labelFont.pixelSize: theme.bodyTextSize
                     onClicked: fleetController.selectVisible(checked)
                 }
 
                 Item { Layout.fillWidth: true }
 
                 AppButton {
-                    text: "CONFIGURE COLUMNS"
+                    text: "Configure columns"
                     quiet: true
                     textBold: false
                     onClicked: fleetDialogs.openColumns()
@@ -600,6 +619,7 @@ Item {
 
                                 delegate: Rectangle {
                                     id: headerCell
+                                    objectName: "fleetHeaderCell_" + index
 
                                     required property var display
                                     required property int index
@@ -608,20 +628,21 @@ Item {
 
                                     implicitWidth: fleetController.columnWidth(index)
                                     implicitHeight: 37
-                                    color: theme.panel
+                                    color: "transparent"
                                     border.width: 0
 
                                     Text {
+                                        objectName: "fleetHeaderText_" + index
                                         anchors.fill: parent
                                         anchors.leftMargin: 6
                                         anchors.rightMargin: 12
-                                        text: display + (mainScreen.sortColumn === index
+                                        text: mainScreen.formatFleetHeader(display) + (mainScreen.sortColumn === index
                                                          ? (mainScreen.sortAscending ? "  ↑" : "  ↓") : "")
                                         color: theme.secondaryText
-                                        font.family: theme.dataFont
+                                        font.family: theme.bodyFont
                                         font.pixelSize: theme.smallTextSize
                                         font.bold: true
-                                        horizontalAlignment: Text.AlignHCenter
+                                        horizontalAlignment: Text.AlignLeft
                                         verticalAlignment: Text.AlignVCenter
                                         elide: Text.ElideRight
                                     }
@@ -1150,6 +1171,7 @@ Item {
 
     FleetDialogs {
         id: fleetDialogs
+        formatColumnTitle: mainScreen.formatFleetHeader
         anchors.fill: parent
         z: 100
     }
