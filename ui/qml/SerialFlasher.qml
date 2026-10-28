@@ -68,126 +68,182 @@ Item {
 
         Rectangle {
             Layout.fillWidth: true
-            implicitHeight: activityRow.implicitHeight + 24
-            color: theme.panel; radius: 6
-            border.color: serialController.state === "paused" ? theme.warning : theme.border
+            implicitHeight: Math.max(48, activityRow.implicitHeight + 20)
+            color: "#102a40"; radius: 6
+            border.width: serialController.state === "paused" ? 1 : 0
+            border.color: theme.error
             RowLayout {
                 id: activityRow
-                anchors.fill: parent; anchors.margins: 12; spacing: 12
+                anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 14; anchors.topMargin: 10; anchors.bottomMargin: 10; spacing: 12
                 BusyIndicator {
                     objectName: "serialBusyIndicator"
                     running: serialController.busy
                     visible: running
                     Layout.preferredWidth: 32; Layout.preferredHeight: 32
                 }
-                ColumnLayout {
-                    Layout.fillWidth: true; spacing: 4
-                    Text { text: "CURRENT ACTIVITY"; color: theme.mutedText; font.family: theme.bodyFont; font.pixelSize: theme.smallTextSize }
-                    Text {
-                        objectName: "serialActivity"
-                        Layout.fillWidth: true
-                        text: serialController.activity
-                        color: theme.primaryText; font.family: theme.bodyFont
-                        font.pixelSize: theme.bodyTextSize; wrapMode: Text.Wrap
-                    }
+                Text {
+                    text: "Current activity"; color: theme.secondaryText
+                    font.family: theme.bodyFont; font.pixelSize: theme.smallTextSize; font.bold: true
+                }
+                Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 18; color: theme.border }
+                Text {
+                    objectName: "serialActivity"
+                    Layout.fillWidth: true
+                    text: serialController.activity
+                    color: theme.primaryText; font.family: theme.bodyFont
+                    font.pixelSize: theme.bodyTextSize; wrapMode: Text.Wrap
                 }
             }
         }
 
         RowLayout {
+            id: workspaceRow
             Layout.fillWidth: true; Layout.fillHeight: true; spacing: 16
 
             Rectangle {
                 objectName: "serialSettingsPanel"
-                Layout.preferredWidth: Math.min(740, page.width * 0.56); Layout.fillHeight: true
-                color: theme.panel; radius: 6; border.color: theme.border
+                Layout.preferredWidth: Math.min(620, page.width * 0.46)
+                Layout.preferredHeight: Math.min(workspaceRow.height, setupForm.implicitHeight + 32)
+                Layout.minimumHeight: Math.min(workspaceRow.height, 240); Layout.alignment: Qt.AlignTop
+                color: theme.panel; radius: 6
                 ScrollView {
                     id: setupScroll
                     objectName: "serialSetupScroll"
-                    anchors.fill: parent; anchors.margins: 14
+                    anchors.fill: parent; anchors.margins: 16
                     clip: true
                     contentWidth: availableWidth
                     contentHeight: setupForm.implicitHeight
                     ColumnLayout {
                         id: setupForm
                         objectName: "serialSetupForm"
-                        width: setupScroll.availableWidth; height: implicitHeight; spacing: 10
-                        Text { text: "1. Firmware and Settings"; color: theme.primaryText; font.family: theme.bodyFont; font.bold: true; font.pixelSize: theme.headingTextSize }
-                        Text {
-                            objectName: "serialLicenseStatus"
-                            text: "License server: " + (fleetController.licenseStatus === "unknown" ? "Checking…" : fleetController.licenseStatus === "checking" ? "Checking…" : fleetController.licenseStatus === "online" ? "Online" : "Offline")
-                            color: fleetController.licenseStatus === "online" ? theme.success
-                                   : fleetController.licenseStatus === "offline" ? theme.error : theme.warning
-                            font.family: theme.bodyFont
+                        width: setupScroll.availableWidth; height: implicitHeight; spacing: 12
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { text: "1. Firmware and Settings"; color: theme.primaryText; font.family: theme.bodyFont; font.bold: true; font.pixelSize: theme.headingTextSize }
+                            Item { Layout.fillWidth: true }
+                            Text {
+                                objectName: "serialLicenseStatus"
+                                text: "License server: " + (fleetController.licenseStatus === "unknown" || fleetController.licenseStatus === "checking" ? "Checking…" : fleetController.licenseStatus === "online" ? "Online" : "Offline")
+                                color: fleetController.licenseStatus === "online" ? theme.success
+                                       : fleetController.licenseStatus === "offline" ? theme.error : theme.secondaryText
+                                font.family: theme.bodyFont; font.pixelSize: theme.smallTextSize
+                            }
                         }
                         ColumnLayout {
-                            Layout.fillWidth: true; enabled: !serialController.locked
-                            Text { text: "Firmware source"; color: theme.secondaryText; font.family: theme.bodyFont }
-                            SerialComboBox {
-                                id: releaseSource; objectName: "serialReleaseSource"; Layout.fillWidth: true
-                                model: ["Local release folder", "DLSE online releases"]
-                                currentIndex: 1
-                                onCurrentIndexChanged: page.changedInput()
+                            Layout.fillWidth: true; enabled: !serialController.locked; spacing: 9
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 8
+                                ColumnLayout {
+                                    Layout.preferredWidth: 175; Layout.minimumWidth: 150; Layout.maximumWidth: 180
+                                    Text { text: "Firmware source"; color: theme.secondaryText; font.family: theme.bodyFont }
+                                    SerialComboBox {
+                                        id: releaseSource; objectName: "serialReleaseSource"; Layout.fillWidth: true
+                                        model: ["Local release folder", "DLSE online releases"]
+                                        currentIndex: 1
+                                        onCurrentIndexChanged: page.changedInput()
+                                    }
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true; visible: releaseSource.currentIndex === 1
+                                    Text { text: "Release"; color: theme.secondaryText; font.family: theme.bodyFont }
+                                    SerialComboBox {
+                                        id: releasePicker; objectName: "serialReleasePicker"; Layout.fillWidth: true
+                                        model: serialController.releases; textRole: "label"
+                                        displayText: count ? currentText : "Select a release"
+                                        popup.objectName: "serialReleasePopup"
+                                        popup.width: Math.min(640, Math.max(releasePicker.width, page.width - releasePicker.mapToItem(page, 0, 0).x - 20))
+                                        onCurrentIndexChanged: page.changedInput()
+                                    }
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true; visible: releaseSource.currentIndex === 0
+                                    Text { text: "Release folder"; color: theme.secondaryText; font.family: theme.bodyFont }
+                                    AppTextField {
+                                        id: releaseField; objectName: "serialReleaseField"
+                                        Layout.fillWidth: true; text: page.defaults.release
+                                        placeholderText: "Extracted release folder"
+                                        onTextEdited: page.changedInput()
+                                    }
+                                }
+                                AppButton {
+                                    objectName: "serialRefreshReleasesButton"
+                                    visible: releaseSource.currentIndex === 1; Layout.alignment: Qt.AlignBottom
+                                    text: "Refresh"; onClicked: serialController.refreshReleases(tokenField.text)
+                                }
+                                AppButton { visible: releaseSource.currentIndex === 0; Layout.alignment: Qt.AlignBottom; text: "Browse"; onClicked: releaseFolder.open() }
                             }
                             RowLayout {
-                                Layout.fillWidth: true; visible: releaseSource.currentIndex === 0
-                                AppTextField {
-                                    id: releaseField; objectName: "serialReleaseField"
-                                    Layout.fillWidth: true; text: page.defaults.release
-                                    placeholderText: "Extracted release root folder"
-                                    onTextEdited: page.changedInput()
+                                Layout.fillWidth: true; spacing: 8
+                                ColumnLayout {
+                                    Layout.preferredWidth: 220; Layout.minimumWidth: 185; Layout.maximumWidth: 235
+                                    Text { text: "Settings template"; color: theme.secondaryText; font.family: theme.bodyFont }
+                                    SerialComboBox {
+                                        id: settingsSource; objectName: "serialSettingsSource"; Layout.fillWidth: true
+                                        model: ["Release defaults", "Custom Settings CSV"]
+                                        currentIndex: page.defaults.settings.length > 0 ? 1 : 0
+                                        onCurrentIndexChanged: page.changedInput()
+                                    }
                                 }
-                                AppButton { text: "Browse"; onClicked: releaseFolder.open() }
-                            }
-                            ColumnLayout {
-                                Layout.fillWidth: true; visible: releaseSource.currentIndex === 1
-                                SerialComboBox {
-                                    id: releasePicker; Layout.fillWidth: true
-                                    model: serialController.releases; textRole: "label"
-                                    displayText: count ? currentText : "Refresh releases to choose firmware"
-                                    onCurrentIndexChanged: page.changedInput()
+                                ColumnLayout {
+                                    Layout.fillWidth: true; visible: settingsSource.currentIndex === 1
+                                    Text { text: "Settings file"; color: theme.secondaryText; font.family: theme.bodyFont }
+                                    AppTextField {
+                                        id: settingsField; objectName: "serialSettingsField"; Layout.fillWidth: true
+                                        text: page.defaults.settings; placeholderText: "Custom Settings CSV"
+                                        onTextEdited: page.changedInput()
+                                    }
                                 }
-                                AppButton { text: "Refresh releases"; onClicked: serialController.refreshReleases(tokenField.text) }
+                                AppButton { visible: settingsSource.currentIndex === 1; Layout.alignment: Qt.AlignBottom; text: "Browse"; onClicked: settingsFile.open() }
+                                Item { Layout.fillWidth: true; visible: settingsSource.currentIndex === 0 }
                             }
-                            Text { text: "Settings template"; color: theme.secondaryText; font.family: theme.bodyFont }
-                            SerialComboBox {
-                                id: settingsSource; Layout.fillWidth: true
-                                model: ["Release defaults", "Custom Settings CSV"]
-                                currentIndex: page.defaults.settings.length > 0 ? 1 : 0
-                                onCurrentIndexChanged: page.changedInput()
-                            }
+                            Text { text: "2. Licensing"; Layout.topMargin: 10; color: theme.primaryText; font.family: theme.bodyFont; font.bold: true; font.pixelSize: theme.headingTextSize }
                             RowLayout {
-                                Layout.fillWidth: true; visible: settingsSource.currentIndex === 1
-                                AppTextField {
-                                    id: settingsField; Layout.fillWidth: true
-                                    text: page.defaults.settings; placeholderText: "Custom Settings CSV"
-                                    onTextEdited: page.changedInput()
+                                Layout.fillWidth: true
+                                AppCheckBox {
+                                    id: licenseToggle; objectName: "serialLicenseToggle"
+                                    text: "Flash license"; checked: true
+                                    contentItem: Text {
+                                        leftPadding: licenseToggle.indicator.width + licenseToggle.spacing
+                                        text: licenseToggle.text; verticalAlignment: Text.AlignVCenter
+                                        color: licenseToggle.enabled ? theme.primaryText : theme.mutedText
+                                        font.family: theme.bodyFont; font.pixelSize: theme.bodyTextSize
+                                    }
+                                    onToggled: page.changedInput()
                                 }
-                                AppButton { text: "Browse"; onClicked: settingsFile.open() }
-                            }
-                            Text { text: "2. Licensing"; Layout.topMargin: 8; color: theme.primaryText; font.family: theme.bodyFont; font.bold: true; font.pixelSize: theme.headingTextSize }
-                            AppCheckBox {
-                                id: licenseToggle; objectName: "serialLicenseToggle"
-                                text: "Flash license"; checked: true
-                                onToggled: page.changedInput()
+                                AppButton {
+                                    id: licenseDetailsButton
+                                    objectName: "serialLicenseDetailsButton"
+                                    text: "License details"; quiet: true; textBold: false
+                                    contentItem: Text {
+                                        text: licenseDetailsButton.text + "  ›"
+                                        color: licenseDetailsButton.enabled ? theme.link : theme.mutedText
+                                        font.family: theme.bodyFont; font.pixelSize: theme.bodyTextSize
+                                        font.underline: licenseDetailsButton.hovered
+                                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                                    }
+                                    onClicked: licenseDetails.open()
+                                }
+                                Item { Layout.fillWidth: true }
                             }
                             Text {
-                                Layout.fillWidth: true
-                                text: licenseToggle.checked
-                                      ? "Permanent activation automatically uses a matching license from received_licenses/ or the board when the license server is unavailable. Online activation and firmware downloads require a token."
-                                      : "Firmware and settings will be flashed without a license. No license will be requested or embedded. Replacing settings also removes any existing license on the board. Online firmware downloads still require a token."
-                                color: licenseToggle.checked ? theme.mutedText : theme.warning
-                                font.family: theme.bodyFont; wrapMode: Text.Wrap
+                                objectName: "serialNoLicenseWarning"
+                                Layout.fillWidth: true; visible: !licenseToggle.checked
+                                text: "Flashing without a license removes the board's existing license."
+                                color: theme.error; font.family: theme.bodyFont; wrapMode: Text.Wrap
                             }
-                            Text { text: "License server token"; color: theme.secondaryText; font.family: theme.bodyFont }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text { text: "License server token"; color: theme.secondaryText; font.family: theme.bodyFont }
+                                Text { text: "Session only"; color: theme.mutedText; font.family: theme.bodyFont; font.pixelSize: theme.smallTextSize }
+                                Item { Layout.fillWidth: true }
+                            }
                             AppTextField {
                                 id: tokenField; objectName: "serialTokenField"
                                 Layout.fillWidth: true
                                 text: fleetController.environmentToken; echoMode: TextInput.Password
-                                placeholderText: licenseToggle.checked ? "Required for online activation and downloads" : "Only needed for online firmware downloads"
+                                placeholderText: "Token for online access"
                                 onTextEdited: page.changedInput()
                             }
-                            Text { text: "Token is used for this session only."; color: theme.mutedText; font.family: theme.bodyFont; font.pixelSize: theme.smallTextSize }
                             RowLayout {
                                 Layout.fillWidth: true
                                 ColumnLayout {
@@ -197,7 +253,7 @@ Item {
                                         id: indexField; objectName: "serialIndexField"; Layout.fillWidth: true
                                         implicitHeight: 34; Layout.preferredHeight: 34
                                         from: 0; to: 2147483647; value: page.defaults.index; editable: true
-                                        font.family: theme.dataFont; font.pixelSize: theme.bodyTextSize
+                                        font.family: theme.bodyFont; font.pixelSize: theme.bodyTextSize
                                         palette.text: theme.primaryText; palette.buttonText: theme.primaryText
                                         palette.base: theme.panel; palette.button: theme.raised
                                         textFromValue: function(value, locale) { return String(value) }
@@ -219,13 +275,14 @@ Item {
                             }
                             AppButton {
                                 objectName: "serialPrepareButton"
-                                Layout.fillWidth: true; text: "Check and Validate Configuration"; emphasized: true
+                                Layout.preferredWidth: 290; Layout.maximumWidth: 290; Layout.alignment: Qt.AlignLeft
+                                text: "Check and Validate Configuration"; emphasized: true
                                 onClicked: page.prepareReview()
                             }
                         }
 
                         ColumnLayout {
-                            Layout.fillWidth: true; visible: serialController.state === "review"
+                            Layout.fillWidth: true; visible: serialController.state === "review"; spacing: 8
                             Text { text: "3. Review and Confirm"; color: theme.primaryText; font.family: theme.bodyFont; font.bold: true; font.pixelSize: theme.headingTextSize }
                             Text {
                                 Layout.fillWidth: true
@@ -236,7 +293,7 @@ Item {
                             Text { text: "Config preview"; color: theme.primaryText; font.family: theme.bodyFont; font.bold: true }
                             Text {
                                 Layout.fillWidth: true
-                                text: "Preview of the next board assignments. No boards have been flashed by this validation."
+                                text: "Next assignments. Validation does not flash boards."
                                 color: theme.mutedText; font.family: theme.bodyFont; wrapMode: Text.Wrap
                             }
                             Repeater {
@@ -257,12 +314,16 @@ Item {
                                     color: theme.warning; font.family: theme.bodyFont; wrapMode: Text.Wrap
                                 }
                             }
-                            AppButton { objectName: "serialArmButton"; Layout.fillWidth: true; text: "Start flashing…"; emphasized: true; onClicked: armDialog.open() }
+                            AppButton {
+                                objectName: "serialArmButton"
+                                Layout.preferredWidth: 290; Layout.maximumWidth: 290; Layout.alignment: Qt.AlignLeft
+                                text: "Start flashing…"; emphasized: true; onClicked: armDialog.open()
+                            }
                         }
                         Text {
                             Layout.fillWidth: true
-                            text: "Reconnect already-connected boards after starting. Only new connections are processed, one board at a time. Keep boards connected until they finish."
-                            color: theme.warning; font.family: theme.bodyFont; wrapMode: Text.Wrap
+                            text: "After starting, reconnect any boards already attached. Keep each board connected until it finishes."
+                            color: theme.secondaryText; font.family: theme.bodyFont; font.pixelSize: theme.smallTextSize; wrapMode: Text.Wrap
                         }
                     }
                 }
@@ -289,14 +350,15 @@ Item {
                         onClicked: { if (serialController.skipRequiresConfirmation) skipDialog.open(); else serialController.skip(false) }
                     }
                 }
-                Text { text: "Newly Connected Boards"; color: theme.primaryText; font.family: theme.bodyFont; font.bold: true }
+                Text { text: "Newly Connected Boards"; color: theme.primaryText; font.family: theme.bodyFont; font.pixelSize: theme.bodyTextSize; font.bold: true }
                 Rectangle {
                     objectName: "serialConnectedPanel"
                     Layout.fillWidth: true; Layout.preferredHeight: 116
-                    color: theme.panel; border.color: theme.border; radius: 6
+                    color: "transparent"
+                    Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 1; color: theme.border }
                     Flickable {
                         id: tableViewport
-                        anchors.fill: parent; anchors.margins: 10; clip: true
+                        anchors.fill: parent; anchors.topMargin: 4; anchors.bottomMargin: 8; clip: true
                         contentWidth: Math.max(width, 460)
                         contentHeight: height
                         flickableDirection: Flickable.HorizontalFlick
@@ -311,7 +373,7 @@ Item {
                                         required property int index
                                         required property string modelData
                                         width: [80, 75, 50, tableViewport.contentWidth - 229][index]
-                                        text: modelData; color: theme.mutedText; font.family: theme.bodyFont; font.bold: true
+                                        text: modelData; color: theme.secondaryText; font.family: theme.bodyFont; font.pixelSize: theme.smallTextSize; font.bold: true
                                     }
                                 }
                             }
@@ -342,21 +404,23 @@ Item {
                                 }
                                 Text {
                                     anchors.centerIn: parent; visible: results.count === 0
-                                    text: "Newly connected boards will appear here."
+                                    text: serialController.armed ? "Waiting for a new board." : "Start flashing, then connect a board."
                                     color: theme.mutedText; font.family: theme.bodyFont
                                 }
                             }
                         }
                     }
                 }
-                Text { text: "Flashed Boards / Results"; color: theme.primaryText; font.family: theme.bodyFont; font.bold: true }
+                Text { text: "Flashed Boards / Results"; color: theme.primaryText; font.family: theme.bodyFont; font.pixelSize: theme.bodyTextSize; font.bold: true }
                 Rectangle {
                     objectName: "serialCompletedPanel"
-                    Layout.fillWidth: true; Layout.preferredHeight: 100
-                    color: theme.panel; border.color: theme.border; radius: 6
+                    Layout.fillWidth: true; Layout.fillHeight: true
+                    Layout.preferredHeight: 160; Layout.minimumHeight: 120
+                    color: "transparent"
+                    Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 1; color: theme.border }
                     Flickable {
                         id: completedViewport
-                        anchors.fill: parent; anchors.margins: 10; clip: true
+                        anchors.fill: parent; anchors.topMargin: 4; anchors.bottomMargin: 8; clip: true
                         contentWidth: Math.max(width, 450); contentHeight: height
                         flickableDirection: Flickable.HorizontalFlick
                         ScrollBar.horizontal: ScrollBar {}
@@ -370,7 +434,7 @@ Item {
                                         required property int index
                                         required property string modelData
                                         width: [44, 78, 112, 112, completedViewport.contentWidth - 378][index]
-                                        text: modelData; color: theme.mutedText; font.family: theme.bodyFont
+                                        text: modelData; color: theme.secondaryText; font.family: theme.bodyFont
                                         font.pixelSize: theme.smallTextSize; font.bold: true
                                     }
                                 }
@@ -393,25 +457,26 @@ Item {
                                             width: [44, 78, 112, 112, completedViewport.contentWidth - 378][index]
                                             height: 26; verticalAlignment: Text.AlignVCenter
                                             text: modelData; elide: Text.ElideRight
-                                            color: index !== 4 ? theme.primaryText : record.outcome === "success" ? theme.success : record.outcome === "failed" ? theme.error : theme.warning
+                                            color: index !== 4 ? theme.primaryText : record.outcome === "success" ? theme.success : record.outcome === "failed" ? theme.error : theme.secondaryText
                                             font.family: theme.dataFont; font.pixelSize: theme.smallTextSize
                                         }
                                     }
                                 }
                                 Text {
                                     anchors.centerIn: parent; visible: completedView.count === 0
-                                    text: "Completed outcomes will appear here."
+                                    text: "No completed boards yet."
                                     color: theme.mutedText; font.family: theme.bodyFont
                                 }
                             }
                         }
                     }
                 }
-                Text { text: "Activity History"; color: theme.primaryText; font.family: theme.bodyFont; font.bold: true }
+                Text { text: "Activity History"; color: theme.primaryText; font.family: theme.bodyFont; font.pixelSize: theme.bodyTextSize; font.bold: true }
                 Rectangle {
                     objectName: "serialHistoryPanel"
-                    Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 130
-                    color: theme.panel; border.color: theme.border; radius: 6
+                    Layout.fillWidth: true; Layout.fillHeight: true
+                    Layout.preferredHeight: 160; Layout.minimumHeight: 120
+                    color: "#0c2337"; radius: 6
                     ListView {
                         id: historyView
                         objectName: "serialHistory"
@@ -424,6 +489,10 @@ Item {
                             width: historyView.width; text: modelData
                             color: theme.secondaryText; font.family: theme.dataFont
                             font.pixelSize: theme.smallTextSize; wrapMode: Text.Wrap
+                        }
+                        Text {
+                            anchors.centerIn: parent; visible: historyView.count === 0
+                            text: "Activity will appear here."; color: theme.mutedText; font.family: theme.bodyFont
                         }
                     }
                 }
@@ -438,13 +507,41 @@ Item {
     }
 
     ModalDialog {
+        id: licenseDetails; objectName: "serialLicenseDetailsDialog"; title: "License details"
+        Text {
+            Layout.fillWidth: true
+            text: "When the license server is unavailable, the flasher looks for a matching permanent license in local storage and then on the board."
+            color: theme.primaryText; font.family: theme.bodyFont; wrapMode: Text.Wrap
+        }
+        Text {
+            Layout.fillWidth: true
+            text: "Online activation and account firmware downloads need a token. The token is used only for this session."
+            color: theme.secondaryText; font.family: theme.bodyFont; wrapMode: Text.Wrap
+        }
+        Text {
+            Layout.fillWidth: true
+            text: "Turning off Flash license installs no license and removes any existing license from the board. Local license backups are kept."
+            color: theme.error; font.family: theme.bodyFont; wrapMode: Text.Wrap
+        }
+        RowLayout {
+            Item { Layout.fillWidth: true }
+            AppButton { text: "Close"; onClicked: licenseDetails.close() }
+        }
+    }
+    ModalDialog {
         id: armDialog; objectName: "serialArmDialog"; title: "Start automatic serial flashing?"
         Text {
             Layout.fillWidth: true
             text: "Every newly connected supported board will be flashed with the reviewed firmware and settings"
-                  + (licenseToggle.checked ? " and a permanent license." : " without a license. Any existing license on the board will be removed.")
+                  + (licenseToggle.checked ? " and a permanent license." : " without a license.")
                   + " This replaces its firmware and settings. Confirm the template and any warnings before starting. Reconnect boards that are already attached."
-            color: theme.warning; font.family: theme.bodyFont; wrapMode: Text.Wrap
+            color: theme.primaryText; font.family: theme.bodyFont; wrapMode: Text.Wrap
+        }
+        Text {
+            objectName: "serialArmNoLicenseWarning"
+            Layout.fillWidth: true; visible: !licenseToggle.checked
+            text: "Any existing license on the board will be removed."
+            color: theme.error; font.family: theme.bodyFont; wrapMode: Text.Wrap
         }
         RowLayout {
             Item { Layout.fillWidth: true }
@@ -457,7 +554,7 @@ Item {
         Text {
             Layout.fillWidth: true
             text: "Writing began, so this board may have received its assigned settings. Skipping reserves its index to avoid assigning the same identity to another board."
-            color: theme.warning; font.family: theme.bodyFont; wrapMode: Text.Wrap
+            color: theme.error; font.family: theme.bodyFont; wrapMode: Text.Wrap
         }
         RowLayout {
             Item { Layout.fillWidth: true }

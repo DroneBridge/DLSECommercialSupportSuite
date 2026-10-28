@@ -101,7 +101,8 @@ Batch Flasher** on the start page. The existing `dlse-install` CLI is unchanged.
 
 1. **DLSE online releases** is selected by default. Refresh the release list and
    choose a cached or account release, or select **Local release folder** for an
-   extracted release root. Online downloads need a DroneBridge token. A release
+   extracted release root. The release list opens wider than the selector to show
+   more of each path or name. Online downloads need a DroneBridge token. A release
    must contain `db_show_params.csv` and `esp32c3_generic`, `esp32c5_generic` and
    `esp32c6_generic` folders with `flash_args.txt` and all referenced binaries.
 2. Use release-default settings or choose **Custom Settings CSV**, a self-contained NVS CSV
@@ -117,6 +118,7 @@ Batch Flasher** on the start page. The existing `dlse-install` CLI is unchanged.
    and downloads are separate online operations. The color-coded **License server**
    indicator uses the existing background HTTP reachability check every **30 seconds**
    with a **five-second** request timeout; it does not validate the token.
+   Select **License details** in the flasher to review recovery and token behavior.
    Disable **Flash license** to install firmware and settings without acquiring,
    validating, recovering or embedding a license. Any license payload already
    in the settings template is omitted from the generated NVS partition.
@@ -125,7 +127,9 @@ Batch Flasher** on the start page. The existing `dlse-install` CLI is unchanged.
    and final confirmation explicitly show that licensing is disabled. Online
    firmware downloads still need a token; local/cached firmware does not.
 4. Choose the starting index using the number picker (initial default **1**,
-   minimum **0**; static-IP subnet/network-address checks still apply) and flash baud from
+   minimum **0**; a saved next index is retained). Static-IP subnet and network-address
+   checks still apply: index 0 is rejected when it would produce a network address.
+   Choose flash baud from
    **115200**, **230400**, **460800** (default), **921600**, or **1500000**.
    Supported baud preferences persist; older custom values fall back to 460800
    in the dropdown. Use 115200 for connection problems. Select **Check and Validate
@@ -146,8 +150,10 @@ name (for example ESP32-C5), configured IP, activation key and Success/Fail/Skip
 status, including boards skipped before flashing. Fields not yet read or assigned
 remain empty. Activation keys are visible in this table as requested, but remain
 redacted in diagnostic logs and Activity History. Failed
-rows return to the active table during an explicit retry. The larger **Activity
+rows return to the active table during an explicit retry. The **Activity
 History**, current-activity banner and outcome counts show what is happening.
+The Results table and Activity History share available vertical space equally;
+enlarge the window to see more rows and history at the same time.
 Simultaneous arrivals wait internally while the current board finishes; there
 is no queued counter in the UI. Busy indicators are indeterminate; no estimated
 flash percentage is shown. Firmware, settings and license are installed one

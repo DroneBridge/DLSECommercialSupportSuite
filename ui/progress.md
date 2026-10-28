@@ -68,6 +68,12 @@ Last updated: 2026-10-13
 
 ## Serial Batch Flasher
 
+- [x] Compact the starting-index picker to match adjacent controls and explain how to populate an empty release selector.
+- [x] Give the setup and review groups modestly more vertical spacing while keeping the form compact and scrollable.
+- [x] Open the serial release list wider than its field, bounded by the window, to show more of cached paths and online release names.
+- [x] Balance setup and results, distinguish the current activity and history from the tables, shorten guidance, add on-demand license details, and use warning colors for material risks.
+- [x] Allow the results table and activity history to share available vertical space equally as the window is resized.
+- [x] Default the starting index to 1 while allowing 0 and preserving the saved next index; retain subnet validation.
 - [x] Add start-page entry and a dedicated guided QML page with native file/folder pickers.
 - [x] Support local, cached and account release sources using existing release workers.
 - [x] Support release defaults/Custom Settings CSV, permanent activation with automatic offline recovery, session-only tokens, five baud choices and indexed assignments; preserve legacy backend modes.
