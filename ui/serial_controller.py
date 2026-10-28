@@ -204,7 +204,7 @@ class SerialController(QObject):
             except (TypeError, ValueError):
                 return default
         mode = str(self.settings.value('serial/mode', 'activated'))
-        return {'release': str(self.settings.value('serial/release', '')), 'settings': str(self.settings.value('serial/settings', '')), 'index': number('index', 1), 'baud': number('baud', 460800) or 460800, 'mode': mode if mode in {'activated', 'evaluation', 'offline'} else 'activated'}
+        return {'release': str(self.settings.value('serial/release', '')), 'settings': str(self.settings.value('serial/settings', '')), 'index': number('index', 0), 'baud': number('baud', 460800) or 460800, 'mode': mode if mode in {'activated', 'evaluation', 'offline'} else 'activated'}
 
     @staticmethod
     def _path(value: str) -> str:

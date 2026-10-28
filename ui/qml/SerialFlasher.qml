@@ -144,6 +144,7 @@ Item {
                                 SerialComboBox {
                                     id: releasePicker; Layout.fillWidth: true
                                     model: serialController.releases; textRole: "label"
+                                    displayText: count ? currentText : "Refresh releases to choose firmware"
                                     onCurrentIndexChanged: page.changedInput()
                                 }
                                 AppButton { text: "Refresh releases"; onClicked: serialController.refreshReleases(tokenField.text) }
@@ -190,10 +191,11 @@ Item {
                             RowLayout {
                                 Layout.fillWidth: true
                                 ColumnLayout {
-                                    Layout.fillWidth: true
+                                    Layout.preferredWidth: 180; Layout.maximumWidth: 180
                                     Text { text: "Starting index"; color: theme.secondaryText; font.family: theme.bodyFont }
                                     SpinBox {
                                         id: indexField; objectName: "serialIndexField"; Layout.fillWidth: true
+                                        implicitHeight: 34; Layout.preferredHeight: 34
                                         from: 0; to: 2147483647; value: page.defaults.index; editable: true
                                         font.family: theme.dataFont; font.pixelSize: theme.bodyTextSize
                                         palette.text: theme.primaryText; palette.buttonText: theme.primaryText
@@ -204,7 +206,7 @@ Item {
                                     }
                                 }
                                 ColumnLayout {
-                                    Layout.fillWidth: true
+                                    Layout.preferredWidth: 210; Layout.maximumWidth: 210
                                     Text { text: "Flash baud"; color: theme.secondaryText; font.family: theme.bodyFont }
                                     SerialComboBox {
                                         id: baudField; objectName: "serialBaudSelector"; Layout.fillWidth: true
@@ -213,6 +215,7 @@ Item {
                                         onCurrentIndexChanged: page.changedInput()
                                     }
                                 }
+                                Item { Layout.fillWidth: true }
                             }
                             AppButton {
                                 objectName: "serialPrepareButton"

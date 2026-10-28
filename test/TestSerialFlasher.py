@@ -294,6 +294,12 @@ class TestSerialController(unittest.TestCase):
         self.addCleanup(self.controller.poll_timer.stop)
         self.addCleanup(self.controller.initialize_timer.stop)
 
+    def test_initial_index_default_and_saved_value(self):
+        """A fresh setup starts at zero; an explicitly saved next index survives."""
+        self.assertEqual(0, self.controller.preferences['index'])
+        self.settings.setValue('serial/index', 19)
+        self.assertEqual(19, self.controller.preferences['index'])
+
     def test_initial_ports_excluded_new_arrivals_sorted_and_stale_removed(self):
         """Only arrivals after arming enter the sequential queue; stale ports are skipped."""
         self.ports = {'COM1': ('old',)}
