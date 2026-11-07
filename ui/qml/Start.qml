@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Shapes
 import QtQuick.VectorImage
 
 Item {
@@ -11,13 +12,28 @@ Item {
 
     Theme { id: theme }
 
-    Rectangle {
+    Shape {
+        id: background
         anchors.fill: parent
-        color: theme.background
 
-        gradient: Gradient {
-            GradientStop { position: 0.0; color: "#01457c" }
-            GradientStop { position: 1.0; color: "#07101a" }
+        ShapePath {
+            strokeColor: "transparent"
+            // Keep the circular glow centered on the top border as the page resizes.
+            fillGradient: RadialGradient {
+                centerX: background.width / 2
+                centerY: 0
+                focalX: centerX
+                focalY: centerY
+                centerRadius: Math.max(1, background.height, background.width / 2)
+                GradientStop { position: 0.0; color: "#01457c" }
+                GradientStop { position: 1.0; color: "#07101a" }
+            }
+            startX: 0
+            startY: 0
+            PathLine { x: background.width; y: 0 }
+            PathLine { x: background.width; y: background.height }
+            PathLine { x: 0; y: background.height }
+            PathLine { x: 0; y: 0 }
         }
     }
 

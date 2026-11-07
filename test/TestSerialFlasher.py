@@ -553,6 +553,29 @@ class TestSerialController(unittest.TestCase):
         QTest.qWait(50)
         serial = engine.serial_controller
         serial_page = root.findChild(QQuickItem, 'serialFlasherScreen')
+        banner = root.findChild(QQuickItem, 'serialArmedBanner')
+        banner_message = root.findChild(QQuickItem, 'serialArmedMessage')
+        stop = root.findChild(QQuickItem, 'serialStopButton')
+        self.assertFalse(banner.isVisible())
+        self.assertFalse(stop.isEnabled())
+        self.assertFalse(stop.isVisible())
+        original_state = serial._state
+        serial._armed = True
+        for state, label in [('monitoring', 'ARMED'), ('paused', 'PAUSED'), ('stopping', 'STOPPING')]:
+            serial._state = state
+            serial.changed.emit()
+            self.app.processEvents()
+            self.assertTrue(banner.isVisible())
+            self.assertTrue(banner_message.property('text').startswith(label))
+            self.assertEqual(state != 'stopping', stop.isEnabled())
+            self.assertEqual(state != 'stopping', stop.isVisible())
+            self.assertEqual(state != 'stopping', stop.property('emphasized'))
+        self.assertEqual('#ffaeae', stop.property('accentColor').name())
+        serial._armed = False
+        serial._state = original_state
+        serial.changed.emit()
+        self.app.processEvents()
+        self.assertFalse(banner.isVisible())
         header = serial_page.findChild(QQuickItem, 'serialHeader')
         mode_button = header.findChild(QQuickItem, 'serialModeButton')
         self.assertEqual(64, header.height())
@@ -576,6 +599,18 @@ class TestSerialController(unittest.TestCase):
         self.assertEqual(0, index_picker.property('from'))
         self.assertEqual(1, index_picker.property('value'))
         self.assertTrue(index_picker.property('editable'))
+        # A saved index must not replace a typed edit when validation emits changed.
+        self.settings.setValue('serial/index', 19)
+        index_editor = index_picker.property('contentItem')
+        index_editor.setProperty('text', '2')
+        self.app.processEvents()
+        self.assertEqual(2, index_picker.property('value'))
+        serial.changed.emit()
+        self.app.processEvents()
+        self.assertEqual(2, index_picker.property('value'))
+        index_editor.setProperty('text', '1')
+        self.app.processEvents()
+        self.assertEqual(1, index_picker.property('value'))
         license_toggle = root.findChild(object, 'serialLicenseToggle')
         self.assertTrue(license_toggle.property('checked'))
         self.assertIsNone(root.findChild(object, 'serialState'))

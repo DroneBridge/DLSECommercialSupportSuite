@@ -138,9 +138,14 @@ leave; the current board or job finishes before the page closes.
    in the dropdown. Use 115200 for connection problems. Select **Check and Validate
    Configuration**, inspect **Config preview** and schema warnings, then select
    **Start flashing…** and confirm. Validation only previews assignments; it
-   does not flash a board.
+   does not flash a board. When your configuration is missing keys present in
+   the release schema, the review lists those keys and uses their release default values.
 
 The flasher snapshots existing ports and processes **new connections only**.
+While armed, a persistent amber banner warns that newly connected boards will
+be flashed automatically, and **Stop** is highlighted in red. The banner also
+identifies paused and stopping states. Stop disarms automatic flashing after
+any current operation finishes.
 Reconnect already-attached boards after monitoring starts. Ports are checked
 every **one second**, with **two seconds** allowed for initialization. Install
 the board's USB/serial driver and ensure your OS account can access the port;
@@ -149,9 +154,10 @@ require MAVLink access or stopping Skybrush Live unless it owns that port.
 
 The compact **Newly Connected Boards** table shows waiting and active boards.
 **Flashed Boards / Results** lists completed outcomes with index, resolved chip
-name (for example ESP32-C5), configured IP, activation key and Success/Fail/Skipped
+name (for example ESP32-C5), static IP, activation key and Success/Fail/Skipped
 status, including boards skipped before flashing. Fields not yet read or assigned
-remain empty. Activation keys are visible in this table as requested, but remain
+remain empty. The **Static IP** column shows `—` when no static IP was configured;
+it does not show an address assigned later by DHCP. Activation keys are visible in this table as requested, but remain
 redacted in diagnostic logs and Activity History. Failed
 rows return to the active table during an explicit retry. The **Activity
 History**, current-activity banner and outcome counts show what is happening.

@@ -9,6 +9,8 @@ Item {
     signal backRequested()
     Theme { id: theme }
     property var defaults: serialController.preferences
+    // Snapshot saved defaults once; validation/status signals must not reset edits.
+    Component.onCompleted: defaults = serialController.preferences
     readonly property var baudRates: [115200, 230400, 460800, 921600, 1500000]
 
     Connections {
@@ -50,13 +52,6 @@ Item {
                 onBackRequested: page.backRequested()
             }
             Item { Layout.fillWidth: true }
-            AppButton {
-                objectName: "serialStopButton"
-                Layout.rightMargin: 20
-                text: serialController.state === "stopping" ? "Stopping…" : "Stop"
-                enabled: serialController.locked && serialController.state !== "stopping"
-                onClicked: serialController.stop()
-            }
         }
     }
     ColumnLayout {
@@ -64,6 +59,35 @@ Item {
         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
         anchors.margins: 20
         spacing: 14
+
+        // Outside the settings scroll area so automatic flashing remains conspicuous.
+        Rectangle {
+            objectName: "serialArmedBanner"
+            Layout.fillWidth: true
+            visible: serialController.armed
+            implicitHeight: armedMessage.implicitHeight + 24
+            radius: 6
+            color: Qt.rgba(theme.warning.r, theme.warning.g, theme.warning.b, 0.14)
+            border.color: theme.warning
+            border.width: 1
+            Text {
+                id: armedMessage
+                objectName: "serialArmedMessage"
+                anchors.left: parent.left; anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.margins: 14
+                text: serialController.state === "stopping"
+                      ? "STOPPING — No new boards will be flashed. Waiting for the current operation to finish."
+                      : serialController.state === "paused"
+                        ? "PAUSED — Automatic flashing is paused. Retry or skip the failed board to continue, or select Stop."
+                        : "ARMED — Newly connected boards will be flashed automatically. Reconnect boards already attached. Select Stop to disarm."
+                color: theme.warning
+                font.family: theme.bodyFont
+                font.pixelSize: theme.bodyTextSize
+                font.bold: true
+                wrapMode: Text.Wrap
+            }
+        }
 
         Rectangle {
             Layout.fillWidth: true
@@ -235,11 +259,18 @@ Item {
                                 Text { text: "License server token"; color: theme.secondaryText; font.family: theme.bodyFont }
                                 Text { text: "Session only"; color: theme.mutedText; font.family: theme.bodyFont; font.pixelSize: theme.smallTextSize }
                                 Item { Layout.fillWidth: true }
+                                AppCheckBox {
+                                    id: showToken
+                                    objectName: "serialShowToken"
+                                    text: "Show token"
+                                    checked: false
+                                }
                             }
                             AppTextField {
                                 id: tokenField; objectName: "serialTokenField"
                                 Layout.fillWidth: true
-                                text: fleetController.environmentToken; echoMode: TextInput.Password
+                                text: fleetController.environmentToken
+                                echoMode: showToken.checked ? TextInput.Normal : TextInput.Password
                                 placeholderText: "Token for online access"
                                 onTextEdited: page.changedInput()
                             }
@@ -252,6 +283,7 @@ Item {
                                         id: indexField; objectName: "serialIndexField"; Layout.fillWidth: true
                                         implicitHeight: 34; Layout.preferredHeight: 34
                                         from: 0; to: 2147483647; value: page.defaults.index; editable: true
+                                        live: true
                                         font.family: theme.bodyFont; font.pixelSize: theme.bodyTextSize
                                         palette.text: theme.primaryText; palette.buttonText: theme.primaryText
                                         palette.base: theme.panel; palette.button: theme.raised
@@ -272,12 +304,24 @@ Item {
                                 }
                                 Item { Layout.fillWidth: true }
                             }
-                            AppButton {
-                                objectName: "serialPrepareButton"
-                                Layout.preferredWidth: 290; Layout.maximumWidth: 290; Layout.alignment: Qt.AlignLeft
-                                text: "Check and Validate Configuration"; emphasized: true
-                                onClicked: page.prepareReview()
-                            }
+                        }
+                        AppButton {
+                            objectName: "serialPrepareButton"
+                            Layout.preferredWidth: 290; Layout.maximumWidth: 290; Layout.alignment: Qt.AlignLeft
+                            enabled: !serialController.locked
+                            text: "Check and Validate Configuration"; emphasized: true
+                            onClicked: page.prepareReview()
+                        }
+                        // Keep Stop outside the inputs disabled during an active session.
+                        AppButton {
+                            objectName: "serialStopButton"
+                            Layout.preferredWidth: 290; Layout.maximumWidth: 290; Layout.alignment: Qt.AlignLeft
+                            text: serialController.state === "stopping" ? "Stopping…" : "Stop"
+                            enabled: serialController.locked && serialController.state !== "stopping"
+                            visible: enabled
+                            emphasized: enabled
+                            accentColor: theme.error
+                            onClicked: serialController.stop()
                         }
 
                         ColumnLayout {
@@ -428,7 +472,7 @@ Item {
                             Row {
                                 spacing: 8
                                 Repeater {
-                                    model: ["Index", "Chip ID", "Configured IP", "Activation key", "Status"]
+                                    model: ["Index", "Chip ID", "Static IP", "Activation key", "Status"]
                                     delegate: Text {
                                         required property int index
                                         required property string modelData

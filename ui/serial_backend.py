@@ -117,7 +117,7 @@ def prepare_settings(config: dict[str, Any], work: Path, emit: Callable[[dict], 
     release_keys = {row['key'] for row in release_rows if row['type'] == 'data'}
     warnings = []
     if release_keys - user_keys:
-        warnings.append('Release defaults will be used for: ' + ', '.join(sorted(release_keys - user_keys)))
+        warnings.append('Your provided configuration is missing the following keys. The release default values will be used for: ' + ', '.join(sorted(release_keys - user_keys)))
     if user_keys - release_keys:
         warnings.append('Obsolete settings will be ignored: ' + ', '.join(sorted(user_keys - release_keys)))
     if emit:
