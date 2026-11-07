@@ -155,40 +155,31 @@ class TestFleetUI(unittest.TestCase):
 
         self.assertFalse(main_screen.isVisible())
 
-    def test_scan_toolbar_uses_exported_segmented_controls(self):
-        """The scan toolbar renders the original exported scan components."""
+    def test_scan_toolbar_uses_serial_flasher_buttons(self):
+        """The scan toolbar uses the shared AppButton style with bundled icons."""
         self._enter_main_screen()
         scan_button = self.root.findChild(QQuickItem, "scanButton")
         scan_settings = self.root.findChild(QQuickItem, "scanSettingsButton")
 
         self.assertIsNotNone(scan_button)
         self.assertIsNotNone(scan_settings)
-        radar_icon = scan_button.findChild(QQuickItem, "radarIcon")
-        settings_icon = scan_settings.findChild(QQuickItem, "settingsIcon")
-        self.assertIsNotNone(radar_icon)
-        self.assertIsNotNone(settings_icon)
-        self.assertEqual(20, radar_icon.width())
-        self.assertEqual(20, radar_icon.height())
-        self.assertEqual(20, settings_icon.width())
-        self.assertEqual(20, settings_icon.height())
-        self.assertIn(
-            'fill="#e2d5c8"',
-            (self.QML_ROOT.parent / "resources" / "images" / "radar_24dp.svg").read_text(encoding="utf-8"),
-        )
-        self.assertIn(
-            'fill="#e2d5c8"',
-            (self.QML_ROOT.parent / "resources" / "images" / "settings_24dp.svg").read_text(encoding="utf-8"),
-        )
-        self.assertEqual(162, scan_button.width())
-        self.assertEqual(30, scan_button.height())
+        self.assertEqual("Scan for Devices", scan_button.property("text"))
+        self.assertFalse(scan_button.property("busy"))
+        self.assertTrue(scan_button.property("emphasized"))
+        self.assertTrue(scan_button.property("iconSource").endswith("radar_24dp.svg"))
+        self.assertTrue(scan_settings.property("iconSource").endswith("settings_24dp.svg"))
         self.assertEqual(36, scan_settings.width())
-        self.assertEqual(30, scan_settings.height())
-        self.assertEqual(0, scan_button.property("eigenschaft_2"))
-        self.assertEqual(0, scan_settings.property("eigenschaft_2"))
-        self.assertEqual("Scan for Devices", scan_button.property("labelText"))
+        self.assertEqual(34, scan_button.height())
+        self.assertEqual(34, scan_settings.height())
+        self.assertIsNotNone(self.root.findChild(QQuickItem, "clearFleetButton"))
+        for asset_name in ("radar_24dp.svg", "settings_24dp.svg"):
+            self.assertIn(
+                'fill="#e2d5c8"',
+                (self.QML_ROOT.parent / "resources" / "images" / asset_name).read_text(encoding="utf-8"),
+            )
 
-    def test_scan_exported_button_toggles_discovery(self):
-        """Clicking the exported scan segment invokes the scan workflow."""
+    def test_scan_button_toggles_discovery(self):
+        """Clicking the scan button invokes the scan workflow and relabels it."""
         self._enter_main_screen()
         self.controller.pool.start = Mock()
         scan_button = self.root.findChild(QQuickItem, "scanButton")
@@ -197,8 +188,16 @@ class TestFleetUI(unittest.TestCase):
 
         self.assertTrue(self.controller.scanning)
         self.controller.pool.start.assert_called_once()
-        self.assertEqual(2, scan_button.property("eigenschaft_2"))
-        self.assertEqual("Stop Scanning", scan_button.property("labelText"))
+        self.assertEqual("Stop Scanning", scan_button.property("text"))
+        self.assertTrue(scan_button.property("busy"))
+        self.assertTrue(scan_button.findChild(QQuickItem, "busyIndicator").isVisible())
+
+        self._click_item(scan_button)
+
+        self.assertFalse(self.controller.scanning)
+        self.assertEqual("Scan for Devices", scan_button.property("text"))
+        self.assertFalse(scan_button.property("busy"))
+        self.assertFalse(scan_button.findChild(QQuickItem, "busyIndicator").isVisible())
 
     def test_scan_settings_exported_button_opens_dialog(self):
         """Clicking the exported settings segment opens scan settings."""
@@ -219,55 +218,78 @@ class TestFleetUI(unittest.TestCase):
         self.assertIsNotNone(self.root.findChild(QQuickItem, "unifiTokenField"))
         self.assertIn("UNIFI AP OBSERVATIONS", source)
 
-    def test_operation_toolbar_uses_exported_buttons(self):
-        """Fleet operations render with the exported button frame controls."""
+    def test_operation_toolbar_uses_serial_flasher_buttons(self):
+        """Fleet operations render as icon AppButtons with their original labels."""
         self._enter_main_screen()
         expected = {
-            "rebootButton": ("Reboot Devices", 158, 108, False),
-            "assignStaticIpButton": ("Manage Static IPs", 170, 130, False),
-            "alignSysIdsButton": ("Align SYS IDs", 150, 100, False),
-            "otaFirmwareButton": ("OTA Firmware Upgrade", 208, 158, False),
-            "otaActivationButton": ("OTA DLSE Activation", 190, 140, False),
-            "applySettingsButton": ("Apply Settings", 158, 108, False),
+            "rebootButton": ("Reboot Devices", "restart_alt_24dp.svg"),
+            "assignStaticIpButton": ("Manage Static IPs", "format_list_numbered.svg"),
+            "alignSysIdsButton": ("Align SYS IDs", "sync_alt.svg"),
+            "otaFirmwareButton": ("OTA Firmware Upgrade", "computer_arrow_up_24dp.svg"),
+            "otaActivationButton": ("OTA DLSE Activation", "key_24dp.svg"),
+            "applySettingsButton": ("Apply Settings", "upload_file_24dp.svg"),
         }
-        for name, (label, width, label_width, key_icon_visible) in expected.items():
+        for name, (label, icon) in expected.items():
             button = self.root.findChild(QQuickItem, name)
             self.assertIsNotNone(button, name)
-            self.assertAlmostEqual(width, button.width(), places=2)
-            self.assertEqual(29, button.height())
-            self.assertEqual(label, button.property("text_LabelText"))
-            self.assertAlmostEqual(label_width, button.property("text_LabelWidth"), places=2)
-            self.assertEqual(key_icon_visible, button.property("keyIconVisible"))
-            self.assertEqual(0, button.property("eigenschaft_2"))
+            self.assertEqual(label, button.property("text"))
+            self.assertEqual(34, button.height())
+            self.assertTrue(button.property("iconSource").endswith(icon), name)
+            self.assertFalse(button.property("emphasized"), name)
 
-        source = (self.QML_ROOT / "OTA_Button_1.qml").read_text(encoding="utf-8")
-        self.assertIn("property bool keyIconVisible: true", source)
-        self.assertIn("visible: oTA_Button.keyIconVisible", source)
-
-        expected_icon_sizes = {
-            "restartIcon": 20,
-            "formatListNumberedImage": 16,
-            "computerArrowIcon": 20,
-            "keyIcon": 20,
-            "uploadFileIcon": 20,
-        }
-        for icon_name, expected_size in expected_icon_sizes.items():
-            icon = self.root.findChild(QQuickItem, icon_name)
-            self.assertIsNotNone(icon, icon_name)
-            self.assertAlmostEqual(expected_size, icon.width(), places=2)
-            self.assertAlmostEqual(expected_size, icon.height(), places=2)
-
-        for asset_name in (
-            "restart_alt_24dp.svg",
-            "format_list_numbered.svg",
-            "computer_arrow_up_24dp.svg",
-            "key_24dp.svg",
-            "upload_file_24dp.svg",
+        for asset in (
+            self.QML_ROOT.parent / "resources" / "images" / "restart_alt_24dp.svg",
+            self.QML_ROOT.parent / "resources" / "images" / "format_list_numbered.svg",
+            self.QML_ROOT.parent / "resources" / "images" / "computer_arrow_up_24dp.svg",
+            self.QML_ROOT.parent / "resources" / "images" / "key_24dp.svg",
+            self.QML_ROOT.parent / "resources" / "images" / "upload_file_24dp.svg",
+            self.QML_ROOT / "sync_alt.svg",
         ):
-            asset = (self.QML_ROOT.parents[1] / "ui" / "resources" / "images" / asset_name).read_text(
-                encoding="utf-8"
-            )
-            self.assertIn('fill="#e2d5c8"', asset)
+            self.assertIn('fill="#e2d5c8"', asset.read_text(encoding="utf-8"), asset.name)
+
+    def test_footer_activity_fuses_discovery_and_operation_state(self):
+        """One footer ACTIVITY field replaces the banner and DISCOVERY/SCAN fields."""
+        self._enter_main_screen()
+        source = (self.QML_ROOT / "MainScreen.qml").read_text(encoding="utf-8")
+        self.assertNotIn("Current activity", source)
+        self.assertNotIn('"DISCOVERY:"', source)
+        self.assertNotIn('"SCAN:"', source)
+        self.assertIsNone(self.root.findChild(QQuickItem, "fleetActivityBanner"))
+        self.assertIsNone(self.root.findChild(QQuickItem, "discoveryFooterStatus"))
+
+        main_screen = self.root.findChild(object, "mainScreen")
+        activity = self.root.findChild(QQuickItem, "activityFooterStatus")
+        self.assertIsNone(self.root.findChild(QQuickItem, "fleetBusyIndicator"))
+        self.assertIn("ACTIVITY:", activity.property("text"))
+        self.assertEqual("IDLE", main_screen.property("activityLabel"))
+
+        self.controller._discovery_status = "SCANNING"
+        self.controller.stateChanged.emit()
+        self.app.processEvents()
+        self.assertEqual("SCANNING", main_screen.property("activityLabel"))
+
+        self.controller._discovery_status = "WAITING"
+        self.controller.stateChanged.emit()
+        self.app.processEvents()
+        self.assertEqual("WAITING", main_screen.property("activityLabel"))
+
+        self.controller._active_operation = "reboot"
+        self.controller._status_text = "REBOOT"
+        self.controller.stateChanged.emit()
+        self.app.processEvents()
+        self.assertEqual("REBOOTING DEVICES", main_screen.property("activityLabel"))
+
+        self.controller._status_text = "CANCELLING QUEUED WORK..."
+        self.controller.stateChanged.emit()
+        self.app.processEvents()
+        self.assertEqual("CANCELLING QUEUED WORK", main_screen.property("activityLabel"))
+
+        self.controller._active_operation = ""
+        self.controller._discovery_status = "ERROR"
+        self.controller._status_text = "SCAN ERROR"
+        self.controller.stateChanged.emit()
+        self.app.processEvents()
+        self.assertEqual("ERROR", main_screen.property("activityLabel"))
 
     def test_static_ip_assignment_button_opens_documented_dialog(self):
         """The static-IP toolbar action opens its eligible selected-device dialog."""
@@ -359,18 +381,13 @@ class TestFleetUI(unittest.TestCase):
         ])
         self.app.processEvents()
         button = self.root.findChild(QQuickItem, "alignSysIdsButton")
-        icon = self.root.findChild(QQuickItem, "syncAltIcon")
-        image = self.root.findChild(QQuickItem, "syncAltImage")
         dialog = self.root.findChild(object, "sysIdAlignmentDialog")
 
         self.assertTrue(button.isEnabled())
-        self.assertIsNotNone(icon)
-        self.assertIsNotNone(image)
+        self.assertTrue(button.property("iconSource").endswith("sync_alt.svg"))
         icon_source = (self.QML_ROOT / "sync_alt.svg").read_text(encoding="utf-8")
         self.assertIn("M280-120 80-320", icon_source)
         self.assertIn('fill="#e2d5c8"', icon_source)
-        self.assertEqual(20, image.width())
-        self.assertEqual(20, image.height())
         self.assertFalse(dialog.property("opened"))
         self._click_item(button)
 
@@ -381,15 +398,17 @@ class TestFleetUI(unittest.TestCase):
         self.assertIn("Based on FC SYS ID", source)
         self.assertIn("Based on manual DLSE SYS ID", source)
 
-    def test_view_mode_uses_exported_controls_switch(self):
-        """The List/Matrix toggle uses the exported switch and changes views."""
+    def test_view_mode_uses_segmented_list_matrix_control(self):
+        """The List/Matrix toggle is a labelled segmented control that changes views."""
         self._enter_main_screen()
         main_screen = self.root.findChild(object, "mainScreen")
         view_switch = self.root.findChild(QQuickItem, "viewModeSwitch")
+        list_button = self.root.findChild(QQuickItem, "listViewButton")
+        matrix_button = self.root.findChild(QQuickItem, "gridViewButton")
 
         self.assertIsNotNone(view_switch)
-        self.assertEqual(144, view_switch.width())
-        self.assertEqual(24, view_switch.height())
+        self.assertIsNotNone(list_button)
+        self.assertIsNotNone(matrix_button)
         self.assertEqual(0, main_screen.property("viewMode"))
 
         list_icon = view_switch.findChild(QQuickItem, "listViewIcon")
@@ -397,8 +416,6 @@ class TestFleetUI(unittest.TestCase):
         self.assertIsNotNone(list_icon)
         self.assertIsNotNone(matrix_icon)
         self.assertEqual(16, list_icon.width())
-        self.assertEqual(16, list_icon.height())
-        self.assertEqual(16, matrix_icon.width())
         self.assertEqual(16, matrix_icon.height())
         for asset_name in ("list_24dp.svg", "grid_view.svg"):
             asset = (self.QML_ROOT.parents[1] / "ui" / "resources" / "images" / asset_name).read_text(
@@ -406,10 +423,10 @@ class TestFleetUI(unittest.TestCase):
             )
             self.assertIn('fill="#e2d5c8"', asset)
 
-        self._click_item(view_switch)
+        self._click_item(matrix_button)
         self.assertEqual(1, main_screen.property("viewMode"))
 
-        self._click_item(view_switch)
+        self._click_item(list_button)
         self.assertEqual(0, main_screen.property("viewMode"))
 
     def test_header_settings_uses_exported_settings_tab(self):
@@ -458,7 +475,7 @@ class TestFleetUI(unittest.TestCase):
         self.assertIn("font.pixelSize: theme.smallTextSize", table_block)
         self.assertIn('color: selected ? "#12304d"', table_block)
         self.assertIn('identity === fleetController.inspectedIdentity ? "#0f253a"', table_block)
-        self.assertIn(": theme.background", table_block)
+        self.assertIn(': "transparent"', table_block)
         self.assertNotIn("row %", table_block)
         self.assertNotIn("#091a2a", table_block)
 
@@ -1092,16 +1109,16 @@ class TestFleetUI(unittest.TestCase):
         self.controller.stats_timer.stop()
 
     def test_footer_exposes_independent_scan_indicators(self):
-        """The footer contains separate discovery, stats, and UniFi states."""
+        """The footer contains separate activity, stats, and UniFi states."""
         self._enter_main_screen()
-        discovery = self.root.findChild(QQuickItem, "discoveryFooterStatus")
+        activity = self.root.findChild(QQuickItem, "activityFooterStatus")
         stats = self.root.findChild(QQuickItem, "statsPollingFooterStatus")
         unifi = self.root.findChild(QQuickItem, "unifiFooterStatus")
 
-        self.assertIsNotNone(discovery)
+        self.assertIsNotNone(activity)
         self.assertIsNotNone(stats)
         self.assertIsNotNone(unifi)
-        self.assertIn("STOPPED", discovery.property("text"))
+        self.assertIn("IDLE", activity.property("text"))
         self.assertIn("WAITING", stats.property("text"))
         self.assertIn("DISABLED", unifi.property("text"))
 

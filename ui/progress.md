@@ -100,6 +100,9 @@ Last updated: 2026-10-13
 
 ## Fleet Verification
 
+- [x] Restyle Standalone Mode to match the Serial Batch Flasher: `AppButton` icon toolbar with wrapping, rounded table panel, segmented List/Matrix switch. Rendered offscreen at 1298×804, 1180×720 and 2000×738; fleet UI tests updated (90 passed) and full suite passed (312, 3 skipped).
+- [x] Remove the Current activity banner and fuse the footer DISCOVERY and SCAN fields into one `ACTIVITY` indicator (about 62 px of vertical space reclaimed); show the busy spinner on the Scan for Devices button instead of the footer; STATS, UniFi and license-server indicators unchanged.
+
 - [x] Match fleet-table headers to the serial flasher's typography, sentence case and alignment while retaining sorting and column resizing.
 - [x] Use the same readable casing for the column chooser and selection toolbar.
 - [x] Match the selection checkbox label fonts to the Configure columns button.
