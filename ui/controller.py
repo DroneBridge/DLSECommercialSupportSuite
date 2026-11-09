@@ -614,6 +614,8 @@ class FleetController(QObject):
 
         self._scanning_enabled = False
         self._scan_running = False
+        self._polling_paused_for_reboot = False
+        self._discard_scan_results = False
         self._discovery_status = "STOPPED"
         self._stats_poll_running = False
         self._stats_worker: StatsPollingWorker | None = None
@@ -621,6 +623,8 @@ class FleetController(QObject):
         self._settings_refresh_worker: SettingsRefreshWorker | None = None
         self._pending_settings_refresh: dict[str, str] = {}
         self._stats_round_started_at = 0.0
+        self._pending_stats: list[tuple[int, dict[str, Any]]] = []
+        self._pending_discovery: list[DeviceRecord] = []
         self._stats_polling_status = (
             "WAITING" if self._scan_values()["stats_enabled"] else "DISABLED"
         )
@@ -642,6 +646,14 @@ class FleetController(QObject):
         self._active_worker: Any = None
         self._active_operation = ""
         self._active_targets: set[str] = set()
+        self._reboot_state = "ready"
+        self._reboot_method = "rest"
+        self._reboot_target_count = 0
+        self._reboot_completed_count = 0
+        self._reboot_success_count = 0
+        self._reboot_failed_ips: list[str] = []
+        self._reboot_summary = ""
+        self._pending_reboot_row_updates: dict[str, tuple[str, int]] = {}
         self._inspected_identity = ""
         self._last_web_url = ""
         self._setting_edits: dict[str, Any] = {}
@@ -659,6 +671,18 @@ class FleetController(QObject):
         self.source_model.selectionChanged.connect(self._selection_changed)
         self._restore_columns()
 
+        self.discovery_update_timer = QTimer(self)
+        self.discovery_update_timer.setSingleShot(True)
+        self.discovery_update_timer.timeout.connect(self._flush_discovery)
+        self.stats_update_timer = QTimer(self)
+        self.stats_update_timer.setSingleShot(True)
+        self.stats_update_timer.timeout.connect(self._flush_stats)
+        self.reboot_update_timer = QTimer(self)
+        self.reboot_update_timer.setSingleShot(True)
+        self.reboot_update_timer.timeout.connect(self._flush_reboot_row_updates)
+        self.reboot_state_timer = QTimer(self)
+        self.reboot_state_timer.setSingleShot(True)
+        self.reboot_state_timer.timeout.connect(self.stateChanged.emit)
         self.scan_timer = QTimer(self)
         self.scan_timer.timeout.connect(self.startScan)
         self._restart_scan_timer()
@@ -730,6 +754,11 @@ class FleetController(QObject):
         return self.source_model.rowCount()
 
     @Property(int, notify=stateChanged)
+    def offlineCount(self) -> int:
+        """Return the number of retained devices currently considered offline."""
+        return sum(not record.online for record in self.source_model.all_records())
+
+    @Property(int, notify=stateChanged)
     def visibleCount(self) -> int:
         """Return the number of devices accepted by the current filter."""
         return self.fleet_model.rowCount()
@@ -773,6 +802,61 @@ class FleetController(QObject):
     def activeOperation(self) -> str:
         """Return the currently active fleet operation name."""
         return self._active_operation
+
+    @Property(str, notify=stateChanged)
+    def rebootState(self) -> str:
+        """Return the reboot dialog state: ready, running, or finished."""
+        return self._reboot_state
+
+    @Property(str, notify=stateChanged)
+    def rebootMethod(self) -> str:
+        """Return the active or most recently selected reboot method."""
+        return self._reboot_method
+
+    @Property(int, notify=stateChanged)
+    def rebootProgress(self) -> int:
+        """Return bounded REST request completion as a percentage."""
+        if self._reboot_target_count <= 0:
+            return 0
+        return min(100, int(self._reboot_completed_count * 100 / self._reboot_target_count))
+
+    @Property(str, notify=stateChanged)
+    def rebootProgressText(self) -> str:
+        """Return user-facing reboot counts or broadcast status."""
+        if self._reboot_state == "ready":
+            return ""
+        if self._reboot_method == "mavlink":
+            if self._reboot_state == "running":
+                return (
+                    f"Sending one MAVLink broadcast for {self._reboot_target_count} "
+                    "online device(s). Per-device reboot status is unavailable."
+                )
+            return self._reboot_summary
+        if self._reboot_state == "running":
+            failed = len(self._reboot_failed_ips)
+            accepted = self._reboot_success_count
+            return (
+                f"{self._reboot_completed_count} / {self._reboot_target_count} requests "
+                f"completed — {accepted} accepted, {failed} failed"
+            )
+        return self._reboot_summary
+
+    @Property("QVariantList", notify=stateChanged)
+    def rebootFailedIps(self) -> list[str]:
+        """Return failed REST reboot target IPs in numeric order."""
+        def ip_sort_key(value: str) -> tuple[int, int | str]:
+            """Sort IPv4 addresses numerically while retaining unexpected hosts."""
+            try:
+                return 0, int(ipaddress.ip_address(value))
+            except ValueError:
+                return 1, value
+
+        return sorted(self._reboot_failed_ips, key=ip_sort_key)
+
+    @Property(bool, notify=stateChanged)
+    def rebootCanRetry(self) -> bool:
+        """Return whether failed REST targets can be retried from this dialog."""
+        return bool(self._failed_identities and self._retry_context)
 
     @Property(bool, notify=stateChanged)
     def canCancel(self) -> bool:
@@ -1031,7 +1115,11 @@ class FleetController(QObject):
     @Slot()
     def startScan(self) -> None:
         """Start one discovery pass when scanning is enabled and idle."""
-        if not self._scanning_enabled or self._scan_running:
+        if (
+            self._polling_paused_for_reboot
+            or not self._scanning_enabled
+            or self._scan_running
+        ):
             return
         values = self._scan_values()
         self._scan_running = True
@@ -1061,6 +1149,10 @@ class FleetController(QObject):
             fleet reschedules the next check without creating a worker.
         """
         values = self._scan_values()
+        if self._polling_paused_for_reboot:
+            self.stats_timer.stop()
+            self._stats_polling_status = "PAUSED" if values["stats_enabled"] else "DISABLED"
+            return
         if not values["stats_enabled"]:
             self.stats_timer.stop()
             self._stats_polling_status = "DISABLED"
@@ -1099,6 +1191,67 @@ class FleetController(QObject):
         )
         self.stateChanged.emit()
         self.pool.start(worker)
+
+    def _pause_background_polling_for_reboot(self) -> None:
+        """Stop recurring fleet polls and discard queued stats during reboots."""
+        if self._polling_paused_for_reboot:
+            return
+        self._polling_paused_for_reboot = True
+        self.scan_timer.stop()
+        self.stats_timer.stop()
+        self.discovery_update_timer.stop()
+        self._pending_discovery.clear()
+        if self._scan_running:
+            self._discard_scan_results = True
+        self.stats_update_timer.stop()
+        self._pending_stats.clear()
+        if self._stats_worker is not None:
+            self._stats_worker.cancel()
+        self.unifi_timer.stop()
+        self.settings_refresh_timer.stop()
+        values = self._scan_values()
+        self._stats_polling_status = "PAUSED" if values["stats_enabled"] else "DISABLED"
+        unifi = self._unifi_values()
+        if unifi["enabled"] and unifi["api_token"]:
+            self._unifi_status = "PAUSED"
+        self.stateChanged.emit()
+
+    def _resume_background_polling_after_reboot(self) -> None:
+        """Resume configured polls after the reboot worker has completed."""
+        if not self._polling_paused_for_reboot:
+            return
+        self._polling_paused_for_reboot = False
+
+        if self._scanning_enabled:
+            self._restart_scan_timer()
+            if not self._scan_running:
+                self.startScan()
+        else:
+            self.scan_timer.stop()
+
+        values = self._scan_values()
+        if values["stats_enabled"]:
+            self._stats_polling_status = "POLLING" if self._stats_poll_running else "WAITING"
+            if not self._stats_poll_running:
+                self.startStatsPolling()
+        else:
+            self._stats_polling_status = "DISABLED"
+
+        unifi = self._unifi_values()
+        if unifi["enabled"] and unifi["api_token"]:
+            if self._unifi_poll_running:
+                self._unifi_status = "CHECKING"
+            else:
+                self._unifi_status = "WAITING"
+                self.startUnifiPolling()
+        elif unifi["enabled"]:
+            self._unifi_status = "NOT CONFIGURED"
+        else:
+            self._unifi_status = "DISABLED"
+
+        if self._pending_settings_refresh and self._settings_refresh_worker is None:
+            self.settings_refresh_timer.start(SETTINGS_REFRESH_DELAY_MS)
+        self.stateChanged.emit()
 
     @Slot(
         str,
@@ -1418,6 +1571,10 @@ class FleetController(QObject):
         if self._stats_worker is not None:
             self._stats_worker.cancel()
         self._pending_settings_refresh.clear()
+        self._pending_discovery.clear()
+        self.discovery_update_timer.stop()
+        self._pending_stats.clear()
+        self.stats_update_timer.stop()
         self.settings_refresh_timer.stop()
         self._setting_edits.clear()
         self.source_model.clear()
@@ -1575,6 +1732,20 @@ class FleetController(QObject):
             self.toastRequested.emit("info", "No target devices are available.")
             return
         self._launch_reboot(records, mavlink=mavlink, remember=not mavlink)
+
+    @Slot()
+    def resetRebootDialog(self) -> None:
+        """Clear the previous reboot result when opening a new confirmation."""
+        if self._reboot_state == "running":
+            return
+        self._reboot_state = "ready"
+        self._reboot_method = "rest"
+        self._reboot_target_count = 0
+        self._reboot_completed_count = 0
+        self._reboot_success_count = 0
+        self._reboot_failed_ips.clear()
+        self._reboot_summary = ""
+        self.stateChanged.emit()
 
     @Slot(str, str, str, result=bool)
     def startStaticIpAssignment(
@@ -1971,8 +2142,17 @@ class FleetController(QObject):
         if not self._operation_available():
             return
         values = self._scan_values()
-        for record in records:
-            self.source_model.update_operation(record.identity, "rebooting", 0)
+        self._reboot_state = "running"
+        self._reboot_method = "mavlink" if mavlink else "rest"
+        self._reboot_target_count = len(records)
+        self._reboot_completed_count = 0
+        self._reboot_success_count = 0
+        self._reboot_failed_ips.clear()
+        self._reboot_summary = ""
+        self.source_model.update_operations({
+            record.identity: ("rebooting", 0)
+            for record in records
+        })
         worker = RebootWorker(
             records,
             workers=values["workers"],
@@ -1981,6 +2161,7 @@ class FleetController(QObject):
         )
         if remember:
             self._retry_context = ("reboot", {})
+        self._pause_background_polling_for_reboot()
         self._begin_worker("reboot", worker)
 
     def _launch_ota(
@@ -2128,30 +2309,57 @@ class FleetController(QObject):
     @Slot(object)
     def _scan_finished(self, records: list[DeviceRecord]) -> None:
         """Merge one additive discovery cycle without changing device health."""
+        self.discovery_update_timer.stop()
+        self._pending_discovery.clear()
+        discard_results = self._discard_scan_results
+        self._discard_scan_results = False
         self._scan_running = False
         self._discovery_status = (
             "WAITING" if self._scanning_enabled else "STOPPED"
         )
-        self.source_model.upsert_many(records)
+        if not self._polling_paused_for_reboot and not discard_results:
+            self.source_model.upsert_many(records)
         self._status_text = "SCANNING..." if self._scanning_enabled else "IDLE"
         self.stateChanged.emit()
-        self.startStatsPolling()
+        if not self._polling_paused_for_reboot:
+            self.startStatsPolling()
 
     @Slot(object)
     def _scan_progress(self, payload: Any) -> None:
-        """Merge hydrated devices incrementally during discovery."""
+        """Buffer hydrated devices briefly to avoid a model reset per device."""
+        if self._polling_paused_for_reboot or self._discard_scan_results:
+            return
         if isinstance(payload, DeviceRecord):
-            self.source_model.upsert_many([payload])
+            self._pending_discovery.append(payload)
+            if not self.discovery_update_timer.isActive():
+                self.discovery_update_timer.start(100)
+
+    @Slot()
+    def _flush_discovery(self) -> None:
+        """Merge pending discovery results and start polling the visible fleet."""
+        records, self._pending_discovery = self._pending_discovery, []
+        if records and not self._polling_paused_for_reboot:
+            self.source_model.upsert_many(records)
             self.startStatsPolling()
 
     @Slot(str)
     def _scan_failed(self, message: str) -> None:
         """Recover from one discovery worker failure."""
+        self.discovery_update_timer.stop()
+        discard_results = self._polling_paused_for_reboot or self._discard_scan_results
+        if not discard_results:
+            self._flush_discovery()
+        self._discard_scan_results = False
         self._scan_running = False
-        self._discovery_status = "ERROR"
-        self._status_text = "SCAN ERROR"
+        self._discovery_status = (
+            "WAITING" if self._scanning_enabled else "STOPPED"
+        ) if discard_results else "ERROR"
+        self._status_text = (
+            "SCANNING..." if self._scanning_enabled else "IDLE"
+        ) if discard_results else "SCAN ERROR"
         self.stateChanged.emit()
-        self.toastRequested.emit("error", self._sanitize_error(message))
+        if not discard_results:
+            self.toastRequested.emit("error", self._sanitize_error(message))
 
     def _stats_progress(self, payload: Any, generation: int) -> None:
         """
@@ -2161,20 +2369,38 @@ class FleetController(QObject):
         :param generation: Fleet generation captured when the round started.
         :return: None. Stale or unresolvable results are ignored safely.
         """
-        if generation != self._fleet_generation or not isinstance(payload, dict):
+        if (
+            self._polling_paused_for_reboot
+            or generation != self._fleet_generation
+            or not isinstance(payload, dict)
+        ):
             return
-        identity = str(payload.get("identity") or "")
-        if self.source_model.record_by_identity(identity) is None:
-            identity = self._identity_for_ip(str(payload.get("ip") or ""))
-        if not identity:
+        self._pending_stats.append((generation, payload))
+        if not self.stats_update_timer.isActive():
+            self.stats_update_timer.start(100)
+
+    @Slot()
+    def _flush_stats(self) -> None:
+        """Apply queued polling results together, discarding stale generations."""
+        pending, self._pending_stats = self._pending_stats, []
+        if self._polling_paused_for_reboot:
             return
-        self.source_model.apply_stats_result(
-            identity,
-            bool(payload.get("success")),
-            payload.get("stats") if isinstance(payload.get("stats"), dict) else None,
-            self._sanitize_error(str(payload.get("error") or "Stats request failed")),
-            self._scan_values()["stats_failure_threshold"],
-        )
+        results = []
+        for generation, payload in pending:
+            if generation != self._fleet_generation:
+                continue
+            identity = str(payload.get("identity") or "")
+            if self.source_model.record_by_identity(identity) is None:
+                identity = self._identity_for_ip(str(payload.get("ip") or ""))
+            if identity:
+                results.append({
+                    "identity": identity,
+                    "success": bool(payload.get("success")),
+                    "stats": payload.get("stats") if isinstance(payload.get("stats"), dict) else None,
+                    "error": self._sanitize_error(str(payload.get("error") or "Stats request failed")),
+                })
+        if results:
+            self.source_model.apply_stats_batch(results, self._scan_values()["stats_failure_threshold"])
 
     def _stats_finished(self, _results: Any, _generation: int) -> None:
         """
@@ -2186,10 +2412,18 @@ class FleetController(QObject):
         """
         if _generation != self._fleet_generation:
             return
+        self.stats_update_timer.stop()
+        if self._polling_paused_for_reboot:
+            self._pending_stats.clear()
+        else:
+            self._flush_stats()
         self._stats_poll_running = False
         self._stats_worker = None
-        self._stats_polling_status = "WAITING"
-        self._schedule_next_stats_round()
+        self._stats_polling_status = (
+            "PAUSED" if self._polling_paused_for_reboot else "WAITING"
+        )
+        if not self._polling_paused_for_reboot:
+            self._schedule_next_stats_round()
         self.stateChanged.emit()
 
     def _stats_failed(self, message: str, generation: int) -> None:
@@ -2202,12 +2436,21 @@ class FleetController(QObject):
         """
         if generation != self._fleet_generation:
             return
+        self.stats_update_timer.stop()
+        if self._polling_paused_for_reboot:
+            self._pending_stats.clear()
+        else:
+            self._flush_stats()
         self._stats_poll_running = False
         self._stats_worker = None
-        self._stats_polling_status = "ERROR"
-        self._schedule_next_stats_round()
+        self._stats_polling_status = (
+            "PAUSED" if self._polling_paused_for_reboot else "ERROR"
+        )
+        if not self._polling_paused_for_reboot:
+            self._schedule_next_stats_round()
         self.stateChanged.emit()
-        self.toastRequested.emit("error", self._sanitize_error(message))
+        if not self._polling_paused_for_reboot:
+            self.toastRequested.emit("error", self._sanitize_error(message))
 
     def _start_system_info_refresh(self, records: list[DeviceRecord]) -> None:
         """
@@ -2331,6 +2574,8 @@ class FleetController(QObject):
         :return: None. A refresh already in progress is left untouched and the
             pending queue is retried after another reboot grace interval.
         """
+        if self._polling_paused_for_reboot:
+            return
         if self._settings_refresh_worker is not None:
             if self._pending_settings_refresh:
                 self.settings_refresh_timer.start(SETTINGS_REFRESH_DELAY_MS)
@@ -2388,6 +2633,11 @@ class FleetController(QObject):
         :return: None. Disabled or incomplete settings update the footer without
             starting network I/O; all other results arrive asynchronously.
         """
+        if self._polling_paused_for_reboot:
+            self.unifi_timer.stop()
+            if self._unifi_values()["enabled"]:
+                self._unifi_status = "PAUSED"
+            return
         if self._unifi_poll_running:
             return
         values = self._unifi_values()
@@ -2532,6 +2782,10 @@ class FleetController(QObject):
         :return: None. Long rounds restart immediately instead of overlapping.
         """
         values = self._scan_values()
+        if self._polling_paused_for_reboot:
+            self.stats_timer.stop()
+            self._stats_polling_status = "PAUSED" if values["stats_enabled"] else "DISABLED"
+            return
         if not values["stats_enabled"]:
             self.stats_timer.stop()
             return
@@ -2564,14 +2818,60 @@ class FleetController(QObject):
                 100 if success or status in {"activated", "already_activated", "complete"} else 0,
             )
         )
+        is_reboot = self._active_operation == "reboot"
+        if is_reboot:
+            self._reboot_completed_count = min(
+                self._reboot_target_count,
+                self._reboot_completed_count + 1,
+            )
+            if success is True:
+                self._reboot_success_count += 1
+                status = "reboot accepted"
+                if identity:
+                    self.source_model.set_reboot_grace({identity}, 20)
+            elif success is False:
+                failure_message = result_message or "request rejected"
+                status = f"failed: {failure_message}"
+                failed_ip = str(payload.get("ip") or "").strip()
+                if not failed_ip and identity:
+                    record = self.source_model.record_by_identity(identity)
+                    failed_ip = record.ip if record is not None else ""
+                if failed_ip and failed_ip not in self._reboot_failed_ips:
+                    self._reboot_failed_ips.append(failed_ip)
+            if not self.reboot_state_timer.isActive():
+                self.reboot_state_timer.start(100)
         if identity:
             if success is False:
-                status = f"failed: {result_message}"
                 self._failed_identities.add(identity)
-            self.source_model.update_operation(identity, status, percent)
+            if is_reboot:
+                self._queue_reboot_row_update(identity, status, percent)
+            else:
+                self.source_model.update_operation(identity, status, percent)
+
+    def _queue_reboot_row_update(
+        self,
+        identity: str,
+        operation: str,
+        progress: int,
+    ) -> None:
+        """Batch reboot row changes to reduce table and inspector notifications."""
+        self._pending_reboot_row_updates[identity] = (operation, progress)
+        if not self.reboot_update_timer.isActive():
+            self.reboot_update_timer.start(100)
+
+    @Slot()
+    def _flush_reboot_row_updates(self) -> None:
+        """Apply queued reboot row changes in one model update."""
+        updates, self._pending_reboot_row_updates = self._pending_reboot_row_updates, {}
+        if updates:
+            self.source_model.update_operations(updates)
 
     def _operation_finished(self, kind: str, results: Any) -> None:
         """Summarize results, update reboot grace, and notify QML."""
+        if kind == "reboot":
+            self.reboot_update_timer.stop()
+            self._flush_reboot_row_updates()
+            self.reboot_state_timer.stop()
         items = results if isinstance(results, list) else [results]
         info_refresh_records = self._system_info_refresh_records(kind, items)
         applied_settings = getattr(self._active_worker, "settings", {})
@@ -2584,6 +2884,7 @@ class FleetController(QObject):
         )
         successes = 0
         failed: set[str] = set(self._failed_identities)
+        operation_updates: dict[str, tuple[str, int]] = {}
         for item in items:
             success = self._result_success(item)
             successes += int(success)
@@ -2603,7 +2904,7 @@ class FleetController(QObject):
                                 settings,
                             )
                 label = "reboot accepted" if kind == "reboot" else "complete"
-                self.source_model.update_operation(identity, label, 100)
+                operation_updates[identity] = (label, 100)
         if kind == "reboot" and isinstance(results, dict) and results.get("mavlink"):
             visible_records = [
                 record
@@ -2614,11 +2915,12 @@ class FleetController(QObject):
             successes = len(visible_records) if command_success else 0
             items = [results] * max(1, successes or int(results.get("count", 1)))
             for record in visible_records:
-                self.source_model.update_operation(
-                    record.identity,
+                operation_updates[record.identity] = (
                     "MAVLink command sent" if command_success else "MAVLink command failed",
                     100 if command_success else 0,
                 )
+        if operation_updates:
+            self.source_model.update_operations(operation_updates)
         if kind in {"reboot", "static_ip"} and successes:
             successful_ids = {
                 self._result_identity(item)
@@ -2631,10 +2933,43 @@ class FleetController(QObject):
         self._failed_identities = failed
         total = len(items)
         failures = max(0, total - successes)
+        if kind == "reboot":
+            if self._reboot_method == "mavlink":
+                command_success = bool(
+                    isinstance(results, dict) and results.get("success")
+                )
+                self._reboot_completed_count = self._reboot_target_count
+                self._reboot_success_count = successes
+                self._reboot_summary = (
+                    f"MAVLink broadcast sent for {self._reboot_target_count} online "
+                    "device(s). Individual reboot status is unavailable."
+                    if command_success
+                    else "MAVLink broadcast could not be sent. Individual device status is unavailable."
+                )
+            else:
+                for item in items:
+                    if self._result_success(item):
+                        continue
+                    failed_ip = str(item.get("ip") or "").strip() if isinstance(item, dict) else ""
+                    identity = self._result_identity(item)
+                    if not failed_ip and identity:
+                        record = self.source_model.record_by_identity(identity)
+                        failed_ip = record.ip if record is not None else ""
+                    if failed_ip and failed_ip not in self._reboot_failed_ips:
+                        self._reboot_failed_ips.append(failed_ip)
+                self._reboot_completed_count = self._reboot_target_count
+                self._reboot_success_count = successes
+                self._reboot_summary = (
+                    f"REST reboot requests finished: {successes} accepted, "
+                    f"{failures} failed."
+                )
+            self._reboot_state = "finished"
         self._active_worker = None
         self._active_operation = ""
         self._active_targets.clear()
         self._status_text = "SCANNING..." if self._scanning_enabled else "IDLE"
+        if kind == "reboot":
+            self._resume_background_polling_after_reboot()
         if kind == "settings" and settings_refresh_targets:
             self._queue_settings_refresh(settings_refresh_targets)
         elif kind == "settings" and not failures:
@@ -2642,22 +2977,34 @@ class FleetController(QObject):
             self.inspectorChanged.emit()
         self.stateChanged.emit()
         self._start_system_info_refresh(info_refresh_records)
-        self.resultReady.emit(
-            kind.replace("_", " ").title(),
-            f"Operation finished: {successes} succeeded, {failures} failed.",
-            bool(failures and self._retry_context),
-        )
+        if kind != "reboot":
+            self.resultReady.emit(
+                kind.replace("_", " ").title(),
+                f"Operation finished: {successes} succeeded, {failures} failed.",
+                bool(failures and self._retry_context),
+            )
 
     @Slot(str)
     def _operation_failed(self, message: str) -> None:
         """Recover from an unhandled worker-level operation failure."""
-        title = self._active_operation.replace("_", " ").title() or "Operation"
+        kind = self._active_operation
+        title = kind.replace("_", " ").title() or "Operation"
+        safe_message = self._sanitize_error(message)
+        if kind == "reboot":
+            self.reboot_update_timer.stop()
+            self._flush_reboot_row_updates()
+            self.reboot_state_timer.stop()
+            self._reboot_state = "finished"
+            self._reboot_summary = f"Reboot operation failed: {safe_message}"
         self._active_worker = None
         self._active_operation = ""
         self._active_targets.clear()
         self._status_text = "ERROR"
+        if kind == "reboot":
+            self._resume_background_polling_after_reboot()
         self.stateChanged.emit()
-        self.resultReady.emit(title, self._sanitize_error(message), False)
+        if kind != "reboot":
+            self.resultReady.emit(title, safe_message, False)
 
     @Slot(object)
     def _license_checked(self, online: bool) -> None:
@@ -2686,6 +3033,10 @@ class FleetController(QObject):
             return
         self._unifi_poll_running = False
         self._unifi_worker = None
+        if self._polling_paused_for_reboot:
+            self._unifi_status = "PAUSED"
+            self.stateChanged.emit()
+            return
         normalized = (
             [client for client in clients if isinstance(client, dict)]
             if isinstance(clients, list)
@@ -2712,6 +3063,10 @@ class FleetController(QObject):
             return
         self._unifi_poll_running = False
         self._unifi_worker = None
+        if self._polling_paused_for_reboot:
+            self._unifi_status = "PAUSED"
+            self.stateChanged.emit()
+            return
         self._unifi_byte_samples.clear()
         self._unifi_status = "OFFLINE"
         self.source_model.apply_ap_clients([])
@@ -3015,6 +3370,9 @@ class FleetController(QObject):
     def _schedule_next_unifi_poll(self) -> None:
         """Schedule the next UniFi refresh only when integration is configured."""
         values = self._unifi_values()
+        if self._polling_paused_for_reboot:
+            self.unifi_timer.stop()
+            return
         if values["enabled"] and values["api_token"]:
             self.unifi_timer.start(UNIFI_POLL_INTERVAL_MS)
         else:
@@ -3022,6 +3380,9 @@ class FleetController(QObject):
 
     def _restart_scan_timer(self) -> None:
         """Apply the persisted rolling refresh interval."""
+        if self._polling_paused_for_reboot:
+            self.scan_timer.stop()
+            return
         self.scan_timer.start(max(5, self._scan_values()["interval"]) * 1000)
 
     def _restore_columns(self) -> None:
@@ -3100,6 +3461,12 @@ class FleetController(QObject):
                         insert_at += 1
                 self.settings.setValue("columns/visible", ",".join(keys))
             self.settings.setValue("columns/ap_channel_band_default_added", True)
+        if "operation_progress" in keys:
+            progress_index = keys.index("operation_progress")
+            keys.remove("operation_progress")
+            if "operation" not in keys:
+                keys.insert(progress_index, "operation")
+            self.settings.setValue("columns/visible", ",".join(keys))
         self.source_model.set_visible_columns(
             keys or list(DeviceTableModel.DEFAULT_COLUMN_KEYS)
         )

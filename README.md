@@ -70,8 +70,12 @@ The desktop Fleet Manager provides MAVLink and HTTP discovery, fleet table and
 matrix views, device inspection, settings management, OTA licensing, reboot,
 firmware updates, and optional UniFi observations. The start page also offers a
 dedicated **Serial Batch Flasher** for installation, configuration and licensing.
-The fleet table shows the Operation and Progress columns by default; use
+The fleet table shows operation status and progress together in the Operation column by default; use
 Configure Columns to adjust the visible columns and their order.
+The footer shows detected and offline device counts for the entire retained fleet,
+including devices hidden by a filter. Devices are initially considered online;
+by default, three consecutive failed stats polls mark a device offline, and a
+successful poll marks it online again. The failure threshold is configurable.
 In the Settings panel, checked devices can be edited together for settings they
 all report. Differing values start blank with a Mixed values hint, and only
 fields the operator edits are applied. Each settings update is confirmed and

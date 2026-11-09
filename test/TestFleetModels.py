@@ -17,6 +17,24 @@ from ui.models import (
 class TestFleetModels(unittest.TestCase):
     """Verify identity upgrades and offline retention."""
 
+    def test_operation_update_notifies_combined_cell(self):
+        """Operation and progress changes notify the same visible table cell."""
+        model = DeviceTableModel()
+        model.set_visible_columns(["hostname", "operation"])
+        model.upsert_many([DeviceRecord(identity="device", ip="192.168.1.42")])
+        changes = []
+        model.dataChanged.connect(lambda *args: changes.append(args))
+
+        model.update_operation("192.168.1.42", "uploading", 45)
+
+        self.assertEqual(1, len(changes))
+        first, last, roles = changes[0]
+        self.assertEqual(2, first.column())
+        self.assertEqual(2, last.column())
+        self.assertIn(model.OperationRole, roles)
+        self.assertIn(model.OperationProgressRole, roles)
+        self.assertEqual(45, model.data(first, model.OperationProgressRole))
+
     def test_identity_upgrades_from_ip_to_activation_key(self):
         """REST hydration upgrades an IP fallback identity without duplicating the row."""
         model = DeviceTableModel()
@@ -426,6 +444,43 @@ class TestFleetModels(unittest.TestCase):
             "Bravo",
             cards.index(0, 0).data(DeviceTableModel.HostnameRole),
         )
+
+    def test_polling_batch_notifies_once_and_preserves_card_rows(self):
+        """A large polling batch refreshes values without resetting the card model."""
+        model = DeviceTableModel()
+        proxy = DeviceFilterProxyModel()
+        proxy.setSourceModel(model)
+        cards = DeviceCardModel(proxy)
+        model.upsert_many([
+            DeviceRecord(identity=f"A{i}", activation_key=f"A{i}", ip=f"10.0.{i // 254}.{i % 254 + 1}")
+            for i in range(500)
+        ])
+        card_resets, card_changes, inventory_changes = [], [], []
+        cards.modelReset.connect(lambda: card_resets.append(True))
+        cards.dataChanged.connect(lambda *args: card_changes.append(args))
+        model.inventoryChanged.connect(lambda: inventory_changes.append(True))
+        model.apply_stats_batch([
+            {"identity": f"A{i}", "success": True, "stats": {"esp_rssi": -60}}
+            for i in range(500)
+        ], 3)
+        self.assertEqual(500, cards.rowCount())
+        self.assertEqual([], card_resets)
+        self.assertEqual(1, len(card_changes))
+        self.assertEqual(1, len(inventory_changes))
+        self.assertEqual("-60", model.record_by_identity("A499").rssi)
+
+    def test_polling_batch_updates_filtered_cards(self):
+        """Dynamic filtering tracks stats changes in the batched projection."""
+        model = DeviceTableModel()
+        proxy = DeviceFilterProxyModel()
+        proxy.setSourceModel(model)
+        cards = DeviceCardModel(proxy)
+        model.upsert_many([DeviceRecord(identity="A", activation_key="A", ip="10.0.0.1", rssi="-50")])
+        proxy.setFilterText("-60")
+        self.assertEqual(0, cards.rowCount())
+        model.apply_stats_batch([{"identity": "A", "success": True, "stats": {"esp_rssi": -60}}], 3)
+        self.assertEqual(1, cards.rowCount())
+        self.assertEqual("-60", cards.index(0, 0).data(DeviceTableModel.RssiRole))
 
     def test_selection_is_stored_on_inventory_records(self):
         """QML table and matrix views share one identity-based selection state."""

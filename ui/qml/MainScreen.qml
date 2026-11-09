@@ -93,6 +93,19 @@ Item {
         })
     }
 
+    /** Return the shared header and cell alignment for a fleet column key. */
+    function fleetColumnAlignment(key) {
+        const centered = ["selected", "activation_status", "online", "ap_band",
+                          "led_cont_en", "adc_a_en", "adc_v_en", "power_mgmt",
+                          "dlse_mavlink_heartbeat", "dlse_mavlink_sys_id_based_on_ip"]
+        const numeric = ["mavlink_sys_id", "fc_sys_id", "wifi_channel", "rssi",
+                         "ap_rssi", "ap_channel", "ap_live_throughput", "ap_rx_rate",
+                         "ap_tx_rate", "baud", "gpio_cts", "gpio_rts", "gpio_tx",
+                         "gpio_rx", "dlse_local_udp_port", "dlse_remote_udp_port"]
+        return centered.indexOf(key) >= 0 ? Text.AlignHCenter
+             : numeric.indexOf(key) >= 0 ? Text.AlignRight : Text.AlignLeft
+    }
+
     function dlseParameterWarning(columnKey, display) {
         const value = String(display).trim()
         if (columnKey === "power_mgmt"
@@ -288,7 +301,7 @@ Item {
 
                         AppButton {
                             objectName: "clearFleetButton"
-                            text: "Clear Fleet"
+                            text: "Clear Detected Devices"
                             enabled: fleetController.detectedCount > 0
                             onClicked: fleetDialogs.openClearFleet()
                         }
@@ -556,6 +569,8 @@ Item {
 
                                                 required property var display
                                                 required property int index
+                                                readonly property string columnKey: index === 0 ? "selected"
+                                                    : (fleetController.columns[index - 1] || {}).key || ""
                                                 property real resizeStartX: 0
                                                 property int resizeStartWidth: 0
 
@@ -567,15 +582,16 @@ Item {
                                                 Text {
                                                     objectName: "fleetHeaderText_" + index
                                                     anchors.fill: parent
-                                                    anchors.leftMargin: 6
-                                                    anchors.rightMargin: 12
+                                                    anchors.leftMargin: 8
+                                                    anchors.rightMargin: 8
                                                     text: mainScreen.formatFleetHeader(display) + (mainScreen.sortColumn === index
                                                                      ? (mainScreen.sortAscending ? "  ↑" : "  ↓") : "")
                                                     color: theme.secondaryText
                                                     font.family: theme.bodyFont
                                                     font.pixelSize: theme.smallTextSize
                                                     font.bold: true
-                                                    horizontalAlignment: Text.AlignLeft
+                                                    readonly property int columnAlignment: mainScreen.fleetColumnAlignment(headerCell.columnKey)
+                                                    horizontalAlignment: columnAlignment
                                                     verticalAlignment: Text.AlignVCenter
                                                     elide: Text.ElideRight
                                                 }
@@ -708,7 +724,10 @@ Item {
                                                 }
 
                                                 StatusBadge {
-                                                    anchors.centerIn: parent
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    x: mainScreen.fleetColumnAlignment(columnKey) === Text.AlignRight
+                                                       ? Math.max(8, parent.width - width - 8)
+                                                       : (parent.width - width) / 2
                                                     visible: columnKey === "activation_status"
                                                              || columnKey === "online"
                                                              || (fcSysIdMismatch
@@ -725,13 +744,13 @@ Item {
                                                 Item {
                                                     anchors.fill: parent
                                                     anchors.margins: 7
-                                                    visible: columnKey === "operation_progress"
+                                                    visible: columnKey === "operation"
 
                                                     Rectangle {
                                                         anchors.left: parent.left
                                                         anchors.right: parent.right
-                                                        anchors.verticalCenter: parent.verticalCenter
-                                                        height: 7
+                                                        anchors.bottom: parent.bottom
+                                                        height: 5
                                                         radius: 3
                                                         color: theme.border
 
@@ -762,10 +781,7 @@ Item {
                                                     font.family: theme.dataFont
                                                     font.pixelSize: theme.smallTextSize
                                                     verticalAlignment: Text.AlignVCenter
-                                                    horizontalAlignment: columnKey === "hostname"
-                                                                         || columnKey === "activation_key"
-                                                                         || columnKey === "operation"
-                                                                         ? Text.AlignLeft : Text.AlignHCenter
+                                                    horizontalAlignment: mainScreen.fleetColumnAlignment(columnKey)
                                                     elide: Text.ElideRight
                                                 }
                                             }
@@ -1000,6 +1016,11 @@ Item {
                 spacing: 10
 
                 Text {
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: implicitWidth
+                    Layout.fillWidth: true
+                    clip: true
+                    elide: Text.ElideRight
                     objectName: "generalFooterStatus"
                     text: mainScreen.footerText(
                               "DETECTED DRONES:",
@@ -1014,6 +1035,43 @@ Item {
                 Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: theme.border }
 
                 Text {
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: implicitWidth
+                    Layout.fillWidth: true
+                    clip: true
+                    elide: Text.ElideRight
+                    objectName: "offlineFooterStatus"
+                    text: mainScreen.footerText(
+                              "OFFLINE:",
+                              fleetController.offlineCount,
+                              fleetController.offlineCount === 0 ? theme.success : theme.accent)
+                    textFormat: Text.StyledText
+                    color: theme.primaryText
+                    font.family: theme.dataFont
+                    font.pixelSize: theme.smallTextSize
+                    MouseArea {
+                        id: offlineHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        acceptedButtons: Qt.NoButton
+                    }
+                    SettingToolTip {
+                        anchorItem: offlineHover
+                        y: -height - 4
+                        visible: offlineHover.containsMouse
+                        delay: 500
+                        text: "Offline means the devices could not be reached within the timeouts configured in Settings."
+                    }
+                }
+
+                Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: theme.border }
+
+                Text {
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: implicitWidth
+                    Layout.fillWidth: true
+                    clip: true
+                    elide: Text.ElideRight
                     objectName: "licenseFooterStatus"
                     text: mainScreen.footerText(
                               "SELECTED:",
@@ -1028,6 +1086,11 @@ Item {
                 Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: theme.border }
 
                 Text {
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: implicitWidth
+                    Layout.fillWidth: true
+                    clip: true
+                    elide: Text.ElideRight
                     id: activityFooter
                     objectName: "activityFooterStatus"
                     text: mainScreen.footerText("ACTIVITY:", mainScreen.activityLabel, mainScreen.activityColor)
@@ -1042,14 +1105,23 @@ Item {
                         hoverEnabled: true
                         acceptedButtons: Qt.NoButton
                     }
-                    ToolTip.visible: activityHover.containsMouse
-                    ToolTip.delay: 250
-                    ToolTip.text: mainScreen.activityTooltip()
+                    SettingToolTip {
+                        anchorItem: activityHover
+                        y: -height - 4
+                        visible: activityHover.containsMouse
+                        delay: 500
+                        text: mainScreen.activityTooltip()
+                    }
                 }
 
                 Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: theme.border }
 
                 Text {
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: implicitWidth
+                    Layout.fillWidth: true
+                    clip: true
+                    elide: Text.ElideRight
                     objectName: "statsPollingFooterStatus"
                     text: mainScreen.footerText(
                               "STATS:",
@@ -1065,9 +1137,12 @@ Item {
                 Item { Layout.fillWidth: true }
 
                 Text {
-                    objectName: "unifiFooterStatus"
                     Layout.minimumWidth: 0
+                    Layout.maximumWidth: implicitWidth
+                    Layout.fillWidth: true
                     clip: true
+                    elide: Text.ElideRight
+                    objectName: "unifiFooterStatus"
                     text: mainScreen.footerText(
                               "UNIFI:",
                               fleetController.unifiStatus,
@@ -1085,6 +1160,12 @@ Item {
                 Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: theme.border }
 
                 Text {
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: implicitWidth
+                    Layout.fillWidth: true
+                    clip: true
+                    elide: Text.ElideRight
+                    objectName: "licenseServerFooterStatus"
                     text: mainScreen.footerText(
                               "LICENSE SERVER STATUS:",
                               fleetController.licenseStatus.toUpperCase(),

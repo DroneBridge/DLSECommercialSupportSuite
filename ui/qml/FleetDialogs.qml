@@ -52,6 +52,7 @@ Item {
     }
 
     function openReboot() {
+        fleetController.resetRebootDialog()
         rebootScope.currentIndex = fleetController.selectedCount > 0 ? 0 : 1
         rebootMethod.currentIndex = 0
         center(rebootDialog)
@@ -282,29 +283,147 @@ Item {
             columnSpacing: 12
             rowSpacing: 8
 
-            Text { text: "Discovery methods"; color: theme.secondaryText; font.family: theme.bodyFont }
+            SettingTooltipLabel {
+                text: "Discovery methods"
+                tooltipText: "Choose one or both discovery methods. Both use the IPv4 subnet below."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
             ColumnLayout {
-                AppCheckBox { id: mavlinkCheck; text: "MAVLink broadcast (recommended) - UART must be configured" }
-                AppCheckBox { id: httpCheck; text: "HTTP IP-range scan (slow - robust)" }
+                AppCheckBox {
+                    id: mavlinkCheck
+                    text: "MAVLink broadcast (recommended) - UART must be configured"
+                    SettingToolTip {
+                        anchorItem: mavlinkCheck
+                        visible: anchorItem.hovered
+                        delay: 500
+                        text: "Listens for DLSE devices advertising over MAVLink. The ESP32 UART must be configured to send these broadcasts."
+                    }
+                }
+                AppCheckBox {
+                    id: httpCheck
+                    text: "HTTP IP-range scan (slow - robust)"
+                    SettingToolTip {
+                        anchorItem: httpCheck
+                        visible: anchorItem.hovered
+                        delay: 500
+                        text: "Checks addresses in the subnet for DLSE devices over HTTP. This can find devices that aren’t advertising over MAVLink, but takes longer."
+                    }
+                }
             }
 
-            Text { text: "IPv4 subnet"; color: theme.secondaryText; font.family: theme.bodyFont }
-            AppTextField { id: subnetField; Layout.fillWidth: true; placeholderText: "192.168.1.0/24" }
+            SettingTooltipLabel {
+                text: "IPv4 subnet"
+                tooltipText: "The local IPv4 network to search, in CIDR notation—for example, 192.168.1.0/24. Used by both discovery methods."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
+            AppTextField {
+                id: subnetField
+                Layout.fillWidth: true
+                hoverEnabled: true
+                placeholderText: "192.168.1.0/24"
+                SettingToolTip {
+                    anchorItem: subnetField
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "The local IPv4 network to search, in CIDR notation—for example, 192.168.1.0/24. Used by both discovery methods."
+                }
+            }
 
-            Text { text: "ESP32 broadcast port"; color: theme.secondaryText; font.family: theme.bodyFont }
-            AppTextField { id: esp32PortField; Layout.fillWidth: true; inputMethodHints: Qt.ImhDigitsOnly }
+            SettingTooltipLabel {
+                text: "ESP32 broadcast port"
+                tooltipText: "UDP port on which DLSE devices send MAVLink discovery broadcasts. It must match the port configured on the devices."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
+            AppTextField {
+                id: esp32PortField
+                Layout.fillWidth: true
+                hoverEnabled: true
+                inputMethodHints: Qt.ImhDigitsOnly
+                SettingToolTip {
+                    anchorItem: esp32PortField
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "UDP port on which DLSE devices send MAVLink discovery broadcasts. It must match the port configured on the devices."
+                }
+            }
 
-            Text { text: "Local receive port"; color: theme.secondaryText; font.family: theme.bodyFont }
-            AppTextField { id: localPortField; Layout.fillWidth: true; inputMethodHints: Qt.ImhDigitsOnly }
+            SettingTooltipLabel {
+                text: "Local receive port"
+                tooltipText: "UDP port this computer listens on for MAVLink broadcasts. Allow it through the computer’s firewall if needed."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
+            AppTextField {
+                id: localPortField
+                Layout.fillWidth: true
+                hoverEnabled: true
+                inputMethodHints: Qt.ImhDigitsOnly
+                SettingToolTip {
+                    anchorItem: localPortField
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "UDP port this computer listens on for MAVLink broadcasts. Allow it through the computer’s firewall if needed."
+                }
+            }
 
-            Text { text: "Discovery interval (s)"; color: theme.secondaryText; font.family: theme.bodyFont }
-            AppTextField { id: intervalField; Layout.fillWidth: true; inputMethodHints: Qt.ImhDigitsOnly }
+            SettingTooltipLabel {
+                text: "Discovery interval (s)"
+                tooltipText: "How often the fleet manager starts a new discovery scan. A longer interval reduces network activity."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
+            AppTextField {
+                id: intervalField
+                Layout.fillWidth: true
+                hoverEnabled: true
+                inputMethodHints: Qt.ImhDigitsOnly
+                SettingToolTip {
+                    anchorItem: intervalField
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "How often the fleet manager starts a new discovery scan. A longer interval reduces network activity."
+                }
+            }
 
-            Text { text: "HTTP timeout (s)"; color: theme.secondaryText; font.family: theme.bodyFont }
-            AppTextField { id: timeoutField; Layout.fillWidth: true }
+            SettingTooltipLabel {
+                text: "HTTP timeout (s)"
+                tooltipText: "Maximum time to wait for each HTTP discovery request before treating it as a failure."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
+            AppTextField {
+                id: timeoutField
+                Layout.fillWidth: true
+                hoverEnabled: true
+                SettingToolTip {
+                    anchorItem: timeoutField
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "Maximum time to wait for each HTTP discovery request before treating it as a failure."
+                }
+            }
 
-            Text { text: "HTTP concurrency"; color: theme.secondaryText; font.family: theme.bodyFont }
-            AppTextField { id: workersField; Layout.fillWidth: true; inputMethodHints: Qt.ImhDigitsOnly }
+            SettingTooltipLabel {
+                text: "HTTP concurrency"
+                tooltipText: "Maximum number of simultaneous HTTP checks. Higher values can speed up large subnet scans but increase network activity."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
+            AppTextField {
+                id: workersField
+                Layout.fillWidth: true
+                hoverEnabled: true
+                inputMethodHints: Qt.ImhDigitsOnly
+                SettingToolTip {
+                    anchorItem: workersField
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "Maximum number of simultaneous HTTP checks. Higher values can speed up large subnet scans but increase network activity."
+                }
+            }
 
             Rectangle {
                 Layout.columnSpan: 2
@@ -323,43 +442,105 @@ Item {
                 font.bold: true
             }
 
-            Text { text: "Connect to UniFi"; color: theme.secondaryText; font.family: theme.bodyFont }
-            AppCheckBox { id: unifiCheck; objectName: "unifiEnabledCheck"; text: "Enabled" }
+            SettingTooltipLabel {
+                text: "Connect to UniFi"
+                tooltipText: "Enables periodic queries to the UniFi Network API to show access-point observations for discovered devices."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
+            AppCheckBox {
+                id: unifiCheck
+                objectName: "unifiEnabledCheck"
+                text: "Enabled"
+                SettingToolTip {
+                    anchorItem: unifiCheck
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "Enables periodic queries to the UniFi Network API to show access-point observations for discovered devices."
+                }
+            }
 
-            Text { text: "Gateway URL"; color: theme.secondaryText; font.family: theme.bodyFont }
+            SettingTooltipLabel {
+                text: "Gateway URL"
+                tooltipText: "Base URL of the UniFi gateway or Network application, including https:// when applicable."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
             AppTextField {
                 id: unifiGatewayField
                 objectName: "unifiGatewayField"
                 Layout.fillWidth: true
+                hoverEnabled: true
                 enabled: unifiCheck.checked
                 placeholderText: "https://192.168.1.1"
+                SettingToolTip {
+                    anchorItem: unifiGatewayField
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "Base URL of the UniFi gateway or Network application, including https:// when applicable."
+                }
             }
 
-            Text { text: "API token"; color: theme.secondaryText; font.family: theme.bodyFont }
+            SettingTooltipLabel {
+                text: "API token"
+                tooltipText: "UniFi Network API token used to retrieve access-point observations."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
             AppTextField {
                 id: unifiTokenField
                 objectName: "unifiTokenField"
                 Layout.fillWidth: true
+                hoverEnabled: true
                 enabled: unifiCheck.checked
                 echoMode: TextInput.Password
                 placeholderText: "UniFi Network API token"
+                SettingToolTip {
+                    anchorItem: unifiTokenField
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "UniFi Network API token used to retrieve access-point observations."
+                }
             }
 
-            Text { text: "Site"; color: theme.secondaryText; font.family: theme.bodyFont }
+            SettingTooltipLabel {
+                text: "Site"
+                tooltipText: "UniFi site name or identifier to query, commonly default."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
             AppTextField {
                 id: unifiSiteField
                 objectName: "unifiSiteField"
                 Layout.fillWidth: true
+                hoverEnabled: true
                 enabled: unifiCheck.checked
                 placeholderText: "default"
+                SettingToolTip {
+                    anchorItem: unifiSiteField
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "UniFi site name or identifier to query, commonly default."
+                }
             }
 
-            Text { text: "TLS certificate"; color: theme.secondaryText; font.family: theme.bodyFont }
+            SettingTooltipLabel {
+                text: "TLS certificate"
+                tooltipText: "Checks the gateway’s TLS certificate. Turn this off only when using a trusted gateway with a self-signed certificate."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
             AppCheckBox {
                 id: unifiVerifyTlsCheck
                 objectName: "unifiVerifyTlsCheck"
                 enabled: unifiCheck.checked
                 text: "Verify certificate"
+                SettingToolTip {
+                    anchorItem: unifiVerifyTlsCheck
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "Checks the gateway’s TLS certificate. Turn this off only when using a trusted gateway with a self-signed certificate."
+                }
             }
 
             Text {
@@ -389,38 +570,100 @@ Item {
                 font.bold: true
             }
 
-            Text { text: "Background polling"; color: theme.secondaryText; font.family: theme.bodyFont }
-            AppCheckBox { id: statsEnabledCheck; text: "Enabled" }
+            SettingTooltipLabel {
+                text: "Background polling"
+                tooltipText: "Periodically requests /api/system/stats from known devices to refresh runtime values and online status."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
+            AppCheckBox {
+                id: statsEnabledCheck
+                text: "Enabled"
+                SettingToolTip {
+                    anchorItem: statsEnabledCheck
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "Periodically requests /api/system/stats from known devices to refresh runtime values and online status."
+                }
+            }
 
-            Text { text: "Target interval (s)"; color: theme.secondaryText; font.family: theme.bodyFont }
+            SettingTooltipLabel {
+                text: "Target interval (s)"
+                tooltipText: "Delay between polling rounds. Shorter intervals update stats sooner but create more network traffic."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
             AppTextField {
                 id: statsIntervalField
                 Layout.fillWidth: true
+                hoverEnabled: true
                 enabled: statsEnabledCheck.checked
                 inputMethodHints: Qt.ImhDigitsOnly
+                SettingToolTip {
+                    anchorItem: statsIntervalField
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "Delay between polling rounds. Shorter intervals update stats sooner but create more network traffic."
+                }
             }
 
-            Text { text: "Request timeout (s)"; color: theme.secondaryText; font.family: theme.bodyFont }
+            SettingTooltipLabel {
+                text: "Request timeout (s)"
+                tooltipText: "Maximum time to wait for each device’s stats response before counting the request as failed."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
             AppTextField {
                 id: statsTimeoutField
                 Layout.fillWidth: true
+                hoverEnabled: true
                 enabled: statsEnabledCheck.checked
+                SettingToolTip {
+                    anchorItem: statsTimeoutField
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "Maximum time to wait for each device’s stats response before counting the request as failed."
+                }
             }
 
-            Text { text: "HTTP concurrency"; color: theme.secondaryText; font.family: theme.bodyFont }
+            SettingTooltipLabel {
+                text: "HTTP concurrency"
+                tooltipText: "Maximum number of devices queried for stats at the same time. Higher values can shorten a polling round but increase network load."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
             AppTextField {
                 id: statsWorkersField
                 Layout.fillWidth: true
+                hoverEnabled: true
                 enabled: statsEnabledCheck.checked
                 inputMethodHints: Qt.ImhDigitsOnly
+                SettingToolTip {
+                    anchorItem: statsWorkersField
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "Maximum number of devices queried for stats at the same time. Higher values can shorten a polling round but increase network load."
+                }
             }
 
-            Text { text: "Failures before offline"; color: theme.secondaryText; font.family: theme.bodyFont }
+            SettingTooltipLabel {
+                text: "Failures before offline"
+                tooltipText: "Number of consecutive failed stats requests before a device is marked offline. A successful response marks it online again."
+                color: theme.secondaryText
+                font.family: theme.bodyFont
+            }
             AppTextField {
                 id: statsFailureThresholdField
                 Layout.fillWidth: true
+                hoverEnabled: true
                 enabled: statsEnabledCheck.checked
                 inputMethodHints: Qt.ImhDigitsOnly
+                SettingToolTip {
+                    anchorItem: statsFailureThresholdField
+                    visible: anchorItem.hovered
+                    delay: 500
+                    text: "Number of consecutive failed stats requests before a device is marked offline. A successful response marks it online again."
+                }
             }
             }
         }
@@ -522,46 +765,183 @@ Item {
         id: rebootDialog
         objectName: "rebootDialog"
         title: "Reboot Devices"
+        preferredWidth: 560
+        dismissible: fleetController.rebootState !== "running"
 
         Text {
             Layout.fillWidth: true
+            visible: fleetController.rebootState === "ready"
             text: "REST confirms request acceptance per device. MAVLink sends one unverified broadcast command to all visible online devices."
             color: theme.warning
             wrapMode: Text.Wrap
             font.family: theme.bodyFont
         }
 
-        Text { text: "Targets"; color: theme.secondaryText; font.family: theme.bodyFont }
-        AppComboBox {
-            id: rebootScope
+        ColumnLayout {
             Layout.fillWidth: true
-            model: [
-                "Selected devices (" + fleetController.selectedCount + ")",
-                "All visible devices (" + fleetController.visibleCount + ")"
-            ]
-        }
+            visible: fleetController.rebootState === "ready"
+            spacing: 12
 
-        Text { text: "Method"; color: theme.secondaryText; font.family: theme.bodyFont }
-        AppComboBox {
-            id: rebootMethod
-            Layout.fillWidth: true
-            model: ["REST per device", "MAVLink broadcast to all visible online devices"]
-        }
+            Text { text: "Targets"; color: theme.secondaryText; font.family: theme.bodyFont }
+            AppComboBox {
+                id: rebootScope
+                Layout.fillWidth: true
+                model: [
+                    "Selected devices (" + fleetController.selectedCount + ")",
+                    "All visible devices (" + fleetController.visibleCount + ")"
+                ]
+            }
 
-        RowLayout {
-            Layout.fillWidth: true
-            Item { Layout.fillWidth: true }
-            AppButton { text: "Cancel"; quiet: true; onClicked: rebootDialog.close() }
-            AppButton {
-                text: "Reboot"
-                emphasized: true
-                accentColor: theme.warning
-                onClicked: {
-                    fleetController.startReboot(
+            Text { text: "Method"; color: theme.secondaryText; font.family: theme.bodyFont }
+            AppComboBox {
+                id: rebootMethod
+                Layout.fillWidth: true
+                model: ["REST per device", "MAVLink broadcast to all visible online devices"]
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                AppButton { text: "Cancel"; quiet: true; onClicked: rebootDialog.close() }
+                AppButton {
+                    text: "Reboot"
+                    emphasized: true
+                    accentColor: theme.warning
+                    onClicked: fleetController.startReboot(
                         rebootScope.currentIndex === 0 ? "selected" : "visible",
                         rebootMethod.currentIndex === 1 ? "mavlink" : "rest"
                     )
-                    rebootDialog.close()
+                }
+            }
+        }
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            visible: fleetController.rebootState !== "ready"
+            spacing: 12
+
+            Text {
+                Layout.fillWidth: true
+                text: fleetController.rebootState === "running"
+                      ? "rebooting"
+                      : "reboot accepted"
+                color: theme.primaryText
+                font.family: theme.dataFont
+                font.pixelSize: theme.smallTextSize
+            }
+
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 21
+                visible: fleetController.rebootMethod !== "mavlink"
+                         || fleetController.rebootState === "running"
+
+                Rectangle {
+                    id: rebootProgressTrack
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: 7
+                    anchors.rightMargin: 7
+                    anchors.verticalCenter: parent.verticalCenter
+                    height: 7
+                    radius: 3
+                    color: theme.border
+                    clip: true
+
+                    Rectangle {
+                        id: rebootProgressFill
+                        height: parent.height
+                        width: fleetController.rebootMethod === "mavlink"
+                               && fleetController.rebootState === "running"
+                               ? Math.min(parent.width, Math.max(16, parent.width * 0.28))
+                               : parent.width * Math.max(
+                                     0,
+                                     Math.min(100, fleetController.rebootProgress)
+                                 ) / 100
+                        radius: parent.radius
+                        color: fleetController.rebootFailedIps.length > 0
+                               ? theme.error : theme.accent
+
+                        SequentialAnimation on x {
+                            running: fleetController.rebootMethod === "mavlink"
+                                     && fleetController.rebootState === "running"
+                            loops: Animation.Infinite
+                            NumberAnimation {
+                                from: 0
+                                to: Math.max(0, rebootProgressTrack.width - rebootProgressFill.width)
+                                duration: 700
+                            }
+                            NumberAnimation {
+                                from: Math.max(0, rebootProgressTrack.width - rebootProgressFill.width)
+                                to: 0
+                                duration: 700
+                            }
+                        }
+                    }
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: fleetController.rebootProgressText
+                color: theme.primaryText
+                wrapMode: Text.Wrap
+                font.family: theme.dataFont
+                font.pixelSize: theme.smallTextSize
+            }
+
+            Text {
+                Layout.fillWidth: true
+                visible: fleetController.rebootMethod === "rest"
+                text: "A successful HTTP response confirms that the request was accepted; it does not confirm that the device finished rebooting."
+                color: theme.secondaryText
+                wrapMode: Text.Wrap
+                font.family: theme.bodyFont
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: fleetController.rebootFailedIps.length > 0
+                spacing: 6
+
+                Text {
+                    text: "Failed device IPs (" + fleetController.rebootFailedIps.length + ")"
+                    color: theme.error
+                    font.family: theme.bodyFont
+                    font.bold: true
+                }
+
+                ScrollView {
+                    id: failedRebootIpsScroll
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.min(contentHeight, 170)
+                    Layout.maximumHeight: 170
+                    clip: true
+
+                    Text {
+                        width: failedRebootIpsScroll.availableWidth
+                        text: fleetController.rebootFailedIps.join("\n")
+                        color: theme.primaryText
+                        font.family: theme.dataFont
+                        font.pixelSize: theme.smallTextSize
+                        wrapMode: Text.NoWrap
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                visible: fleetController.rebootState === "finished"
+                AppButton {
+                    visible: fleetController.rebootCanRetry
+                    text: "Retry Failed"
+                    onClicked: fleetController.retryFailed()
+                }
+                Item { Layout.fillWidth: true }
+                AppButton {
+                    text: "Close"
+                    emphasized: true
+                    onClicked: rebootDialog.close()
                 }
             }
         }
@@ -1121,7 +1501,7 @@ Item {
     ModalDialog {
         id: confirmDialog
         objectName: "confirmDialog"
-        title: confirmationKind === "clear" ? "Clear Fleet"
+        title: confirmationKind === "clear" ? "Clear Detected Devices"
              : confirmationKind === "settings" ? "Apply Settings"
              : confirmationKind === "static_ip_assign" ? "Assign Static IPs"
              : confirmationKind === "static_ip_clear" ? "Clear Static IPs"
@@ -1143,7 +1523,7 @@ Item {
             Item { Layout.fillWidth: true }
             AppButton { text: "Cancel"; quiet: true; onClicked: confirmDialog.close() }
             AppButton {
-                text: confirmationKind === "clear" ? "Clear Fleet"
+                text: confirmationKind === "clear" ? "Clear Detected Devices"
                     : confirmationKind === "settings" ? "Apply and Reboot"
                     : confirmationKind === "static_ip_assign" ? "Assign Static IPs"
                     : confirmationKind === "static_ip_clear" ? "Clear Static IPs"

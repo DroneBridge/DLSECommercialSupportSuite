@@ -8,6 +8,7 @@ Dialog {
     default property alias bodyData: body.data
     property int preferredWidth: 520
     property bool autoCenter: true
+    property bool dismissible: true
 
     function centerInParent() {
         if (!autoCenter)
@@ -21,7 +22,7 @@ Dialog {
 
     width: Math.min(preferredWidth, parent ? parent.width - 48 : preferredWidth)
     modal: true
-    closePolicy: Popup.CloseOnEscape
+    closePolicy: dismissible ? Popup.CloseOnEscape : Popup.NoAutoClose
     padding: 18
     onOpened: centerTimer.restart()
     onHeightChanged: {
@@ -71,6 +72,7 @@ Dialog {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             anchors.rightMargin: 8
+            visible: dialog.dismissible
             text: "×"
             onClicked: dialog.close()
             contentItem: Text {

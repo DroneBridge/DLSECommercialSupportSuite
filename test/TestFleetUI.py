@@ -512,6 +512,27 @@ class TestFleetUI(unittest.TestCase):
         self._click_item(header_cell)
         self.assertFalse(main_screen.property("sortAscending"))
 
+    def test_fleet_column_headers_follow_content_alignment(self):
+        """Text, numeric, and status columns keep matching header alignment after reorder."""
+        self.controller._apply_visible_columns(["rssi", "activation_status", "hostname"])
+        self._enter_main_screen()
+        QTest.qWait(100)
+
+        def visual_item(name):
+            """Return the visible item named by the table header, or None."""
+            items = [self.root.contentItem()]
+            while items:
+                item = items.pop()
+                if item.objectName() == name:
+                    return item
+                items.extend(item.childItems())
+            return None
+
+        for index, alignment in ((1, Qt.AlignRight), (2, Qt.AlignHCenter), (3, Qt.AlignLeft)):
+            header = visual_item(f"fleetHeaderText_{index}")
+            self.assertIsNotNone(header)
+            self.assertEqual(alignment, header.property("columnAlignment"))
+
     def test_readable_text_uses_three_theme_font_sizes(self):
         """All QML text sizes use the three semantic typography tokens."""
         theme_source = (self.QML_ROOT / "Theme.qml").read_text(encoding="utf-8")
@@ -1178,6 +1199,28 @@ class TestFleetUI(unittest.TestCase):
 
         self.assertEqual("WAITING", self.controller.statsPollingStatus)
 
+    def test_pending_stats_are_batched_and_discarded_after_clear(self):
+        """Polling updates notify the inventory once and cannot restore a cleared fleet."""
+        self.controller.source_model.upsert_many([
+            DeviceRecord(identity="A", ip="192.168.1.2", activation_key="A"),
+            DeviceRecord(identity="B", ip="192.168.1.3", activation_key="B"),
+        ])
+        changes = []
+        self.controller.source_model.inventoryChanged.connect(lambda: changes.append(True))
+        generation = self.controller._fleet_generation
+        for identity in ("A", "B"):
+            self.controller._stats_progress({
+                "identity": identity, "success": True, "stats": {"esp_rssi": -63},
+            }, generation)
+        self.assertEqual([], changes)
+        self.controller._flush_stats()
+        self.assertEqual(1, len(changes))
+        self.assertEqual("-63", self.controller.source_model.record_by_identity("B").rssi)
+        self.controller._stats_progress({"identity": "A", "success": False}, generation)
+        self.controller.clearFleet()
+        self.controller._flush_stats()
+        self.assertEqual(0, self.controller.source_model.rowCount())
+
     def test_worker_failures_set_only_the_matching_footer_error(self):
         """Discovery and stats worker failures update independent indicators."""
         self.controller._scan_failed("discovery failed")
@@ -1191,17 +1234,53 @@ class TestFleetUI(unittest.TestCase):
         self.assertEqual("ERROR", self.controller.discoveryStatus)
         self.assertEqual("ERROR", self.controller.statsPollingStatus)
 
+    def test_offline_footer_count_tracks_device_health_and_ignores_filter(self):
+        """The offline count follows polling health for all retained devices."""
+        self._enter_main_screen()
+        self.controller.source_model.upsert_many([
+            DeviceRecord(identity="A", ip="192.168.1.2", activation_key="A"),
+            DeviceRecord(identity="B", ip="192.168.1.3", activation_key="B"),
+        ])
+        self.controller.setSearchText("192.168.1.2")
+        self.app.processEvents()
+        footer = self.root.findChild(QQuickItem, "offlineFooterStatus")
+        self.assertEqual(0, self.controller.offlineCount)
+        self.assertIn("0</font>", footer.property("text"))
+        for _ in range(3):
+            self.controller.source_model.apply_stats_result("B", False)
+        self.app.processEvents()
+        self.assertEqual(1, self.controller.offlineCount)
+        self.assertIn("1</font>", footer.property("text"))
+        self.controller.source_model.apply_stats_result("B", True, {})
+        self.app.processEvents()
+        self.assertEqual(0, self.controller.offlineCount)
+        self.assertIn("0</font>", footer.property("text"))
+
     def test_footer_indicators_fit_minimum_window_width(self):
         """All status indicators remain within the 1180-pixel minimum window."""
         self._enter_main_screen()
         self.root.setWidth(1180)
         self.app.processEvents()
-        license_status = self.root.findChild(QQuickItem, "licenseFooterStatus")
+        license_status = self.root.findChild(QQuickItem, "licenseServerFooterStatus")
         right_edge = license_status.mapToScene(
             QPointF(license_status.width(), 0)
         ).x()
 
         self.assertLessEqual(right_edge, self.root.width())
+
+    def test_footer_groups_stay_at_opposite_edges(self):
+        """Extra width separates the left fleet indicators from right service indicators."""
+        self._enter_main_screen()
+        self.root.setWidth(2200)
+        QTest.qWait(50)
+        left = self.root.findChild(QQuickItem, "statsPollingFooterStatus")
+        right = self.root.findChild(QQuickItem, "unifiFooterStatus")
+        last = self.root.findChild(QQuickItem, "licenseServerFooterStatus")
+        left_edge = left.mapToScene(QPointF(left.width(), 0)).x()
+        right_edge = right.mapToScene(QPointF(0, 0)).x()
+        last_edge = last.mapToScene(QPointF(last.width(), 0)).x()
+        self.assertGreater(right_edge - left_edge, 100)
+        self.assertAlmostEqual(self.root.width() - 16, last_edge, delta=2)
 
     def test_unifi_counter_deltas_become_live_throughput(self):
         """Consecutive cumulative UniFi byte samples are exposed as a rate."""
@@ -1226,11 +1305,20 @@ class TestFleetUI(unittest.TestCase):
             self.controller.source_model.visible_column_keys(),
         )
         self.assertIn("operation", DeviceTableModel.DEFAULT_COLUMN_KEYS)
-        self.assertIn("operation_progress", DeviceTableModel.DEFAULT_COLUMN_KEYS)
+        self.assertNotIn("operation_progress", DeviceTableModel.DEFAULT_COLUMN_KEYS)
         self.assertEqual(
             len(DeviceTableModel.DEFAULT_COLUMN_KEYS) + 1,
             self.controller.source_model.columnCount(),
         )
+
+    def test_legacy_progress_column_migrates_to_operation(self):
+        """Saved progress-only layouts retain the combined column on restore."""
+        self._test_settings.setValue("columns/visible", "hostname,operation_progress")
+        self.controller._restore_columns()
+        self.assertEqual(
+            ["hostname", "operation"], self.controller.source_model.visible_column_keys()
+        )
+        self.assertEqual("hostname,operation", self._test_settings.value("columns/visible"))
 
     def test_sys_id_mismatch_uses_critical_status_badges(self):
         """Known FC/DLSE SYS ID mismatches highlight exactly the two ID cells."""
@@ -1314,7 +1402,7 @@ class TestFleetUI(unittest.TestCase):
             "rssi,hostname,ip,activation_status,firmware_version,"
             "chip,dronebridge_version,mavlink_sys_id,fc_sys_id,wifi_ssid,wifi_channel,"
             "ap_rssi,ap_channel,ap_band,ap_wifi_standard,ap_live_throughput,"
-            "ap_rx_rate,ap_tx_rate,dlse_mode,operation,operation_progress",
+            "ap_rx_rate,ap_tx_rate,dlse_mode,operation",
             self._test_settings.value("columns/visible"),
         )
         columns = self.controller.columns
@@ -1354,7 +1442,6 @@ class TestFleetUI(unittest.TestCase):
                 "ap_tx_rate",
                 "dlse_mode",
                 "operation",
-                "operation_progress",
             ],
             self.controller.source_model.visible_column_keys(),
         )
@@ -1362,7 +1449,7 @@ class TestFleetUI(unittest.TestCase):
             "rssi,ip,hostname,activation_status,firmware_version,"
             "chip,dronebridge_version,mavlink_sys_id,fc_sys_id,wifi_ssid,wifi_channel,"
             "ap_rssi,ap_channel,ap_band,ap_wifi_standard,ap_live_throughput,"
-            "ap_rx_rate,ap_tx_rate,dlse_mode,operation,operation_progress",
+            "ap_rx_rate,ap_tx_rate,dlse_mode,operation",
             self._test_settings.value("columns/visible"),
         )
 
