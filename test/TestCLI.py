@@ -63,6 +63,28 @@ class TestCLI(unittest.TestCase):
         """The GUI launcher exposes the project version before Qt startup."""
         self.assert_version_option(parse_ui_args, "dlse-ui")
 
+    def test_checkout_version_takes_precedence_over_stale_metadata(self):
+        """Version lookup uses the source version after a bump in an editable install."""
+        with (
+            patch(
+                "dlse_cli_utils.Path.read_text",
+                return_value=(
+                    '[project]\nname = "DLSECommercialSupportSuite"\n'
+                    'version = "1.2.0"\ndescription = "Commercial Support Suite"\n'
+                ),
+            ),
+            patch("dlse_cli_utils.importlib.metadata.version", return_value="1.1.1"),
+        ):
+            self.assertEqual("1.2.0", get_project_version())
+
+    def test_installed_version_is_used_without_a_source_checkout(self):
+        """Version lookup uses distribution metadata when the source file is absent."""
+        with (
+            patch("dlse_cli_utils.Path.read_text", side_effect=FileNotFoundError),
+            patch("dlse_cli_utils.importlib.metadata.version", return_value="1.2.0"),
+        ):
+            self.assertEqual("1.2.0", get_project_version())
+
 
 if __name__ == "__main__":
     unittest.main()

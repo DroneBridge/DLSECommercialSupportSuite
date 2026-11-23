@@ -6,7 +6,6 @@ import ipaddress
 import json
 import math
 import os
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from time import monotonic
 from typing import Any, Callable
@@ -30,6 +29,7 @@ from DroneBridgeCommercialSupportSuite import (
     db_settings_from_csv,
     db_settings_to_csv,
 )
+from dlse_cli_utils import get_project_version
 from ui.models import (
     DeviceCardModel,
     DeviceFilterProxyModel,
@@ -707,11 +707,9 @@ class FleetController(QObject):
 
     @Property(str, constant=True)
     def suiteVersion(self) -> str:
-        """Return the installed suite version or ``local``."""
-        try:
-            return version("DLSECommercialSupportSuite")
-        except PackageNotFoundError:
-            return "local"
+        """Return the source or installed suite version, or ``local`` if unknown."""
+        project_version = get_project_version()
+        return "local" if project_version == "unknown" else project_version
 
     @Property(bool, notify=stateChanged)
     def scanning(self) -> bool:

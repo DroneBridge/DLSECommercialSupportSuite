@@ -1,3 +1,5 @@
+include SERIAL_BATCH_FLASHER.md
+
 prune ui/resources/Material_Symbols_Outlined
 prune ui/resources/Master
 prune ui/resources/logos
