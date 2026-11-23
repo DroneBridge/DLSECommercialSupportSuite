@@ -13,6 +13,9 @@ from typing import Any
 
 from aiohttp import web
 
+MAX_OTA_UPLOAD_BYTES = 64 * 1024 * 1024
+OTA_UPLOAD_CHUNK_BYTES = 64 * 1024
+
 
 @dataclass
 class Device:
@@ -23,6 +26,9 @@ class Device:
     offline: bool = False
     reboot_until: float = 0.0
     settings: dict[str, Any] = field(default_factory=dict)
+    ota_www_bytes: int = 0
+    ota_firmware_bytes: int = 0
+    ota_firmware_updates: int = 0
 
     def __post_init__(self) -> None:
         """Populate deterministic settings; state is discarded on process exit."""
@@ -107,9 +113,16 @@ class FleetSimulator:
         self.peak_active = 0
         self.total_ms = 0.0
         self.max_ms = 0.0
+        self.ota_upload_bytes = 0
+        self.ota_firmware_updates = 0
 
     async def handle(self, request: web.Request) -> web.StreamResponse:
-        """Handle one device request, returning HTTP errors for offline or invalid requests."""
+        """Handle one request for a simulated device.
+
+        OTA images are streamed and discarded, settings are held in memory, and
+        offline, rebooting, invalid, oversized, or unsupported requests receive
+        HTTP error responses. The selected device state is updated on success.
+        """
         started = time.monotonic()
         self.requests += 1
         self.active += 1
@@ -155,6 +168,34 @@ class FleetSimulator:
                 device.settings.update(updates)
                 device.reboot_until = time.monotonic() + self.reboot_seconds
                 payload = {"status": "success", "msg": "Settings changed! Rebooting ..."}
+            elif request.method == "POST" and request.path in {
+                "/update/www",
+                "/update/firmware",
+            }:
+                upload_bytes = 0
+                async for chunk in request.content.iter_chunked(OTA_UPLOAD_CHUNK_BYTES):
+                    upload_bytes += len(chunk)
+                    if upload_bytes > MAX_OTA_UPLOAD_BYTES:
+                        status = 413
+                        return web.json_response(
+                            {"error": "OTA image exceeds the simulator upload limit"},
+                            status=status,
+                        )
+                if upload_bytes == 0:
+                    status = 400
+                    return web.json_response(
+                        {"error": "OTA image must not be empty"}, status=status
+                    )
+                self.ota_upload_bytes += upload_bytes
+                if request.path == "/update/www":
+                    device.ota_www_bytes = upload_bytes
+                    payload = {"status": "success", "msg": "Web interface image accepted"}
+                else:
+                    device.ota_firmware_bytes = upload_bytes
+                    device.ota_firmware_updates += 1
+                    self.ota_firmware_updates += 1
+                    device.reboot_until = time.monotonic() + self.reboot_seconds
+                    payload = {"status": "success", "msg": "Firmware image accepted; rebooting"}
             else:
                 status = 404
                 return web.json_response({"error": "Endpoint not simulated"}, status=status)
@@ -168,16 +209,17 @@ class FleetSimulator:
             self.max_ms = max(self.max_ms, elapsed_ms)
 
     def report(self) -> str:
-        """Return aggregate counts and server-side latency since startup."""
+        """Return request, OTA, and server-side latency totals since startup."""
         elapsed = max(time.monotonic() - self.started, 0.001)
         return (f"requests={self.requests} errors={self.errors} rate={self.requests / elapsed:.1f}/s "
                 f"active={self.active} peak_active={self.peak_active} "
-                f"mean_ms={self.total_ms / max(self.requests, 1):.2f} max_ms={self.max_ms:.2f}")
+                f"mean_ms={self.total_ms / max(self.requests, 1):.2f} max_ms={self.max_ms:.2f} "
+                f"ota_updates={self.ota_firmware_updates} ota_bytes={self.ota_upload_bytes}")
 
 
 async def run_server(simulator: FleetSimulator, port: int, report_interval: float) -> None:
     """Bind all device addresses and serve until cancelled; close listeners on failure."""
-    app = web.Application(client_max_size=10240)
+    app = web.Application(client_max_size=MAX_OTA_UPLOAD_BYTES)
     app.router.add_route("*", "/{path:.*}", simulator.handle)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
