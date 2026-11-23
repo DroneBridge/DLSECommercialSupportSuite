@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.0
+
+### Added
+
+- Guided Serial Batch Flasher for installing firmware, settings, and optional
+  licenses over USB.
+- Virtual ESP32 fleet simulator for testing Fleet Manager without hardware.
+
+### Changed
+
+- Improved Fleet Manager responsiveness when scanning or rebooting larger fleets.
+- Skybrush Monitor is visible but disabled on the start page for this release.
+
 ## 1.1.1
 
 ### Added

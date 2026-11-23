@@ -96,10 +96,10 @@ Item {
                 objectName: "monitoringModeButton"
                 Layout.fillWidth: true
                 Layout.preferredHeight: 180
-                title: "Monitoring Mode"
-                description: "Monitor without additional radio traffic.\nPlanned for a future release."
+                title: "Skybrush Monitor"
+                description: "Unavailable in this release."
                 enabled: false
-                opacity: 0.48
+                opacity: 0.6
             }
         }
 

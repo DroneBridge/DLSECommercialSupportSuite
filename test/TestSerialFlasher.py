@@ -547,6 +547,7 @@ class TestSerialController(unittest.TestCase):
         card = root.findChild(QQuickItem, 'serialFlasherButton')
         direct = root.findChild(QQuickItem, 'directStandaloneButton')
         monitoring = root.findChild(QQuickItem, 'monitoringModeButton')
+        self.assertFalse(monitoring.isEnabled())
         self.assertAlmostEqual(direct.width() + monitoring.width() + 16, card.width())
         self.assertAlmostEqual(monitoring.height() / 2, card.height())
         QMetaObject.invokeMethod(root.findChild(object, 'startScreen'), 'serialFlasherRequested', Qt.DirectConnection)
