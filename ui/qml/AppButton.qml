@@ -9,6 +9,9 @@ Button {
     property bool emphasized: false
     property bool quiet: false
     property bool textBold: true
+    property int textSize: theme.bodyTextSize
+    // Shows a spinner in place of the icon, e.g. while the button's action is running.
+    property bool busy: false
     property color accentColor: theme.accent
     readonly property color foregroundColor: !enabled
                                              ? theme.mutedText
@@ -42,8 +45,18 @@ Button {
         id: contentRow
         spacing: 8
 
+        BusyIndicator {
+            objectName: "busyIndicator"
+            visible: control.busy
+            running: control.busy
+            padding: 0
+            palette.dark: control.foregroundColor
+            Layout.preferredWidth: visible ? 18 : 0
+            Layout.preferredHeight: 18
+        }
+
         Image {
-            visible: control.iconSource.length > 0
+            visible: control.iconSource.length > 0 && !control.busy
             source: control.iconSource
             sourceSize.width: 18
             sourceSize.height: 18
@@ -58,7 +71,7 @@ Button {
             text: control.text
             color: control.foregroundColor
             font.family: theme.bodyFont
-            font.pixelSize: theme.bodyTextSize
+            font.pixelSize: control.textSize
             font.bold: control.textBold
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter

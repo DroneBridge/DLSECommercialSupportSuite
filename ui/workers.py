@@ -897,6 +897,7 @@ class RebootWorker(QRunnable):
                         message = str(exc)
                     payload = {
                         "identity": record.identity,
+                        "ip": record.ip,
                         "success": success,
                         "message": message,
                     }

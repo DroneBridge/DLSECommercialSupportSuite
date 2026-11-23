@@ -3,6 +3,8 @@ import QtQuick.Controls
 
 CheckBox {
     id: control
+    property alias labelFont: label.font
+    property int textSize: theme.smallTextSize
 
     spacing: 7
     hoverEnabled: true
@@ -30,11 +32,12 @@ CheckBox {
     }
 
     contentItem: Text {
+        id: label
         leftPadding: control.indicator.width + control.spacing
         text: control.text
         color: control.enabled ? theme.secondaryText : theme.mutedText
-        font.family: theme.dataFont
-        font.pixelSize: theme.smallTextSize
+        font.family: theme.bodyFont
+        font.pixelSize: control.textSize
         verticalAlignment: Text.AlignVCenter
     }
 }

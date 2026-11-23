@@ -61,7 +61,7 @@ ComboBox {
         id: optionDelegate
         required property int index
         required property var modelData
-        width: control.width - 8
+        width: control.popup.availableWidth
         highlighted: control.highlightedIndex === optionDelegate.index
         contentItem: Text {
             text: control.textRole.length > 0 && optionDelegate.modelData

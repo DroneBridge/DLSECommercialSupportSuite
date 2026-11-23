@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Shapes
 import QtQuick.VectorImage
 
 Item {
@@ -7,16 +8,32 @@ Item {
     objectName: "startScreen"
 
     signal directStandaloneRequested()
+    signal serialFlasherRequested()
 
     Theme { id: theme }
 
-    Rectangle {
+    Shape {
+        id: background
         anchors.fill: parent
-        color: theme.background
 
-        gradient: Gradient {
-            GradientStop { position: 0.0; color: "#01457c" }
-            GradientStop { position: 1.0; color: "#07101a" }
+        ShapePath {
+            strokeColor: "transparent"
+            // Keep the circular glow centered on the top border as the page resizes.
+            fillGradient: RadialGradient {
+                centerX: background.width / 2
+                centerY: 0
+                focalX: centerX
+                focalY: centerY
+                centerRadius: Math.max(1, background.height, background.width / 2)
+                GradientStop { position: 0.0; color: "#01457c" }
+                GradientStop { position: 1.0; color: "#07101a" }
+            }
+            startX: 0
+            startY: 0
+            PathLine { x: background.width; y: 0 }
+            PathLine { x: background.width; y: background.height }
+            PathLine { x: 0; y: background.height }
+            PathLine { x: 0; y: 0 }
         }
     }
 
@@ -69,19 +86,31 @@ Item {
             spacing: 16
 
             ModeButtonBig {
+                objectName: "directStandaloneButton"
                 Layout.fillWidth: true
                 Layout.preferredHeight: 180
                 onClicked: start.directStandaloneRequested()
             }
 
             ModeButtonBig {
+                objectName: "monitoringModeButton"
                 Layout.fillWidth: true
                 Layout.preferredHeight: 180
-                title: "Monitoring Mode"
-                description: "Monitor without additional radio traffic.\nPlanned for a future release."
+                title: "Skybrush Monitor"
+                description: "Unavailable in this release."
                 enabled: false
-                opacity: 0.48
+                opacity: 0.6
             }
+        }
+
+        ModeButtonBig {
+            objectName: "serialFlasherButton"
+            Layout.fillWidth: true
+            Layout.preferredHeight: 90
+            centerContent: true
+            title: "Serial Batch Flasher"
+            description: "Install firmware, settings and licenses over USB."
+            onClicked: start.serialFlasherRequested()
         }
     }
 

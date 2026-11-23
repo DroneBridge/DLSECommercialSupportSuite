@@ -14,17 +14,19 @@ Rectangle {
     color: theme.panel
     border.color: theme.border
     border.width: 1
+    radius: 6
 
     Theme { id: theme }
 
     ColumnLayout {
         anchors.fill: parent
+        anchors.margins: 1
         spacing: 0
 
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 40
-            color: theme.panel
+            color: "transparent"
 
             RowLayout {
                 anchors.fill: parent
@@ -34,16 +36,20 @@ Rectangle {
 
                 ToolButton {
                     id: collapseButton
-                    text: ">"
+                    Layout.preferredWidth: 32
+                    Layout.preferredHeight: 32
+                    padding: 0
+                    Accessible.name: "Collapse ESP32 configuration"
                     onClicked: config.collapseRequested()
-                    contentItem: Text {
-                        text: collapseButton.text
-                        color: theme.secondaryText
-                        font.pixelSize: theme.iconGlyphSize
-                        verticalAlignment: Text.AlignVCenter
-                        horizontalAlignment: Text.AlignHCenter
+                    contentItem: Keyboard_arrow_right_24dp_1 {
+                        anchors.centerIn: parent
+                        anchors.verticalCenterOffset: 4
+                        anchors.horizontalCenterOffset: 4
                     }
-                    background: Rectangle { color: collapseButton.hovered ? theme.hover : "transparent" }
+                    background: Rectangle {
+                        radius: 4
+                        color: collapseButton.hovered ? theme.hover : "transparent"
+                    }
                 }
 
                 Text {
@@ -67,7 +73,7 @@ Rectangle {
             objectName: "configTabs"
             Layout.fillWidth: true
             Layout.preferredHeight: 40
-            background: Rectangle { color: theme.panel }
+            background: Rectangle { color: "transparent" }
 
             Repeater {
                 model: ["Settings", "Web-Interface", "Metrics"]

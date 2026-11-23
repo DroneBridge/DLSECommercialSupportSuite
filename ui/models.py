@@ -193,12 +193,10 @@ class DeviceTableModel(QAbstractTableModel):
         ("activation_key", "ACTIVATION KEY", 210),
         ("mac", "MAC", 138),
         ("online", "ESP\nONLINE", 86),
-        ("operation", "OPERATION", 150),
-        ("operation_progress", "PROGRESS", 106),
+        ("operation", "OPERATION", 170),
     ]
     DEFAULT_COLUMN_KEYS = tuple(column[0] for column in COLUMNS[:19]) + (
         "operation",
-        "operation_progress",
     )
 
     IdentityRole = Qt.UserRole + 1
@@ -463,6 +461,7 @@ class DeviceTableModel(QAbstractTableModel):
         error: str = "",
         failure_threshold: int = 3,
         sampled_at: float | None = None,
+        notify: bool = True,
     ) -> None:
         """
         Apply one stats attempt and update the device's online health.
@@ -474,6 +473,7 @@ class DeviceTableModel(QAbstractTableModel):
         :param failure_threshold: Consecutive counted failures required offline.
         :param sampled_at: Optional monotonic sample time used by deterministic
             callers and tests. The current monotonic time is used when omitted.
+        :param notify: Emit model notifications immediately when true.
         :return: None. Unknown identities are ignored; reaching the configured
             failure threshold marks a device offline while success restores it.
         """
@@ -517,7 +517,29 @@ class DeviceTableModel(QAbstractTableModel):
                     min(failure_threshold, 20),
                 ):
                     record.online = False
-        self._emit_record_changed(identity)
+        if notify:
+            self._emit_record_changed(identity)
+
+    def apply_stats_batch(self, results: list[dict[str, Any]], failure_threshold: int) -> None:
+        """Apply polling results and notify views once for the affected row range.
+
+        Unknown identities are ignored; failure_threshold has the same meaning as
+        in apply_stats_result. Individual failures retain their normal semantics.
+        """
+        changed = set()
+        for result in results:
+            identity = result["identity"]
+            if identity not in self._records:
+                continue
+            self.apply_stats_result(
+                identity, result["success"], result.get("stats"),
+                result.get("error", ""), failure_threshold, notify=False,
+            )
+            changed.add(identity)
+        rows = [row for row, identity in enumerate(self._order) if identity in changed]
+        if rows:
+            self.dataChanged.emit(self.index(rows[0], 0), self.index(rows[-1], self.columnCount() - 1))
+            self.inventoryChanged.emit()
 
     def apply_system_info_result(
         self,
@@ -729,12 +751,50 @@ class DeviceTableModel(QAbstractTableModel):
 
     def update_operation(self, identity: str, operation: str, progress: int = 0) -> None:
         """Update one device operation label and bounded percentage."""
-        record = self._records.get(identity)
-        if record is None:
+        self.update_operations({identity: (operation, progress)})
+
+    def update_operations(self, updates: dict[str, tuple[str, int]]) -> None:
+        """Apply many operation states and notify only the affected table cells.
+
+        :param updates: Identity-to-operation-label-and-percentage mapping.
+        :return: None. Unknown identities and unchanged rows are ignored.
+        """
+        changed_rows: set[int] = set()
+        row_by_identity = {identity: row for row, identity in enumerate(self._order)}
+        for identity, (operation, progress) in updates.items():
+            record = self._records.get(identity)
+            if record is None:
+                continue
+            bounded_progress = max(0, min(100, int(progress)))
+            if record.operation == operation and record.operation_progress == bounded_progress:
+                continue
+            record.operation = operation
+            record.operation_progress = bounded_progress
+            row = row_by_identity.get(identity)
+            if row is not None:
+                changed_rows.add(row)
+        if not changed_rows:
             return
-        record.operation = operation
-        record.operation_progress = max(0, min(100, progress))
-        self._emit_record_changed(identity)
+
+        if "operation" not in self._visible_columns:
+            return
+        operation_column = self._visible_columns.index("operation") + 1
+        ordered_rows = sorted(changed_rows)
+        start = previous = ordered_rows[0]
+        row_ranges = []
+        for row in ordered_rows[1:]:
+            if row != previous + 1:
+                row_ranges.append((start, previous))
+                start = row
+            previous = row
+        row_ranges.append((start, previous))
+
+        for first_row, last_row in row_ranges:
+            self.dataChanged.emit(
+                self.index(first_row, operation_column),
+                self.index(last_row, operation_column),
+                [Qt.DisplayRole, self.OperationRole, self.OperationProgressRole],
+            )
 
     def update_static_network(
         self,
@@ -983,9 +1043,9 @@ class DeviceCardModel(QAbstractListModel):
             proxy.layoutChanged,
             proxy.rowsInserted,
             proxy.rowsRemoved,
-            proxy.dataChanged,
         ):
             signal.connect(lambda *_args: self._reset())
+        proxy.dataChanged.connect(self._data_changed)
 
     def roleNames(self) -> dict[int, bytes]:
         """Reuse the source model's complete QML role contract."""
@@ -1001,6 +1061,12 @@ class DeviceCardModel(QAbstractListModel):
         if not index.isValid() or not 0 <= index.row() < self._proxy.rowCount():
             return None
         return self._proxy.index(index.row(), 0).data(role)
+
+    @Slot(QModelIndex, QModelIndex, list)
+    def _data_changed(self, first: QModelIndex, last: QModelIndex, roles: list[int]) -> None:
+        """Forward changed proxy rows to cards without resetting the entire view."""
+        if first.isValid() and last.isValid():
+            self.dataChanged.emit(self.index(first.row(), 0), self.index(last.row(), 0), roles)
 
     @Slot()
     def _reset(self, *_args: Any) -> None:

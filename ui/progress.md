@@ -1,6 +1,6 @@
 # Fleet Manager QML Progress
 
-Last updated: 2026-09-13
+Last updated: 2026-10-13
 
 ## QML Foundation
 
@@ -66,8 +66,46 @@ Last updated: 2026-09-13
 - [x] Offer retry-failed behavior for retryable operations.
 - [x] Support account release listing and download before Fleet Manager OTA uploads.
 
-## Verification
+## Serial Batch Flasher
 
+- [x] Compact the starting-index picker to match adjacent controls and explain how to populate an empty release selector.
+- [x] Share the Standalone logo and mode button in the serial header, retaining Stop and guarded navigation during active work.
+- [x] Give the setup and review groups modestly more vertical spacing while keeping the form compact and scrollable.
+- [x] Open the serial release list wider than its field, bounded by the window, to show more of cached paths and online release names.
+- [x] Balance setup and results, distinguish the current activity and history from the tables, shorten guidance, add on-demand license details, and use warning colors for material risks.
+- [x] Allow the results table and activity history to share available vertical space equally as the window is resized.
+- [x] Default the starting index to 1 while allowing 0 and preserving the saved next index; retain subnet validation.
+- [x] Add start-page entry and a dedicated guided QML page with native file/folder pickers.
+- [x] Support local, cached and account release sources using existing release workers.
+- [x] Support release defaults/Custom Settings CSV, permanent activation with automatic offline recovery, session-only tokens, five baud choices and indexed assignments; preserve legacy backend modes.
+- [x] Default to DLSE online releases, show shared license-server status, widen setup, split compact active/completed tables and expand Activity History.
+- [x] Match the full-width start-page serial card to the other mode cards, clarify Config preview and flashing actions, and normalize section headings.
+- [x] Center the serial start-card contents; add a nonnegative starting-index number picker and default-on Flash license toggle with explicit no-license review/confirmation.
+- [x] Skip all licensing operations and strip existing template license entries when licensing is disabled; preserve source templates and permanent backups.
+- [x] Restore asynchronous original success/failure WAV cues and show chip name, configured IP and activation key in results while redacting keys from diagnostics.
+- [x] Verify optional licensing/NVS contents, chip-name resolution, key redaction, audio dispatch, number-picker/toggle submission and both rendered window sizes; 126 serial/Fleet UI regression tests passed. Physical flashing and audible playback qualification remain pending.
+- [ ] Add a real firmware write-percentage bar when the isolated esptool helper exposes byte progress (deferred as requested).
+- [x] Verify refreshed setup/review/results layouts at 1298×804 and 1180×720, live/results row transitions through retry/skip, and tokenless automatic recovery. Serial/Fleet UI/worker regression run: 145 passed; one unrelated UniFi asyncio test skipped because the Windows sandbox blocks its internal socket pair.
+- [x] Validate CSV schema/values, firmware maps/files, assignment previews and license signature/type/device match/expiry.
+- [x] Detect only new connections; initialize ports, process sequentially and skip completed duplicate devices.
+- [x] Show current stages, busy indicators, per-board outcomes, counters and sanitized timestamped activity/logs.
+- [x] Isolate workers and temporary artifacts; bound serial/licensing/NVS/flashing work with deadlines and descendant cleanup.
+- [x] Pause failures for explicit retry/skip and confirm index reservation after possible partial writes.
+- [x] Finish active work on Stop, mode-button navigation or close while discarding queued devices.
+- [x] Persist non-secret preferences and next index; preserve existing CLI and main library unchanged.
+- [x] Add mocked pipeline/session, real-process preflight/protocol and offscreen QML navigation tests.
+- [x] Verify descendant termination and temporary-file cleanup after real worker deadlines.
+- [x] Verify rendered setup/review/results layouts and run the complete regression suite (hardware/network checks disabled).
+- [ ] Qualify physical C3/C5/C6 flashing, licensing/recovery, unplugging and serial permissions on supported operating systems.
+
+## Fleet Verification
+
+- [x] Restyle Standalone Mode to match the Serial Batch Flasher: `AppButton` icon toolbar with wrapping, rounded table panel, segmented List/Matrix switch. Rendered offscreen at 1298×804, 1180×720 and 2000×738; fleet UI tests updated (90 passed) and full suite passed (312, 3 skipped).
+- [x] Remove the Current activity banner and fuse the footer DISCOVERY and SCAN fields into one `ACTIVITY` indicator (about 62 px of vertical space reclaimed); show the busy spinner on the Scan for Devices button instead of the footer; STATS, UniFi and license-server indicators unchanged.
+
+- [x] Match fleet-table headers to the serial flasher's typography, sentence case and alignment while retaining sorting and column resizing.
+- [x] Use the same readable casing for the column chooser and selection toolbar.
+- [x] Match the selection checkbox label fonts to the Configure columns button.
 - [x] Add tests preventing QWidget UI code from being reintroduced.
 - [x] Add exact semantic-theme, normal-button, and status-badge color tests.
 - [x] Add offscreen QML shell, navigation, polling, column, validation, and exclusion tests.

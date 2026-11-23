@@ -30,6 +30,7 @@ python -m pip install -e .
 
 - Runtime dependencies are declared in `pyproject.toml`: `requests`, `esptool`, `tqdm`, `cryptography`, `mavsdk`, and `pymavlink`.
 - Some scripts also use serial tooling such as `serial.tools.list_ports`; verify the local environment before changing serial workflows.
+- Check, there might be a local .venv already present you can use for testing.
 
 ## Verification
 
@@ -67,7 +68,6 @@ The ESP32 has a MAVLink interface that can receive commands and send telemetry. 
 
 Put specific focus on documentation quality for all implementation work:
 
-- Update `README.md`, examples, inline comments, or this file when behavior, commands, assumptions, or operational risks change.
 - Explain prerequisites for scripts that need ESP32 devices, serial ports, Wi-Fi access points, DroneBridge credentials, firmware release folders, or Skybrush Live to be stopped.
 - Document default values, retry counts, timeouts, expected file layouts, and fallback behavior.
 - Keep example commands syntactically correct and copy-pasteable.
