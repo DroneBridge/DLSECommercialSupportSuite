@@ -49,10 +49,10 @@ python -m pipx ensurepath
 Open a new terminal and install.
 
 ```bash
-pipx install --force https://github.com/DroneBridge/DLSECommercialSupportSuite/releases/download/v1.1.1/dlsecommercialsupportsuite-1.1.1-py3-none-any.whl
+pipx install --force https://github.com/DroneBridge/DLSECommercialSupportSuite/releases/download/v1.2.0/dlsecommercialsupportsuite-1.2.0-py3-none-any.whl
 ```
 
-For newer releases, replace `v1.1.1` and the wheel filename with the version shown on the GitHub Releases page.
+For newer releases, replace `v1.2.0` and the wheel filename with the version shown on the GitHub Releases page.
 
 Open a new terminal and verify the commands are available:
 
@@ -68,8 +68,8 @@ dlse-ui
 
 The desktop Fleet Manager provides MAVLink and HTTP discovery, fleet table and
 matrix views, device inspection, settings management, OTA licensing, reboot,
-firmware updates, and optional UniFi observations. The start page also offers a
-dedicated **Serial Batch Flasher** for installation, configuration and licensing.
+firmware updates, and optional UniFi observations. 
+
 The fleet table shows operation status and progress together in the Operation column by default; use
 Configure Columns to adjust the visible columns and their order.
 The footer shows detected and offline device counts for the entire retained fleet,
@@ -85,31 +85,37 @@ the Fleet Manager inspector on its cached settings after edits in the ESP32
 web interface. To see those edits, wait for the next discovery scan (every
 5 seconds by default) or start a scan if discovery is stopped.
 
-<img width="1377" height="836" alt="DLSE_UI1" src="https://github.com/user-attachments/assets/be8bb527-ab1b-4b7c-83c2-c37ccdaca1e1" />
+![DLSE Commercial Support Suite Unser Interface Fleet Manager](docs/DLSEUI1.png)
 
-Start the application after installation with:
-
+Start the application after installation with:  
+Linux & Mac:
 ```bash
 dlse-ui
 ```
+On Windows launch the application by searching for `dlse-ui.exe` or using the Powershell with:
+```powershell
+dlse-ui.exe
+```
 
-Windows x64 is the validated desktop platform for v1.1.1. Linux and macOS are
+Windows x64 is the validated desktop platform for v1.2.0. Linux and macOS are
 expected to work but are not release-qualified. Python 3.10 and newer are
 supported; UniFi integration is guaranteed on Python 3.10 through 3.13 and is
 best-effort on newer Python versions.
 
-Before fleet operations, ensure the ESP32 devices are reachable and stop
-Skybrush Live when the selected workflow uses MAVLink ports. Test settings,
+**Before fleet operations, ensure the ESP32 devices are reachable and stop
+Skybrush Live when the selected workflow uses MAVLink ports**. Test settings,
 activation, reboot, and OTA operations on a small non-production fleet first.
 
 ### Serial Batch Flasher
+The Serial Batch Flasher allows you to install, activate and configure ESP32s with DroneBridge DLSE all in one go. Simpy plugin the ESP32s into your computer. The Serial Batch Flasher will automatically detect the connected ESP32s and flash them with the selected firmware, license and configuration.  
+Ideal for installing DLSE on fleets.
 
+![DLSEUISerialBatchFlasher1.png](docs/DLSEUISerialBatchFlasher1.png)
 See the [Serial Batch Flasher guide](SERIAL_BATCH_FLASHER.md).
 
 ### Operational Folder
 
 Run the installed commands from the folder where you want operational files to live. Relative paths for firmware release folders, settings CSV files, `logs/`, and `received_licenses/` are resolved from your current terminal folder. Firmware release folders are external downloads and are not bundled into the Python package.
-
 
 ## Command Line Usage
 After installation, the following applications are available:
@@ -154,6 +160,8 @@ Before running hardware workflows, stop Skybrush Live when using MAVLink discove
 Before network operations, make sure the ESP32s are reachable, configured UDP ports match, and Skybrush Live is stopped when MAVLink ports are required. Test activation, settings, reboot, and OTA operations on a small hardware batch before using them on a production fleet.
 
 ## CLI: Automated DLSE Batch Installation
+The user interface application also offers a dedicated **Serial Batch Flasher** for installation, configuration and licensing. This is the command line interface for batch processing of drones for a show.
+
 <img alt="Gemini_Generated_Image_kvejvukvejvukvej" src="https://github.com/user-attachments/assets/a069d8a4-fb42-4b4c-b2d6-70a67f0ac5ed" />
 This script allows for batch processing of drones for a show.
 
