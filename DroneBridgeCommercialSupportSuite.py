@@ -37,7 +37,7 @@ import zipfile
 import esptool
 import requests
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Set, Dict, Any, Optional, Tuple, Callable, BinaryIO
 from requests.adapters import HTTPAdapter
@@ -52,6 +52,7 @@ from urllib.parse import urljoin
 from enum import Enum
 from tqdm import tqdm
 from pathlib import Path
+from threading import Event
 from dlse_cli_utils import resolve_resource_path
 from nvs_partition_tool.nvs_parser import NVS_Partition
 
@@ -2179,13 +2180,15 @@ def db_api_reboot_esp32_device(session: requests.Session, device_ip: str,
 
 
 def db_api_get_device_details(session: requests.Session, device_ip: str,
-                              token: str | None = None) -> dict[str, Any]:
+                              token: str | None = None, *,
+                              cancel_event: Event | None = None) -> dict[str, Any]:
     """
     Fetch the REST data used by the UI detail panel for one ESP32.
 
     :param session: Requests session used for HTTP calls.
     :param device_ip: IPv4 address or hostname of the ESP32 without protocol.
     :param token: Optional bearer token for endpoints that require authentication.
+    :param cancel_event: Optional signal to skip any remaining endpoint requests.
     :return: Dictionary with ``system_info``, ``settings``, ``stats``, and ``errors`` keys.
     """
     details: dict[str, Any] = {
@@ -2201,6 +2204,8 @@ def db_api_get_device_details(session: requests.Session, device_ip: str,
         "stats": "/api/system/stats",
     }
     for key, endpoint in endpoint_map.items():
+        if cancel_event is not None and cancel_event.is_set():
+            break
         data = db_api_get_json(session, device_ip, endpoint, token=token)
         if data is None:
             details["errors"][key] = f"Failed to fetch {endpoint}"
@@ -2361,13 +2366,15 @@ def db_api_ota_update_device(
 
 def db_scan_for_esp32_devices_by_ip_range(subnet_mask: str = "192.168.1.0/24",
                                           timeout: float = 1.0,
-                                          max_workers: int = 20) -> list[dict[str, Any]]:
+                                          max_workers: int = 20, *,
+                                          cancel_event: Event | None = None) -> list[dict[str, Any]]:
     """
     Discover ESP32 devices by probing ``GET /api/system/info`` across an IPv4 range.
 
     :param subnet_mask: IPv4 CIDR such as ``192.168.1.0/24``.
     :param timeout: Per-host HTTP request timeout in seconds.
     :param max_workers: Maximum concurrent probes used to avoid flooding the network.
+    :param cancel_event: Optional signal to stop scheduling probes and return results collected so far.
     :return: List of discovered device dictionaries with at least ``ip`` and ``system_info``.
     """
     logger = DBLogger()
@@ -2378,10 +2385,13 @@ def db_scan_for_esp32_devices_by_ip_range(subnet_mask: str = "192.168.1.0/24",
         return []
 
     workers = max(1, min(max_workers, 64))
-    hosts = list(network.hosts())
+    hosts = iter(network.hosts())
     found_devices: list[dict[str, Any]] = []
 
     def probe_host(host_ip: str) -> dict[str, Any] | None:
+        """Return device info for one IP, or None when cancelled or unreachable."""
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         probe_session = db_api_create_request_session(retries=0, backoff_factor=0)
         try:
             data = db_api_get_json(probe_session, host_ip, "/api/system/info", timeout=timeout)
@@ -2397,15 +2407,33 @@ def db_scan_for_esp32_devices_by_ip_range(subnet_mask: str = "192.168.1.0/24",
             probe_session.close()
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_map = {executor.submit(probe_host, str(host)): str(host) for host in hosts}
-        for future in as_completed(future_map):
-            try:
-                device = future.result()
-            except Exception as e:
-                logger.log(f"HTTP discovery error for {future_map[future]}: {e}")
-                continue
-            if device is not None:
-                found_devices.append(device)
+        future_map = {}
+
+        def submit_next() -> None:
+            """Submit one host if the scan is active and the address range has more hosts."""
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            host = next(hosts, None)
+            if host is not None:
+                host_ip = str(host)
+                future_map[executor.submit(probe_host, host_ip)] = host_ip
+
+        for _ in range(workers):
+            submit_next()
+        while future_map:
+            completed, _ = wait(future_map, return_when=FIRST_COMPLETED)
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            for future in completed:
+                host_ip = future_map.pop(future)
+                try:
+                    device = future.result()
+                except Exception as e:
+                    logger.log(f"HTTP discovery error for {host_ip}: {e}")
+                else:
+                    if device is not None:
+                        found_devices.append(device)
+                submit_next()
 
     found_devices.sort(key=lambda item: ipaddress.ip_address(item["ip"]))
     logger.log(f"\tFound {len(found_devices)} ESP32 device(s) via HTTP scan.")
@@ -2796,16 +2824,24 @@ def db_mavlink_reboot_esp32_devices(subnet_mask: str = "192.168.1.0/24",
         return False
 
 
-def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2, esp32_broadcast_port=14555, local_brcst_port=14550, _beta_4_support=True) -> list:
+def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2, esp32_broadcast_port=14555,
+                              local_brcst_port=14550, _beta_4_support=True, *,
+                              cancel_event: Event | None = None) -> list:
     """
     Scans the network for ESP32-C3, ESP32-C5, and ESP32-C6 devices.
     Uses UDP broadcast to discover devices and requests AUTOPILOT_VERSION.
     Only lists devices with comp_id=240, vendor_id=0xDB32 and product_id=2.
 
-    _beta_4_support set to True: Skips check for vendor_id and product_id to be able to detect devices running versions earlier than DLSE BETA5
-
-    Returns a list of dictionaries containing device info.
+    :param subnet_mask: CIDR used to derive the broadcast address.
+    :param timeout: Duration of the listen window in seconds.
+    :param esp32_broadcast_port: Destination UDP port for discovery requests.
+    :param local_brcst_port: Local UDP port for replies.
+    :param _beta_4_support: Skip vendor and product checks for older firmware.
+    :param cancel_event: Optional signal to stop listening before the timeout.
+    :return: Device dictionaries collected so far, or an empty list on setup failure.
     """
+    if cancel_event is not None and cancel_event.is_set():
+        return []
     logger = DBLogger()
     found_devices = []
     try:
@@ -2827,6 +2863,7 @@ def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2, esp32_bro
         sock.bind(('0.0.0.0', local_brcst_port))
     except Exception as e:
         logger.log(f"Error binding socket: {e}")
+        sock.close()
         return []
 
     # Initialize MAVLink instance for encoding/decoding
@@ -2853,6 +2890,9 @@ def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2, esp32_bro
     req_buf = req_msg.pack(mav)
 
     # Send to broadcast address
+    if cancel_event is not None and cancel_event.is_set():
+        sock.close()
+        return []
     try:
         sock.sendto(hb_buf, (broadcast_address, esp32_broadcast_port))
         sock.sendto(req_buf, (broadcast_address, esp32_broadcast_port))
@@ -2862,8 +2902,8 @@ def db_scan_for_esp32_devices(subnet_mask='192.168.1.0/24', timeout=2, esp32_bro
         return []
 
     # Listen for responses
-    start_time = time.time()
-    while time.time() - start_time < timeout:
+    start_time = time.monotonic()
+    while time.monotonic() - start_time < timeout and not (cancel_event and cancel_event.is_set()):
         ready = select.select([sock], [], [], 0.1)
         if ready[0]:
             try:

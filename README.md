@@ -84,6 +84,10 @@ Selecting a device, reopening Settings, or polling runtime statistics leaves
 the Fleet Manager inspector on its cached settings after edits in the ESP32
 web interface. To see those edits, wait for the next discovery scan (every
 5 seconds by default) or start a scan if discovery is stopped.
+**Stop Scanning** cancels the current discovery pass and future passes. MAVLink
+stops listening, pending HTTP probes and detail requests are skipped, and HTTP
+work already in flight uses the existing timeouts and retry limits. Devices
+already shown in the fleet stay visible and continue their configured stats polling.
 
 ![DLSE Commercial Support Suite Unser Interface Fleet Manager](docs/DLSEUI1.png)
 

@@ -72,7 +72,7 @@ class DiscoveryWorker(QRunnable):
     def __init__(self, subnet: str, mavlink_enabled: bool, http_enabled: bool,
                  esp32_port: int, local_port: int, http_timeout: float,
                  http_workers: int) -> None:
-        """Create a bounded combined discovery job."""
+        """Configure discovery protocols, UDP ports, and HTTP probe timeout and concurrency."""
         super().__init__()
         self.signals = WorkerSignals()
         self.subnet = subnet
@@ -82,20 +82,25 @@ class DiscoveryWorker(QRunnable):
         self.local_port = local_port
         self.http_timeout = http_timeout
         self.http_workers = max(1, min(http_workers, 64))
+        self.cancel_event = Event()
+
+    def cancel(self) -> None:
+        """Request that discovery and hydration stop after in-flight HTTP work drains."""
+        self.cancel_event.set()
 
     @Slot()
     def run(self) -> None:
         """
         Run enabled discovery methods concurrently, hydrate, and emit records.
 
-        :return: None. Individual discovery or hydration failures are emitted as
-            progress diagnostics; an unexpected worker failure emits ``error``.
+        :return: None. Cancellation emits an empty result after cleanup. Individual
+            failures are progress diagnostics and unexpected failures emit ``error``.
         """
         try:
             discovered: dict[str, tuple[dict[str, Any], set[str]]] = {}
             discovery_jobs: dict[Any, str] = {}
             with ThreadPoolExecutor(max_workers=2) as executor:
-                if self.mavlink_enabled:
+                if self.mavlink_enabled and not self.cancel_event.is_set():
                     discovery_jobs[executor.submit(
                         db_scan_for_esp32_devices,
                         subnet_mask=self.subnet,
@@ -103,16 +108,20 @@ class DiscoveryWorker(QRunnable):
                         esp32_broadcast_port=self.esp32_port,
                         local_brcst_port=self.local_port,
                         _beta_4_support=True,
+                        cancel_event=self.cancel_event,
                     )] = "mavlink"
-                if self.http_enabled:
+                if self.http_enabled and not self.cancel_event.is_set():
                     discovery_jobs[executor.submit(
                         db_scan_for_esp32_devices_by_ip_range,
                         subnet_mask=self.subnet,
                         timeout=self.http_timeout,
                         max_workers=self.http_workers,
+                        cancel_event=self.cancel_event,
                     )] = "http"
 
                 for future in as_completed(discovery_jobs):
+                    if self.cancel_event.is_set():
+                        break
                     source = discovery_jobs[future]
                     try:
                         devices = future.result()
@@ -133,32 +142,50 @@ class DiscoveryWorker(QRunnable):
 
             records: list[DeviceRecord] = []
             with ThreadPoolExecutor(max_workers=self.http_workers) as executor:
-                futures = {
-                    executor.submit(self._hydrate, ip, data, sources): ip
-                    for ip, (data, sources) in discovered.items()
-                }
-                for future in as_completed(futures):
-                    try:
-                        record = future.result()
-                    except Exception as exc:
-                        self.signals.progress.emit({
-                            "ip": futures[future],
-                            "error": str(exc),
-                        })
-                        continue
-                    records.append(record)
-                    self.signals.progress.emit(record)
-            self.signals.finished.emit(records)
+                futures = {}
+                devices = iter(discovered.items())
+
+                def submit_next() -> None:
+                    """Schedule the next device's REST details while discovery is active."""
+                    if self.cancel_event.is_set():
+                        return
+                    device = next(devices, None)
+                    if device is not None:
+                        ip, (data, sources) = device
+                        futures[executor.submit(self._hydrate, ip, data, sources)] = ip
+
+                for _ in range(min(self.http_workers, len(discovered))):
+                    submit_next()
+                while futures:
+                    completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+                    if self.cancel_event.is_set():
+                        break
+                    for future in completed:
+                        ip = futures.pop(future)
+                        try:
+                            record = future.result()
+                        except Exception as exc:
+                            self.signals.progress.emit({"ip": ip, "error": str(exc)})
+                        else:
+                            if record is not None:
+                                records.append(record)
+                                self.signals.progress.emit(record)
+                        submit_next()
+            self.signals.finished.emit([] if self.cancel_event.is_set() else records)
         except Exception as exc:
             self.signals.error.emit(str(exc))
 
-    def _hydrate(self, ip: str, device: dict[str, Any], sources: set[str]) -> DeviceRecord:
-        """Fetch REST detail groups for one discovered IP."""
+    def _hydrate(self, ip: str, device: dict[str, Any], sources: set[str]) -> DeviceRecord | None:
+        """Combine discovery data and sources for an IP with REST details, or return None on cancellation."""
+        if self.cancel_event.is_set():
+            return None
         session = db_api_create_request_session(retries=1)
         try:
-            details = db_api_get_device_details(session, ip)
+            details = db_api_get_device_details(session, ip, cancel_event=self.cancel_event)
         finally:
             session.close()
+        if self.cancel_event.is_set():
+            return None
         merged = dict(device)
         merged["ip"] = ip
         for key in ("system_info", "settings", "stats", "errors"):

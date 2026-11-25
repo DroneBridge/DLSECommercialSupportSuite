@@ -179,7 +179,7 @@ class TestFleetUI(unittest.TestCase):
             )
 
     def test_scan_button_toggles_discovery(self):
-        """Clicking the scan button invokes the scan workflow and relabels it."""
+        """Stop cancels the worker and a quick restart waits for stale results to drain."""
         self._enter_main_screen()
         self.controller.pool.start = Mock()
         scan_button = self.root.findChild(QQuickItem, "scanButton")
@@ -191,13 +191,35 @@ class TestFleetUI(unittest.TestCase):
         self.assertEqual("Stop Scanning", scan_button.property("text"))
         self.assertTrue(scan_button.property("busy"))
         self.assertTrue(scan_button.findChild(QQuickItem, "busyIndicator").isVisible())
+        self.assertTrue(self.controller.scan_timer.isActive())
+        worker = self.controller.pool.start.call_args.args[0]
+        retained = DeviceRecord(identity="retained", ip="192.168.1.2")
+        pending = DeviceRecord(identity="pending", ip="192.168.1.3")
+        self.controller.source_model.upsert_many([retained])
+        worker.signals.progress.emit(pending)
+        self.assertTrue(self.controller.discovery_update_timer.isActive())
 
         self._click_item(scan_button)
 
         self.assertFalse(self.controller.scanning)
+        self.assertTrue(worker.cancel_event.is_set())
+        self.assertEqual("STOPPED", self.controller.discoveryStatus)
+        self.assertFalse(self.controller.scan_timer.isActive())
+        self.assertFalse(self.controller.discovery_update_timer.isActive())
+        self.assertEqual([], self.controller._pending_discovery)
         self.assertEqual("Scan for Devices", scan_button.property("text"))
         self.assertFalse(scan_button.property("busy"))
         self.assertFalse(scan_button.findChild(QQuickItem, "busyIndicator").isVisible())
+
+        self._click_item(scan_button)
+        self.controller.pool.start.assert_called_once()
+        worker.signals.progress.emit(pending)
+        worker.signals.finished.emit([pending])
+        self.assertEqual(2, self.controller.pool.start.call_count)
+        self.assertEqual("SCANNING", self.controller.discoveryStatus)
+        self.assertEqual([], self.controller._pending_discovery)
+        self.assertEqual(1, self.controller.source_model.rowCount())
+        self.assertEqual(retained.ip, self.controller.source_model.record_by_identity(retained.identity).ip)
 
     def test_scan_settings_exported_button_opens_dialog(self):
         """Clicking the exported settings segment opens scan settings."""

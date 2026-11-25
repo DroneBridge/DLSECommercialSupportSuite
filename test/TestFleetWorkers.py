@@ -1,12 +1,16 @@
 """Tests for bounded and cancellable Fleet Manager workers."""
 
 import unittest
-from threading import Barrier, Lock
+from threading import Barrier, Event, Lock
 from time import sleep
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from DroneBridgeCommercialSupportSuite import DBDLSERelease
+from DroneBridgeCommercialSupportSuite import (
+    DBDLSERelease,
+    db_scan_for_esp32_devices,
+    db_scan_for_esp32_devices_by_ip_range,
+)
 from pymavlink import mavutil
 from ui.models import DeviceRecord
 from ui.workers import (
@@ -310,6 +314,75 @@ class TestFleetWorkers(unittest.TestCase):
         self.assertEqual([[]], finished)
         mavlink_scan.assert_called_once()
         http_scan.assert_called_once()
+
+    def test_cancel_http_discovery_stops_remaining_probes(self):
+        """Cancelling during the first HTTP probe skips every remaining host."""
+        cancel_event = Event()
+
+        def probe(*_args, **_kwargs):
+            """Cancel discovery while the first mock request is in flight."""
+            cancel_event.set()
+            return None
+
+        with (
+            patch("DroneBridgeCommercialSupportSuite.DBLogger"),
+            patch("DroneBridgeCommercialSupportSuite.db_api_create_request_session") as session,
+            patch("DroneBridgeCommercialSupportSuite.db_api_get_json", side_effect=probe) as get_json,
+        ):
+            self.assertEqual([], db_scan_for_esp32_devices_by_ip_range(
+                "192.168.1.0/24", max_workers=1, cancel_event=cancel_event,
+            ))
+
+        get_json.assert_called_once_with(session.return_value, "192.168.1.1", "/api/system/info", timeout=1.0)
+        session.return_value.close.assert_called_once()
+
+    def test_cancel_mavlink_discovery_releases_socket(self):
+        """Cancelling during the first MAVLink wait exits and closes the UDP socket."""
+        cancel_event = Event()
+
+        def listen(*_args):
+            """Cancel discovery during a simulated socket wait with no replies."""
+            cancel_event.set()
+            return [], [], []
+
+        with (
+            patch("DroneBridgeCommercialSupportSuite.DBLogger"),
+            patch.dict("os.environ"),
+            patch("DroneBridgeCommercialSupportSuite.socket.socket") as socket,
+            patch("DroneBridgeCommercialSupportSuite.select.select", side_effect=listen) as select,
+        ):
+            self.assertEqual([], db_scan_for_esp32_devices(cancel_event=cancel_event))
+
+        select.assert_called_once()
+        socket.return_value.close.assert_called_once()
+
+    def test_cancel_discovery_stops_detail_requests(self):
+        """Cancelling during hydration skips the remaining endpoints and devices."""
+        worker = DiscoveryWorker("192.168.1.0/24", False, True, 14555, 14550, 1.0, 1)
+        finished = Mock()
+        progress = Mock()
+        worker.signals.finished.connect(finished)
+        worker.signals.progress.connect(progress)
+
+        def fetch_details(*_args, **_kwargs):
+            """Cancel discovery during the first device's first detail request."""
+            worker.cancel()
+            return {}
+
+        with (
+            patch("ui.workers.db_scan_for_esp32_devices_by_ip_range", return_value=[
+                {"ip": "192.168.1.2"}, {"ip": "192.168.1.3"},
+            ]) as scan,
+            patch("ui.workers.db_api_create_request_session") as session,
+            patch("DroneBridgeCommercialSupportSuite.db_api_get_json", side_effect=fetch_details) as get_json,
+        ):
+            worker.run()
+
+        self.assertIs(worker.cancel_event, scan.call_args.kwargs["cancel_event"])
+        get_json.assert_called_once_with(session.return_value, "192.168.1.2", "/api/system/info", token=None)
+        session.return_value.close.assert_called_once()
+        progress.assert_not_called()
+        finished.assert_called_once_with([])
 
     def test_static_ip_generation_rolls_from_final_octet_to_third_octet(self):
         """Generated host addresses skip zero and 255 while carrying to octet three."""

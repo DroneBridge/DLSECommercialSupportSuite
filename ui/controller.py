@@ -614,6 +614,7 @@ class FleetController(QObject):
 
         self._scanning_enabled = False
         self._scan_running = False
+        self._scan_worker: DiscoveryWorker | None = None
         self._polling_paused_for_reboot = False
         self._discard_scan_results = False
         self._discovery_status = "STOPPED"
@@ -1101,11 +1102,17 @@ class FleetController(QObject):
 
     @Slot()
     def toggleScanning(self) -> None:
-        """Start or stop recurring non-overlapping discovery."""
+        """Start recurring discovery or cancel its active pass and clear pending results."""
         self._scanning_enabled = not self._scanning_enabled
         self._status_text = "SCANNING..." if self._scanning_enabled else "STOPPED"
-        if not self._scanning_enabled and not self._scan_running:
+        self._restart_scan_timer()
+        if not self._scanning_enabled:
             self._discovery_status = "STOPPED"
+            self.discovery_update_timer.stop()
+            self._pending_discovery.clear()
+            if self._scan_worker is not None:
+                self._discard_scan_results = True
+                self._scan_worker.cancel()
         self.stateChanged.emit()
         if self._scanning_enabled:
             self.startScan()
@@ -1123,7 +1130,6 @@ class FleetController(QObject):
         self._scan_running = True
         self._discovery_status = "SCANNING"
         self._status_text = "SCANNING..."
-        self.stateChanged.emit()
         worker = DiscoveryWorker(
             values["subnet"],
             values["mavlink"],
@@ -1136,6 +1142,8 @@ class FleetController(QObject):
         worker.signals.finished.connect(self._scan_finished)
         worker.signals.progress.connect(self._scan_progress)
         worker.signals.error.connect(self._scan_failed)
+        self._scan_worker = worker
+        self.stateChanged.emit()
         self.pool.start(worker)
 
     @Slot()
@@ -2312,14 +2320,17 @@ class FleetController(QObject):
         discard_results = self._discard_scan_results
         self._discard_scan_results = False
         self._scan_running = False
+        self._scan_worker = None
         self._discovery_status = (
             "WAITING" if self._scanning_enabled else "STOPPED"
         )
         if not self._polling_paused_for_reboot and not discard_results:
             self.source_model.upsert_many(records)
-        self._status_text = "SCANNING..." if self._scanning_enabled else "IDLE"
+        self._status_text = "SCANNING..." if self._scanning_enabled else "STOPPED"
         self.stateChanged.emit()
-        if not self._polling_paused_for_reboot:
+        if discard_results:
+            self.startScan()
+        elif not self._polling_paused_for_reboot:
             self.startStatsPolling()
 
     @Slot(object)
@@ -2349,14 +2360,17 @@ class FleetController(QObject):
             self._flush_discovery()
         self._discard_scan_results = False
         self._scan_running = False
+        self._scan_worker = None
         self._discovery_status = (
             "WAITING" if self._scanning_enabled else "STOPPED"
         ) if discard_results else "ERROR"
         self._status_text = (
-            "SCANNING..." if self._scanning_enabled else "IDLE"
+            "SCANNING..." if self._scanning_enabled else "STOPPED"
         ) if discard_results else "SCAN ERROR"
         self.stateChanged.emit()
-        if not discard_results:
+        if discard_results:
+            self.startScan()
+        else:
             self.toastRequested.emit("error", self._sanitize_error(message))
 
     def _stats_progress(self, payload: Any, generation: int) -> None:
@@ -3377,8 +3391,8 @@ class FleetController(QObject):
             self.unifi_timer.stop()
 
     def _restart_scan_timer(self) -> None:
-        """Apply the persisted rolling refresh interval."""
-        if self._polling_paused_for_reboot:
+        """Schedule scans at the persisted interval while discovery is enabled and unpaused."""
+        if not self._scanning_enabled or self._polling_paused_for_reboot:
             self.scan_timer.stop()
             return
         self.scan_timer.start(max(5, self._scan_values()["interval"]) * 1000)
