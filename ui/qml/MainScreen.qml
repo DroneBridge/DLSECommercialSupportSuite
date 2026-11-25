@@ -714,7 +714,10 @@ Item {
 
                                                 MouseArea {
                                                     anchors.fill: parent
-                                                    onClicked: fleetController.inspectDevice(identity)
+                                                    onClicked: function(mouse) {
+                                                        fleetController.clickTableRow(identity,
+                                                            Boolean(mouse.modifiers & Qt.ShiftModifier), false)
+                                                    }
                                                 }
 
                                                 AppCheckBox {
@@ -723,9 +726,14 @@ Item {
                                                     checked: selected
                                                     text: ""
                                                     z: 2
-                                                    onClicked: {
-                                                        fleetController.toggleSelection(identity)
-                                                        fleetController.inspectDevice(identity)
+                                                    onClicked: fleetController.clickTableRow(identity, false, true)
+
+                                                    MouseArea {
+                                                        anchors.fill: parent
+                                                        onPressed: function(mouse) {
+                                                            mouse.accepted = Boolean(mouse.modifiers & Qt.ShiftModifier)
+                                                        }
+                                                        onClicked: fleetController.clickTableRow(identity, true, false)
                                                     }
                                                 }
 

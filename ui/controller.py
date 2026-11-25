@@ -678,6 +678,7 @@ class FleetController(QObject):
         self._reboot_summary = ""
         self._pending_reboot_row_updates: dict[str, tuple[str, int]] = {}
         self._inspected_identity = ""
+        self._table_selection_anchor = ""
         self._last_web_url = ""
         self._setting_edits: dict[str, Any] = {}
         self._settings_selection_signature: frozenset[str] = frozenset()
@@ -1604,6 +1605,35 @@ class FleetController(QObject):
         """Toggle one device checkbox using its stable identity."""
         self.source_model.toggle_selected(identity)
 
+    @Slot(str, bool, bool)
+    def clickTableRow(
+        self, identity: str, extend_selection: bool, toggle_checkbox: bool
+    ) -> None:
+        """Inspect a table row, toggle its checkbox, or add a visible range.
+
+        ``identity`` identifies the clicked device. ``extend_selection`` adds the
+        inclusive range from the last ordinary click in current table order.
+        ``toggle_checkbox`` applies only to ordinary checkbox clicks. A missing
+        or filtered anchor starts a new range at the clicked device. Unknown
+        or filtered-out endpoints are ignored when extending. Returns None.
+        """
+        if extend_selection:
+            identities = [record.identity for record in self.fleet_model.visible_records()]
+            if identity not in identities:
+                return
+            if self._table_selection_anchor not in identities:
+                self._table_selection_anchor = identity
+            start, end = sorted((
+                identities.index(self._table_selection_anchor),
+                identities.index(identity),
+            ))
+            self.source_model.set_selected_identities(set(identities[start:end + 1]), True)
+        else:
+            self._table_selection_anchor = identity
+            if toggle_checkbox:
+                self.toggleSelection(identity)
+        self.inspectDevice(identity)
+
     def _selection_changed(self) -> None:
         """Refresh target-aware settings after checked devices change."""
         signature = frozenset(
@@ -1657,6 +1687,7 @@ class FleetController(QObject):
         self._setting_edits.clear()
         self.source_model.clear()
         self._inspected_identity = ""
+        self._table_selection_anchor = ""
         self._emit_web_url_if_changed()
         self.inspectorChanged.emit()
 

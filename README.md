@@ -72,6 +72,9 @@ firmware updates, and optional UniFi observations.
 
 The fleet table shows operation status and progress together in the Operation column by default; use
 Configure Columns to adjust the visible columns and their order.
+To select a range, click a row or its checkbox, then hold **Shift** and click
+another row or checkbox. The table adds both endpoints and every row between
+them in the current sort order and filter to the checked selection.
 The footer shows detected and offline device counts for the entire retained fleet,
 including devices hidden by a filter. Devices are initially considered online;
 by default, three consecutive failed stats polls mark a device offline, and a

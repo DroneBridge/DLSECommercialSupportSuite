@@ -111,13 +111,13 @@ class TestFleetUI(unittest.TestCase):
         )
         self.app.processEvents()
 
-    def _click_item(self, item):
-        """Click the center of a QML item in the offscreen window."""
+    def _click_item(self, item, modifiers=Qt.NoModifier):
+        """Click the center of an offscreen QML item with optional key modifiers."""
         scene_position = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
         QTest.mouseClick(
             self.root,
             Qt.LeftButton,
-            Qt.NoModifier,
+            modifiers,
             QPoint(round(scene_position.x()), round(scene_position.y())),
         )
         self.app.processEvents()
@@ -611,6 +611,54 @@ class TestFleetUI(unittest.TestCase):
         ]
         self.assertIn('selected ? "#12304d"', table_block)
         self.assertIn('identity === fleetController.inspectedIdentity ? "#0f253a"', table_block)
+
+    def test_table_shift_click_selects_the_range_in_display_order(self):
+        """Exercise row and checkbox clicks on a sorted and filtered table."""
+        self._enter_main_screen()
+        self.controller.source_model.upsert_many([
+            DeviceRecord(
+                identity=identity, activation_key=identity,
+                ip=f"192.168.1.{host}", hostname=hostname,
+            )
+            for identity, host, hostname in (
+                ("B", 11, "fleet-b"), ("A", 2, "fleet-a"), ("E", 20, "fleet-e"),
+                ("D", 3, "hidden"), ("C", 5, "fleet-c"),
+            )
+        ])
+        self.controller.setSearchText("fleet-")
+        self.controller.sortByColumn(2, True)
+        QTest.qWait(100)
+
+        table = self.root.findChild(QQuickItem, "fleetTable")
+        cells = {
+            (item.property("identity"), item.property("column")): item
+            for item in table.property("contentItem").childItems()
+            if item.property("identity") is not None
+        }
+        checkboxes = {
+            identity: next(child for child in cell.childItems() if child.property("checkable"))
+            for (identity, column), cell in cells.items()
+            if column == 0
+        }
+
+        self._click_item(checkboxes["E"])
+        self._click_item(cells["B", 1])
+        self.assertEqual(1, self.controller.selectedCount)
+        self.assertEqual("B", self.controller.inspectedIdentity)
+
+        self._click_item(checkboxes["A"], Qt.ShiftModifier)
+        self.assertEqual("A", self.controller.inspectedIdentity)
+        self.assertEqual(4, self.controller.selectedCount)
+        self.assertFalse(self.controller.source_model.record_by_identity("D").selected)
+        for identity in ("A", "B", "C", "E"):
+            self.assertTrue(checkboxes[identity].property("checked"))
+            self.assertEqual("#12304d", self._color_name(cells[identity, 1].property("color")))
+
+        self._click_item(checkboxes["C"])
+        self.assertFalse(checkboxes["C"].property("checked"))
+        self._click_item(cells["B", 1], Qt.ShiftModifier)
+        self.assertTrue(checkboxes["C"].property("checked"))
+        self.assertEqual(4, self.controller.selectedCount)
 
     def test_settings_view_uses_editable_table_rows(self):
         """Settings render as parameter/value rows with editable value cells."""
