@@ -89,6 +89,13 @@ stops listening, pending HTTP probes and detail requests are skipped, and HTTP
 work already in flight uses the existing timeouts and retry limits. Devices
 already shown in the fleet stay visible and continue their configured stats polling.
 
+During an **OTA Firmware Upgrade**, the strip above the fleet table shows progress
+for the batch. Open **Details** for each target's stage, upload percentage, or
+failure reason. The **Parallel updates** field defaults to 20, and **Cancel Queued**
+stops upgrades that have yet to start while active upgrades finish. **Accepted**
+means the device accepted the firmware upload and is expected to reboot. The final
+summary stays visible until **Dismiss** or the start of another OTA batch.
+
 ![DLSE Commercial Support Suite Unser Interface Fleet Manager](docs/DLSEUI1.png)
 
 Start the application after installation with:  

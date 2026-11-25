@@ -8,10 +8,14 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from DroneBridgeCommercialSupportSuite import (
     DBDLSERelease,
+    DBOtaProgress,
+    DBOtaStage,
+    DBOtaUpdateResult,
     db_scan_for_esp32_devices,
     db_scan_for_esp32_devices_by_ip_range,
 )
 from pymavlink import mavutil
+from PySide6.QtCore import Qt
 from ui.models import DeviceRecord
 from ui.workers import (
     DiscoveryWorker,
@@ -209,6 +213,44 @@ class TestFleetWorkers(unittest.TestCase):
             status.get("identity") == "B" and status.get("status") == "skipped version"
             for status in statuses
         ))
+
+    def test_ota_throttles_chunk_events_and_delivers_stages_and_final_result(self):
+        """Many small chunks produce only sampled updates and immediate stage transitions."""
+        record = DeviceRecord(identity="A", ip="192.168.1.2")
+        worker = OtaWorker([record], None, None, None, workers=1)
+        events, results = [], []
+        worker.signals.progress.connect(events.append, Qt.DirectConnection)
+        worker.signals.finished.connect(results.append)
+        clock = 0.0
+
+        def upload(_session, ip, *, progress_callback_fn, **_kwargs):
+            """Simulate bursty WWW and application uploads without HTTP requests."""
+            nonlocal clock
+            progress_callback_fn(DBOtaProgress(ip, DBOtaStage.INSPECTING))
+            for sent in range(1_001):
+                clock = sent / 2_000
+                progress_callback_fn(DBOtaProgress(ip, DBOtaStage.UPLOADING_WWW, sent, 1_000))
+            progress_callback_fn(DBOtaProgress(ip, DBOtaStage.WAITING))
+            progress_callback_fn(DBOtaProgress(ip, DBOtaStage.UPLOADING_FIRMWARE, 0, 1_000))
+            progress_callback_fn(DBOtaProgress(ip, DBOtaStage.COMPLETE))
+            return DBOtaUpdateResult(ip, True, DBOtaStage.COMPLETE, "Accepted")
+
+        with (
+            patch("ui.workers.db_api_create_request_session"),
+            patch("ui.workers.db_api_ota_update_device", side_effect=upload),
+            patch("ui.workers.monotonic", side_effect=lambda: clock),
+        ):
+            worker.run()
+
+        www = [event["percent"] for event in events if event["status"] == "uploading_www"]
+        self.assertEqual([0, 30, 60, 90, 100], www)
+        self.assertEqual(
+            ["inspecting", "uploading_www", "waiting", "uploading_firmware", "complete"],
+            list(dict.fromkeys(event["status"] for event in events)),
+        )
+        self.assertEqual(1, sum(event["status"] == "complete" for event in events))
+        self.assertEqual("A", results[0][0]["identity"])
+        self.assertTrue(results[0][0]["result"].success)
 
     def test_stats_polling_bounds_concurrency_for_large_fleet(self):
         """A large polling round keeps only the configured requests active."""

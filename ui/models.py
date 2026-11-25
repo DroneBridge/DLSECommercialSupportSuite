@@ -973,6 +973,65 @@ class DeviceTableModel(QAbstractTableModel):
         return value
 
 
+class OtaDeviceModel(QAbstractListModel):
+    """Keep stable OTA detail rows and emit role changes once per progress batch."""
+
+    DeviceRole = Qt.UserRole + 1
+    OrderRole = Qt.UserRole + 2
+    ORDER = {"failed": 0, "active": 1, "queued": 2, "accepted": 3, "skipped": 4, "cancelled": 5}
+
+    def __init__(self, parent=None) -> None:
+        """Create an empty detail model owned by the fleet controller."""
+        super().__init__(parent)
+        self.devices: list[dict[str, Any]] = []
+        self._rows: dict[str, int] = {}
+
+    def rowCount(self, parent=QModelIndex()) -> int:
+        """Return the number of targets at the model root."""
+        return 0 if parent.isValid() else len(self.devices)
+
+    def roleNames(self) -> dict[int, bytes]:
+        """Expose the device detail mapping and its status sort order."""
+        return {self.DeviceRole: b"device", self.OrderRole: b"statusOrder"}
+
+    def data(self, index, role=Qt.DisplayRole) -> Any:
+        """Return a device detail mapping or status rank for a valid row."""
+        if not index.isValid() or not 0 <= index.row() < len(self.devices):
+            return None
+        device = self.devices[index.row()]
+        if role == self.DeviceRole:
+            return device
+        if role == self.OrderRole:
+            return self.ORDER[device["state"]]
+        return None
+
+    def reset(self, devices: list[dict[str, Any]]) -> None:
+        """Replace the previous batch with new target details or clear it on dismissal."""
+        self.beginResetModel()
+        self.devices = devices
+        self._rows = {device["identity"]: row for row, device in enumerate(devices)}
+        self.endResetModel()
+
+    def update(self, updates: dict[str, dict[str, Any]]) -> bool:
+        """Merge changed fields for known targets and return whether any status groups changed."""
+        changed = []
+        order_changed = False
+        for identity, fields in updates.items():
+            row = self._rows.get(identity)
+            if row is None:
+                continue
+            device = self.devices[row]
+            if all(device.get(key) == value for key, value in fields.items()):
+                continue
+            order_changed |= fields["state"] != device["state"]
+            device.update(fields)
+            changed.append(row)
+        if changed:
+            roles = [self.DeviceRole, self.OrderRole] if order_changed else [self.DeviceRole]
+            self.dataChanged.emit(self.index(min(changed)), self.index(max(changed)), roles)
+        return order_changed
+
+
 class DeviceFilterProxyModel(QSortFilterProxyModel):
     """Filter and sort every cached device field for the QML table."""
 

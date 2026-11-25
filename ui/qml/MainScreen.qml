@@ -378,13 +378,19 @@ Item {
                     AppButton {
                         id: cancelButton
                         objectName: "cancelQueuedButton"
-                        visible: fleetController.canCancel
+                        visible: fleetController.canCancel && fleetController.activeOperation !== "ota"
                         text: "Cancel Queued"
                         accentColor: theme.warning
                         emphasized: true
                         onClicked: fleetController.cancelActiveOperation()
                     }
                 }
+            }
+
+            OtaStatusStrip {
+                Layout.fillWidth: true
+                controller: fleetController
+                detailHeightLimit: Math.min(156, mainScreen.height * 0.15)
             }
 
             RowLayout {

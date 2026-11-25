@@ -1885,6 +1885,89 @@ class TestFleetUI(unittest.TestCase):
                 [record.identity for record in call.args[0]],
             )
 
+    def test_ota_status_strip_batches_progress_and_retains_cancelled_summary(self):
+        """The strip expands, cancels queued targets, and persists until dismissed."""
+        self._enter_main_screen()
+        self.controller.pool.start = Mock()
+        records = [
+            DeviceRecord(identity=f"device-{index}", activation_key=f"device-{index}", ip=f"10.0.0.{index + 2}")
+            for index in range(4)
+        ]
+        self.controller.source_model.upsert_many(records)
+        self.controller._launch_ota(records, Path("release"), None, None, 1, "", remember=True)
+        self.app.processEvents()
+        worker = self.controller.pool.start.call_args.args[0]
+        strip = self.root.findChild(QQuickItem, "otaStatusStrip")
+        details = self.root.findChild(QQuickItem, "otaDeviceDetails")
+        self.assertTrue(strip.isVisible())
+        self.assertFalse(details.isVisible())
+        self._click_item(self.root.findChild(QQuickItem, "otaDetailsButton"))
+        self.assertTrue(details.isVisible())
+        self.assertEqual(4, details.property("count"))
+
+        with patch.object(self.controller.source_model, "update_operations",
+                          wraps=self.controller.source_model.update_operations) as update_rows:
+            for percent in range(50):
+                worker.signals.progress.emit({
+                    "identity": "device-0", "status": "uploading_www", "percent": percent,
+                })
+            worker.signals.progress.emit({"identity": "device-1", "status": "skipped version"})
+            update_rows.assert_not_called()
+            QTest.qWait(140)
+            update_rows.assert_called_once_with({
+                "device-0": ("uploading_www", 49), "device-1": ("skipped version", 0),
+            })
+
+        summary = self.root.findChild(QQuickItem, "otaBatchSummary")
+        self.assertIn("1 active", summary.property("text"))
+        self.assertIn("2 queued", summary.property("text"))
+        cancel = self.root.findChild(QQuickItem, "otaCancelQueuedButton")
+        self._click_item(cancel)
+        self.assertTrue(worker.cancel_event.is_set())
+        self.assertFalse(cancel.property("enabled"))
+
+        worker.signals.finished.emit([{
+            "identity": "device-0", "status": "complete", "success": True,
+        }])
+        self.app.processEvents()
+        self.assertFalse(self.controller.ota_update_timer.isActive())
+        self.assertIn("4 of 4 processed", summary.property("text"))
+        self.assertIn("1 accepted", summary.property("text"))
+        self.assertIn("1 skipped", summary.property("text"))
+        self.assertIn("2 cancelled", summary.property("text"))
+        self.assertTrue(details.isVisible())
+        self.assertEqual("cancelled", self.controller.source_model.record_by_identity("device-2").operation)
+
+        self._click_item(self.root.findChild(QQuickItem, "otaDismissButton"))
+        self.assertFalse(strip.isVisible())
+        self.assertFalse(details.isVisible())
+
+    def test_ota_failed_details_sort_first_and_retry_only_failed_targets(self):
+        """Final failure detail is sanitized and its retry preserves the batch options."""
+        self.controller.pool.start = Mock()
+        records = [
+            DeviceRecord(identity=key, activation_key=key, ip=ip)
+            for key, ip in [("a", "10.0.0.2"), ("b", "10.0.0.3")]
+        ]
+        self.controller.source_model.upsert_many(records)
+        self.controller._launch_ota(records, Path("release"), None, None, 2, "", remember=True)
+        worker = self.controller.pool.start.call_args.args[0]
+        with patch.dict(os.environ, {"DRONEBRIDGE_SECRET_TOKEN": "test-token"}):
+            worker.signals.finished.emit([
+                {"identity": "a", "success": True},
+                {"identity": "b", "success": False, "message": "Upload failed: test-token"},
+            ])
+        model = self.controller.otaDetails
+        first = model.data(model.index(0, 0), self.controller._ota_devices.DeviceRole)
+        self.assertEqual("b", first["identity"])
+        self.assertNotIn("test-token", first["message"])
+        self.assertEqual(1, self.controller.otaProgress["accepted"])
+        self.assertEqual(1, self.controller.otaProgress["failed"])
+        self.controller.retryOtaFailures()
+        retry = self.controller.pool.start.call_args.args[0]
+        self.assertEqual(["b"], [record.identity for record in retry.records])
+        self.assertEqual(Path("release"), retry.release_path)
+
     @patch("ui.controller.SettingsRefreshWorker")
     def test_settings_operation_delays_targeted_settings_refresh(self, refresh_worker):
         """Accepted settings changes wait for reboot before refreshing affected rows."""

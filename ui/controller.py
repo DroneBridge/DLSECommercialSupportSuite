@@ -6,6 +6,7 @@ import ipaddress
 import json
 import math
 import os
+from collections import Counter
 from pathlib import Path
 from time import monotonic
 from typing import Any, Callable
@@ -15,6 +16,7 @@ from PySide6.QtCore import (
     Property,
     QObject,
     QSettings,
+    QSortFilterProxyModel,
     QThreadPool,
     QTimer,
     QUrl,
@@ -35,6 +37,7 @@ from ui.models import (
     DeviceFilterProxyModel,
     DeviceRecord,
     DeviceTableModel,
+    OtaDeviceModel,
 )
 from ui.workers import (
     ActivationWorker,
@@ -69,6 +72,24 @@ MAX_INSPECTOR_WIDTH = 640
 SETTINGS_REFRESH_DELAY_MS = 3_000
 DEFAULT_UNIFI_GATEWAY_URL = "https://192.168.1.1"
 UNIFI_POLL_INTERVAL_MS = 5_000
+OTA_PROGRESS_BATCH_MS = 100
+OTA_STAGE_LABELS = {
+    "validating": "Validating files",
+    "inspecting": "Checking device",
+    "uploading_www": "Uploading WWW",
+    "waiting": "Waiting before application upload",
+    "uploading_firmware": "Uploading application",
+    "complete": "Upload accepted",
+    "failed": "Failed",
+    "skipped version": "Skipped · firmware version differs",
+    "cancelled": "Cancelled before upload",
+}
+OTA_TERMINAL_STATUS = {
+    "complete": "accepted",
+    "failed": "failed",
+    "skipped version": "skipped",
+    "cancelled": "cancelled",
+}
 
 KNOWN_SYSTEM_METRICS = {
     "idf_version",
@@ -599,6 +620,7 @@ class FleetController(QObject):
     csvTemplateChanged = Signal()
     csvTemplateReady = Signal()
     otaReleasesChanged = Signal()
+    otaProgressChanged = Signal()
     toastRequested = Signal(str, str)
     resultReady = Signal(str, str, bool)
 
@@ -667,6 +689,15 @@ class FleetController(QObject):
         self._ota_release_status = "Not loaded"
         self._ota_release_refresh_running = False
         self._ota_pending_options: dict[str, Any] | None = None
+        self._ota_phase = ""
+        self._ota_error = ""
+        self._ota_retry_options: dict[str, Any] = {}
+        self._ota_pending_progress: dict[str, dict[str, Any]] = {}
+        self._ota_devices = OtaDeviceModel(self)
+        self._ota_details = QSortFilterProxyModel(self)
+        self._ota_details.setSourceModel(self._ota_devices)
+        self._ota_details.setSortRole(OtaDeviceModel.OrderRole)
+        self._ota_details.sort(0)
 
         self.source_model.inventoryChanged.connect(self._inventory_changed)
         self.source_model.selectionChanged.connect(self._selection_changed)
@@ -678,6 +709,9 @@ class FleetController(QObject):
         self.stats_update_timer = QTimer(self)
         self.stats_update_timer.setSingleShot(True)
         self.stats_update_timer.timeout.connect(self._flush_stats)
+        self.ota_update_timer = QTimer(self)
+        self.ota_update_timer.setSingleShot(True)
+        self.ota_update_timer.timeout.connect(self._flush_ota_progress)
         self.reboot_update_timer = QTimer(self)
         self.reboot_update_timer.setSingleShot(True)
         self.reboot_update_timer.timeout.connect(self._flush_reboot_row_updates)
@@ -866,6 +900,44 @@ class FleetController(QObject):
     def environmentToken(self) -> str:
         """Return the session-only token supplied through the environment."""
         return os.environ.get("DRONEBRIDGE_SECRET_TOKEN", "")
+
+    @Property("QVariantMap", notify=otaProgressChanged)
+    def otaProgress(self) -> dict[str, Any]:
+        """Return batch state and target counts independently of the filtered fleet."""
+        counts = Counter(device["state"] for device in self._ota_devices.devices)
+        return {
+            "phase": self._ota_phase,
+            "error": self._ota_error,
+            "total": len(self._ota_devices.devices),
+            "processed": sum(counts[state] for state in OTA_TERMINAL_STATUS.values()),
+            **{state: counts[state] for state in OtaDeviceModel.ORDER},
+        }
+
+    @Property(QObject, constant=True)
+    def otaDetails(self) -> QSortFilterProxyModel:
+        """Return the device details model ordered with failures and active work first."""
+        return self._ota_details
+
+    @Slot()
+    def dismissOtaSummary(self) -> None:
+        """Remove the final batch summary without affecting the fleet table."""
+        if self._ota_phase == "finished":
+            self._reset_ota_summary("")
+
+    @Slot()
+    def retryOtaFailures(self) -> None:
+        """Retry available devices that failed in the retained OTA batch."""
+        if self._ota_phase != "finished" or not self._ota_retry_options:
+            return
+        records = [
+            record for device in self._ota_devices.devices
+            if device["state"] == "failed"
+            and (record := self.source_model.record_by_identity(device["identity"])) is not None
+        ]
+        if records:
+            self._launch_ota(records, remember=True, **self._ota_retry_options)
+        else:
+            self.toastRequested.emit("info", "Failed devices are no longer available.")
 
     @Property("QVariantList", notify=otaReleasesChanged)
     def otaReleases(self) -> list[dict[str, Any]]:
@@ -1952,6 +2024,7 @@ class FleetController(QObject):
         self._ota_release_status = "Resolving selected release..."
         worker.signals.finished.connect(self._ota_release_resolved)
         worker.signals.error.connect(self._ota_release_failed)
+        self._reset_ota_summary("preparing")
         self.stateChanged.emit()
         self.otaReleasesChanged.emit()
         self.pool.start(worker)
@@ -1963,6 +2036,9 @@ class FleetController(QObject):
         if callable(cancel):
             cancel()
             self._status_text = "CANCELLING QUEUED WORK..."
+            if self._active_operation == "ota":
+                self._ota_phase = "cancelling"
+                self.otaProgressChanged.emit()
             self.stateChanged.emit()
 
     @Slot()
@@ -2083,8 +2159,7 @@ class FleetController(QObject):
         self._active_targets.clear()
         self._status_text = "SCANNING..." if self._scanning_enabled else "IDLE"
         if not pending or not isinstance(payload, dict) or not payload.get("release_path"):
-            self.stateChanged.emit()
-            self.toastRequested.emit("error", "Release preflight did not return a valid folder.")
+            self._ota_release_failed("Release preflight did not return a valid folder.")
             return
         release_path = Path(str(payload["release_path"]))
         self._ota_release_status = f"Using {release_path}"
@@ -2114,9 +2189,11 @@ class FleetController(QObject):
         self._active_targets.clear()
         self._status_text = "ERROR"
         self._ota_release_status = "Release preflight failed"
+        self._ota_phase = "finished"
+        self._ota_error = self._sanitize_error(message)
+        self.otaProgressChanged.emit()
         self.stateChanged.emit()
         self.otaReleasesChanged.emit()
-        self.resultReady.emit("OTA Firmware Upgrade", self._sanitize_error(message), False)
 
     def _launch_activation(
         self,
@@ -2183,8 +2260,6 @@ class FleetController(QObject):
         """Create and launch a bounded OTA worker."""
         if not self._operation_available():
             return
-        for record in records:
-            self.source_model.update_operation(record.identity, "queued", 0)
         options = {
             "release_path": release_path,
             "www_path": www_path,
@@ -2193,6 +2268,9 @@ class FleetController(QObject):
             "target_version": target_version,
         }
         worker = OtaWorker(records, **options)
+        self._reset_ota_summary("running", records)
+        self._ota_retry_options = options
+        self.source_model.update_operations({record.identity: ("queued", 0) for record in records})
         if remember:
             self._retry_context = ("ota", options)
         self._begin_worker("ota", worker)
@@ -2294,10 +2372,14 @@ class FleetController(QObject):
         }
         self._failed_identities.clear()
         self._status_text = kind.upper()
-        worker.signals.progress.connect(self._operation_progress)
-        worker.signals.finished.connect(
-            lambda results, operation=kind: self._operation_finished(operation, results)
-        )
+        if kind == "ota":
+            worker.signals.progress.connect(self._queue_ota_progress)
+            worker.signals.finished.connect(self._ota_finished)
+        else:
+            worker.signals.progress.connect(self._operation_progress)
+            worker.signals.finished.connect(
+                lambda results, operation=kind: self._operation_finished(operation, results)
+            )
         worker.signals.error.connect(self._operation_failed)
         self.stateChanged.emit()
         self.pool.start(worker)
@@ -2860,6 +2942,95 @@ class FleetController(QObject):
             else:
                 self.source_model.update_operation(identity, status, percent)
 
+    def _reset_ota_summary(self, phase: str, records: list[DeviceRecord] | None = None) -> None:
+        """Replace the visible OTA batch with the given phase and optional target snapshot."""
+        self.ota_update_timer.stop()
+        self._ota_pending_progress.clear()
+        self._ota_phase = phase
+        self._ota_error = ""
+        self._ota_retry_options = {}
+        self._ota_devices.reset([
+            {
+                "identity": record.identity,
+                "ip": record.ip,
+                "hostname": record.hostname,
+                "state": "queued",
+                "stage": "Queued",
+                "percent": 0,
+                "uploading": False,
+                "message": "",
+            }
+            for record in records or []
+        ])
+        self.otaProgressChanged.emit()
+
+    @Slot(object)
+    def _queue_ota_progress(self, payload: dict[str, Any]) -> None:
+        """Keep only the latest pending progress payload for each OTA target."""
+        if self._active_operation != "ota":
+            return
+        self._ota_pending_progress[payload["identity"]] = payload
+        if not self.ota_update_timer.isActive():
+            self.ota_update_timer.start(OTA_PROGRESS_BATCH_MS)
+
+    @Slot()
+    def _flush_ota_progress(self) -> None:
+        """Publish one batch of device details, counters, and Operation column changes."""
+        pending, self._ota_pending_progress = self._ota_pending_progress, {}
+        updates = {}
+        row_updates = {}
+        for identity, payload in pending.items():
+            status = payload["status"]
+            state = OTA_TERMINAL_STATUS.get(status, "active")
+            result = payload.get("result")
+            message = str(payload.get("message") or getattr(result, "message", ""))
+            percent = max(0, min(100, int(payload.get("percent", 0))))
+            updates[identity] = {
+                "state": state,
+                "stage": OTA_STAGE_LABELS.get(status, status),
+                "percent": percent,
+                "uploading": status in {"uploading_www", "uploading_firmware"},
+                "message": self._sanitize_error(message) if state == "failed" and message else "",
+            }
+            row_updates[identity] = (status, percent)
+        states_changed = self._ota_devices.update(updates)
+        if row_updates:
+            self.source_model.update_operations(row_updates)
+        if states_changed or self._ota_phase == "finished":
+            self.otaProgressChanged.emit()
+
+    @Slot(object)
+    def _ota_finished(self, results: Any) -> None:
+        """Finalize OTA on the controller thread with the worker's structured results."""
+        self._operation_finished("ota", results)
+
+    def _finish_ota_summary(self, items: list[Any], error: str = "") -> None:
+        """Resolve pending and terminal results and retain the final OTA summary."""
+        self.ota_update_timer.stop()
+        pending = self._ota_pending_progress
+        for item in items:
+            identity = self._result_identity(item)
+            if identity:
+                success = self._result_success(item)
+                pending[identity] = {
+                    "status": "complete" if success else "failed",
+                    "percent": 100 if success else 0,
+                    "result": item.get("result") if isinstance(item, dict) else item,
+                    "message": item.get("message", "") if isinstance(item, dict) else "",
+                }
+        for device in self._ota_devices.devices:
+            identity = device["identity"]
+            status = pending.get(identity, {}).get("status")
+            if device["state"] in OTA_TERMINAL_STATUS.values() or status in OTA_TERMINAL_STATUS:
+                continue
+            if self._ota_phase == "cancelling" and device["state"] == "queued" and not status:
+                pending[identity] = {"status": "cancelled"}
+            else:
+                pending[identity] = {"status": "failed", "message": error or "No update result was received."}
+        self._ota_phase = "finished"
+        self._ota_error = error
+        self._flush_ota_progress()
+
     def _queue_reboot_row_update(
         self,
         identity: str,
@@ -2885,6 +3056,8 @@ class FleetController(QObject):
             self._flush_reboot_row_updates()
             self.reboot_state_timer.stop()
         items = results if isinstance(results, list) else [results]
+        if kind == "ota":
+            self._finish_ota_summary(items)
         info_refresh_records = self._system_info_refresh_records(kind, items)
         applied_settings = getattr(self._active_worker, "settings", {})
         if not isinstance(applied_settings, dict):
@@ -2903,7 +3076,7 @@ class FleetController(QObject):
             identity = self._result_identity(item)
             if identity and not success:
                 failed.add(identity)
-            if identity and success:
+            if identity and success and kind != "ota":
                 if kind == "static_ip" and isinstance(item, dict):
                     target_ip = str(item.get("target_ip") or "").strip()
                     settings = item.get("settings")
@@ -2989,7 +3162,7 @@ class FleetController(QObject):
             self.inspectorChanged.emit()
         self.stateChanged.emit()
         self._start_system_info_refresh(info_refresh_records)
-        if kind != "reboot":
+        if kind not in {"reboot", "ota"}:
             self.resultReady.emit(
                 kind.replace("_", " ").title(),
                 f"Operation finished: {successes} succeeded, {failures} failed.",
@@ -3008,6 +3181,8 @@ class FleetController(QObject):
             self.reboot_state_timer.stop()
             self._reboot_state = "finished"
             self._reboot_summary = f"Reboot operation failed: {safe_message}"
+        elif kind == "ota":
+            self._finish_ota_summary([], error=safe_message)
         self._active_worker = None
         self._active_operation = ""
         self._active_targets.clear()
@@ -3015,7 +3190,7 @@ class FleetController(QObject):
         if kind == "reboot":
             self._resume_background_polling_after_reboot()
         self.stateChanged.emit()
-        if kind != "reboot":
+        if kind not in {"reboot", "ota"}:
             self.resultReady.emit(title, safe_message, False)
 
     @Slot(object)

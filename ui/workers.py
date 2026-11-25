@@ -20,6 +20,8 @@ from pymavlink import mavutil
 from DroneBridgeCommercialSupportSuite import (
     DBDLSERelease,
     DBLicenseType,
+    DBOtaProgress,
+    DBOtaStage,
     db_api_activate_dlse_device,
     db_api_create_request_session,
     db_api_get_dlse_releases,
@@ -1650,6 +1652,8 @@ class SysIdAlignmentWorker(QRunnable):
 class OtaWorker(QRunnable):
     """Run bounded parallel OTA updates with per-device progress."""
 
+    PROGRESS_INTERVAL = 0.15
+
     def __init__(self, records: list[DeviceRecord], release_path: Path | None,
                  www_path: Path | None, firmware_path: Path | None,
                  workers: int = 20, target_version: str = "") -> None:
@@ -1671,17 +1675,16 @@ class OtaWorker(QRunnable):
     @Slot()
     def run(self) -> None:
         """Update eligible devices and emit results as futures complete."""
-        eligible = [
-            record for record in self.records
-            if not self.target_version or record.firmware_version == self.target_version
-        ]
+        eligible = []
         for record in self.records:
-            if record not in eligible:
+            if self.target_version and record.firmware_version != self.target_version:
                 self.signals.progress.emit({
                     "identity": record.identity,
                     "status": "skipped version",
                     "percent": 0,
                 })
+            else:
+                eligible.append(record)
         results = []
         try:
             with ThreadPoolExecutor(max_workers=self.workers) as executor:
@@ -1716,7 +1719,6 @@ class OtaWorker(QRunnable):
                                 "status": "complete" if result.success else "failed",
                                 "percent": 100 if result.success else 0,
                             }
-                            results.append(result)
                         except Exception as exc:
                             payload = {
                                 "identity": record.identity,
@@ -1725,7 +1727,7 @@ class OtaWorker(QRunnable):
                                 "percent": 0,
                                 "message": str(exc),
                             }
-                            results.append(payload)
+                        results.append(payload)
                         self.signals.progress.emit(payload)
                         submit_next()
             self.signals.finished.emit(results)
@@ -1733,7 +1735,29 @@ class OtaWorker(QRunnable):
             self.signals.error.emit(str(exc))
 
     def _update_one(self, record: DeviceRecord) -> Any:
-        """Run the shared OTA workflow for one record."""
+        """Update one device and publish stage changes and throttled percentages."""
+        last_stage = None
+        last_percent = 0
+        last_emit = 0.0
+
+        def report(progress: DBOtaProgress) -> None:
+            """Emit stage transitions immediately and sample changed upload percentages."""
+            nonlocal last_stage, last_percent, last_emit
+            if progress.stage is DBOtaStage.COMPLETE or progress.stage is DBOtaStage.FAILED:
+                return  # The worker publishes terminal states with the structured result.
+            percent = int(progress.sent_bytes * 100 / progress.total_bytes) if progress.total_bytes else 0
+            if progress.stage == last_stage and percent == last_percent:
+                return
+            now = monotonic()
+            if progress.stage == last_stage and percent < 100 and now - last_emit < self.PROGRESS_INTERVAL:
+                return
+            last_stage, last_percent, last_emit = progress.stage, percent, now
+            self.signals.progress.emit({
+                "identity": record.identity,
+                "status": progress.stage.value,
+                "percent": percent,
+            })
+
         session = db_api_create_request_session()
         try:
             return db_api_ota_update_device(
@@ -1742,13 +1766,7 @@ class OtaWorker(QRunnable):
                 release_path=self.release_path,
                 www_path=self.www_path,
                 firmware_path=self.firmware_path,
-                progress_callback_fn=lambda progress: self.signals.progress.emit({
-                    "identity": record.identity,
-                    "status": progress.stage.value,
-                    "percent": int(progress.sent_bytes * 100 / progress.total_bytes)
-                    if progress.total_bytes else 0,
-                    "progress": progress,
-                }),
+                progress_callback_fn=report,
             )
         finally:
             session.close()
