@@ -49,10 +49,10 @@ python -m pipx ensurepath
 Open a new terminal and install.
 
 ```bash
-pipx install --force https://github.com/DroneBridge/DLSECommercialSupportSuite/releases/download/v1.2.0/dlsecommercialsupportsuite-1.2.0-py3-none-any.whl
+pipx install --force https://github.com/DroneBridge/DLSECommercialSupportSuite/releases/download/v1.2.1/dlsecommercialsupportsuite-1.2.1-py3-none-any.whl
 ```
 
-For newer releases, replace `v1.2.0` and the wheel filename with the version shown on the GitHub Releases page.
+For newer releases, replace `v1.2.1` and the wheel filename with the version shown on the GitHub Releases page.
 
 Open a new terminal and verify the commands are available:
 
@@ -111,7 +111,7 @@ On Windows launch the application by searching for `dlse-ui.exe` or using the Po
 dlse-ui.exe
 ```
 
-Windows x64 is the validated desktop platform for v1.2.0. Linux and macOS are
+Windows x64 is the primary desktop platform. Linux and macOS are
 expected to work but are not release-qualified. Python 3.10 and newer are
 supported; UniFi integration is guaranteed on Python 3.10 through 3.13 and is
 best-effort on newer Python versions.

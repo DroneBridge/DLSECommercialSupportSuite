@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.1
+
+### Added
+
+- Shift-click range selection in the Fleet Manager table. The range follows
+  the current sort and filter and adds to the checked rows.
+- A Fleet Manager OTA progress strip and per-device details for upload
+  progress and results. Cancel Queued stops updates that have yet to start.
+
+### Changed
+
+- Stop Scanning now cancels the current discovery pass and future passes while
+  retaining devices already in the fleet.
+
 ## 1.2.0
 
 ### Added
